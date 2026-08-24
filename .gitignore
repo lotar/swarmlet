@@ -9,3 +9,6 @@ sin-harness/*.pid
 
 # OS noise
 .DS_Store
+
+# per-node L1 instances are their own git repos (created by scripts/init.ts)
+sin-harness/knowledge/
