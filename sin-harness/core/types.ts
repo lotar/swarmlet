@@ -64,6 +64,80 @@ export interface SkillCandidate {
   kind: "skill" | "memory";
 }
 
+// ---------- L3 graduation (PRD: evidence-driven, never scheduled) ----------
+
+/** A recurring failure pattern detected in the event stream. */
+export interface SaturationVerdict {
+  /** Deterministic normalized signature shared by the grouped events. */
+  patternKey: string;
+  occurrences: number;
+  firstSeen: string;
+  lastSeen: string;
+  /** Days between first and last occurrence — "over weeks", not a burst. */
+  spanDays: number;
+  /** True iff an L1 text skill whose provenance references this pattern's
+   * events already exists AND the pattern still recurs (text path exhausted). */
+  textSkillTried: boolean;
+  /** True only when ALL PRD conditions hold: ≥minOccurrences, spread over
+   * ≥minSpanDays (weeks, not a burst), and the text-skill fix failed. */
+  saturated: boolean;
+  /** Why not saturated (machine-readable) when saturated is false. */
+  reason?:
+    | "below-threshold"
+    | "burst-not-recurring"
+    | "text-path-not-exhausted";
+}
+
+/** Executable training spec exported for a saturated pattern. Recipes —
+ * never weights — are the commons-shareable L3 unit (PRD L4). */
+export interface AdapterRecipe {
+  id: string;
+  createdAt: string;
+  status: "draft" | "trained" | "audited" | "rejected";
+  sourcePattern: {
+    patternKey: string;
+    occurrences: number;
+    firstSeen: string;
+    lastSeen: string;
+    /** Redacted exemplar payloads (bounded) for local distillation. */
+    samples: string[];
+  };
+  baseModel: { name: string; quantization: string; contextLength: number };
+  trainingDataSpec: {
+    /** Anti-collapse measure (PRD L3): distilled/corrected samples only,
+     * never raw self-outputs. */
+    source: "distilled-corrections-only";
+    eventIds: string[];
+    minSamples: number;
+    format: "jsonl-chat";
+    piiPolicy: "redact-before-export";
+  };
+  trainingConfig: {
+    method: "QLoRA";
+    r: number;
+    loraAlpha: number;
+    loraDropout: number;
+    targetModules: string[];
+    epochs: number;
+    learningRate: number;
+    batchSize: number;
+    gradAccum: number;
+    maxSeqLen: number;
+    budgetGb: number;
+    /** PRD: weekly-at-most, saturation-triggered. */
+    cadence: "saturation-triggered-weekly-max";
+  };
+  audition: {
+    required: boolean;
+    criteria: [
+      "beat-incumbent-on-private-shard",
+      "behavioral-diff-certificate",
+      "off-domain-drift-below-threshold",
+    ];
+  };
+  signature?: string; // ed25519 over canonical JSON (signature excluded)
+}
+
 // ---------- Evals (L2) ----------
 
 export type ExpectedAnswer =

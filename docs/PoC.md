@@ -4,6 +4,8 @@
 > `bun test test/e2e.test.ts` → 8/8 green against real OLMoE-1B-7B-A1B (Q8_0, llama.cpp on :8081), reproduced on two consecutive runs.
 > Evidence highlights: refine provenance commits verified; gate noise-aware three-way verdict (accept/keep/revert) — genuine lift 0.67→0.71 accepted, injected context-blowout regression 0.75→0.00 auto-reverted with signed cert; audition of node A's artifact against node B's private shard measured 0.600→0.400 → signed REJECT (transfer problem solved by measurement); distributed certification 24 instances across 3 processes with triple-run cross-check (minCopies=3, zero disagreements); churn drill SIGKILLs node C mid-run, certification completes via requeue.
 > Design note added during acceptance: the gate verdict is noise-aware (one-sided ~95% binomial margin over the paired instance set) — a single flipped instance can never be misread as a regression; ties resolve to "keep" (incumbent stays, candidate not promoted).
+>
+> **P0a completion items landed:** `loop/graduate.ts` (saturation detector enforcing ALL PRD conditions: ≥20 occurrences, ≥7-day spread, provenance-scanned evidence that an L1 text skill was tried and the pattern still recurs) and `loop/recipe.ts` (signed adapter-recipe export — recipes, never weights; distilled-corrections-only anti-collapse policy and audition requirements baked into the artifact). Harness repo itself now under git (L1 discipline applied to our own code); OLMoE server stopped post-acceptance.
 
 Implementation contract for phase **P0a** (see PRD §5). All work happens in `/Users/lotar/projects/ai-mesh/sin-harness/`.
 
@@ -93,3 +95,5 @@ Runs against the **real OLMoE model** (assumes `scripts/start-model.sh` healthy 
 8. Exit 0 with a summary table printed (per-node pass rates, cert IDs, timings).
 
 `bun test test/e2e.test.ts` green == P0a done. No shortcuts: a skipped step fails the test.
+
+Note: e2e requires the live model (`scripts/start-model.sh` on :8081) and refuses loudly otherwise; all other suites run offline against `core/mock.ts`.
