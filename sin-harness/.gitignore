@@ -1,0 +1,9 @@
+# runtime artifacts (generated, never committed)
+data/
+models/
+*.log
+*.pid
+
+# knowledge/ is the L1 asset and IS tracked once initialized;
+# gates/ certificates are artifacts but intentionally trackable.
+.DS_Store

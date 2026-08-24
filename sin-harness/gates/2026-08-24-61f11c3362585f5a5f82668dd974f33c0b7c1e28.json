@@ -1,0 +1,12 @@
+{
+  "id": "gate-2026-08-24-61f11c3362",
+  "date": "2026-08-24T10:26:37.520Z",
+  "knowledgeSha": "61f11c3362585f5a5f82668dd974f33c0b7c1e28",
+  "baseModel": "/Users/lotar/projects/ai-mesh/sin-harness/../models/OLMoE-1B-7B-0125-Instruct-Q8_0.gguf",
+  "suiteSeed": 20260807,
+  "instanceCount": 12,
+  "oldScore": 0.7916666666666666,
+  "newScore": 0.8333333333333334,
+  "decision": "accept",
+  "signature": "v0w6NFrSg2OCZtk1xS83TuRuD0zAomSniWXfftPokPe48I4UWB6pA51AF8LNiSRB8yCZ4yIGopW2bMYB4+LbCA=="
+}

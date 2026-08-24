@@ -1,0 +1,11 @@
+# --- heavy/regenerable runtime artifacts: never committed ---
+models/
+sin-harness/data/
+sin-harness/*.log
+sin-harness/*.pid
+
+# signing keys NEVER leave the machine (even into local git history)
+**/keys/
+
+# OS noise
+.DS_Store

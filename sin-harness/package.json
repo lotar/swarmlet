@@ -1,0 +1,14 @@
+{
+  "name": "sin-harness",
+  "version": "0.0.1-poc",
+  "private": true,
+  "type": "module",
+  "description": "Sovereign Intelligence Network harness — P0a PoC (MoE loop + locally-simulated mesh)",
+  "license": "Apache-2.0",
+  "scripts": {
+    "model": "./scripts/start-model.sh",
+    "test": "bun test test/",
+    "test:l0": "bun test test/l0.test.ts",
+    "test:e2e": "bun test test/e2e.test.ts"
+  }
+}

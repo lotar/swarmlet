@@ -1,0 +1,25 @@
+{
+  "baseModel": {
+    "name": "OLMoE-1B-7B-0125-Instruct",
+    "quantization": "Q8_0",
+    "moe": true,
+    "activeParamsB": 1.3,
+    "totalParamsB": 6.9,
+    "ggufPath": "../models/OLMoE-1B-7B-0125-Instruct-Q8_0.gguf",
+    "contextLength": 8192
+  },
+  "llamaServer": {
+    "host": "127.0.0.1",
+    "port": 8081
+  },
+  "mesh": {
+    "nodeCount": 3,
+    "nodePorts": [9201, 9202, 9203]
+  },
+  "suiteSeed": 20260807,
+  "paths": {
+    "knowledge": "knowledge",
+    "data": "data",
+    "gates": "gates"
+  }
+}
