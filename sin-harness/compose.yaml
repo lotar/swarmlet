@@ -44,24 +44,30 @@ services:
   rpc1:
     <<: *rpc-common
     container_name: sin-rpc-1
+    # Pan-EU fiber sim: shard 1 = VIENNA (Zagreb hub, ~12ms RTT -> 6ms one-way)
     environment:
       <<: *rpc-env
+      NETEM_DELAY_MS: ${SIN_SHARD1_DELAY_MS:-0}
       RPC_PORT: "50052"
     ports: ["51052:50052"]
 
   rpc2:
     <<: *rpc-common
     container_name: sin-rpc-2
+    # shard 2 = MUNICH (~22ms RTT -> 11ms one-way)
     environment:
       <<: *rpc-env
+      NETEM_DELAY_MS: ${SIN_SHARD2_DELAY_MS:-0}
       RPC_PORT: "50052"       # container-internal port; host maps 50053
     ports: ["51053:50052"]
 
   rpc3:
     <<: *rpc-common
     container_name: sin-rpc-3
+    # shard 3 = MILAN (~16ms RTT -> 8ms one-way)
     environment:
       <<: *rpc-env
+      NETEM_DELAY_MS: ${SIN_SHARD3_DELAY_MS:-0}
       RPC_PORT: "50052"
     ports: ["51054:50052"]
 
