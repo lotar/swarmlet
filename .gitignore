@@ -12,3 +12,6 @@ sin-harness/*.pid
 
 # per-node L1 instances are their own git repos (created by scripts/init.ts)
 sin-harness/knowledge/
+
+# dockerized-node runtime artifacts (per-node sqlite/knowledge clones)
+sin-harness/data-docker/
