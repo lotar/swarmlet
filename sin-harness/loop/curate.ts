@@ -65,12 +65,18 @@ export async function judgeEvent(client: L0Client, ev: EventRecord): Promise<Jud
       typeof parsed.signal === "boolean" &&
       typeof parsed.skill_candidate === "boolean"
     ) {
-      return {
+      const verdict: JudgeVerdict = {
         signal: parsed.signal,
         skillCandidate: parsed.skill_candidate,
         reason: typeof parsed.reason === "string" ? parsed.reason.slice(0, 200) : "judged",
         judged: true,
       };
+      // PRD rule — classifiers narrow, deterministic logic decides: a model
+      // verdict may REFINE a failure-shaped event's classification but may
+      // never silence it (tiny judges are unreliable noisegates).
+      const fb = fallbackVerdict(ev);
+      if (fb.signal && !verdict.signal) return { ...fb, reason: `override:${verdict.reason}` };
+      return verdict;
     }
   } catch {
     // endpoint hiccup → fallback keeps the loop running (crash-only rule)

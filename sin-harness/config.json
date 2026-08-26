@@ -14,7 +14,11 @@
   },
   "mesh": {
     "nodeCount": 3,
-    "nodePorts": [9201, 9202, 9203]
+    "nodePorts": [
+      9301,
+      9302,
+      9303
+    ]
   },
   "suiteSeed": 20260807,
   "paths": {

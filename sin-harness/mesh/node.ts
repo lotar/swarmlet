@@ -257,10 +257,18 @@ async function handleAudition(body: unknown): Promise<Response> {
 
 void keys.pub; // signing-only use; public identity flows via pubJwk above
 
+// Simulated internet RTT (ms) applied per request. Set NODE_RTT_MS in the
+// container env to make the control plane behave like WAN, not loopback.
+const RTT_MS = Number(process.env.NODE_RTT_MS ?? 0);
+
 const server = Bun.serve({
   port: args.port,
   async fetch(req) {
     const url = new URL(req.url);
+    if (RTT_MS > 0 && url.pathname !== "/health") {
+      await new Promise((r) => setTimeout(r, RTT_MS));
+      void url;
+    }
     try {
       if (req.method === "GET" && url.pathname === "/health") {
         const health: NodeHealth = { status: "ok", nodeId: args.id, mock: mockHandle !== null };
@@ -284,6 +292,23 @@ const server = Bun.serve({
         const added = store.insertMany(body?.events ?? []);
         shardCache = null; // new data -> next /shard or audition rebuilds
         return Response.json({ nodeId: args.id, added });
+      }
+      if (req.method === "GET" && url.pathname === "/events/export") {
+        // Cross-OS-safe curation input: SQLite WAL is NOT shared safely
+        // between the container (Linux VM) and host processes, so curators
+        // pull events over HTTP instead of reading the database file.
+        const unprocessedOnly = url.searchParams.get("unprocessed") === "1";
+        // usable() = PII-filtered: flagged events NEVER leave the node (PRD).
+        const all = store.usable();
+        return Response.json({
+          nodeId: args.id,
+          events: unprocessedOnly ? all.filter((e) => !e.processed) : all,
+        });
+      }
+      if (req.method === "POST" && url.pathname === "/events/markProcessed") {
+        const body = (await req.json()) as { ids?: string[] };
+        store.markProcessed(body?.ids ?? []);
+        return Response.json({ nodeId: args.id, marked: (body?.ids ?? []).length });
       }
       if (req.method === "POST" && url.pathname === "/execute") {
         return await handleExecute(await req.json());

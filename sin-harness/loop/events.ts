@@ -137,6 +137,30 @@ export class EventStore {
     return rows.map(fromRow);
   }
 
+  /** Bulk import with EXPLICIT ids (cross-node curation import; e.g. events
+   * pulled over HTTP from containerized nodes). INSERT OR IGNORE on id. */
+  importRaw(
+    rows: ReadonlyArray<{
+      id: string; ts: string; node_id?: string | null; session: string;
+      kind: string; payload: string; pii_flagged?: boolean; processed?: boolean;
+    }>,
+  ): number {
+    const stmt = this.db.query(
+      `INSERT OR IGNORE INTO events
+         (id, ts, node_id, session, kind, payload, pii_flagged, processed)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+    );
+    let added = 0;
+    for (const r of rows) {
+      if (!r.id || !r.kind || typeof r.payload !== "string" || !r.session) continue;
+      added += stmt.run(
+        r.id, r.ts, r.node_id ?? null, r.session,
+        r.kind, r.payload, r.pii_flagged ? 1 : 0, r.processed ? 1 : 0,
+      ).changes;
+    }
+    return added;
+  }
+
   markProcessed(ids: readonly string[]): void {
     const tx = this.db.transaction((ids: readonly string[]) => {
       const stmt = this.db.prepare(`UPDATE events SET processed = 1 WHERE id = ?`);

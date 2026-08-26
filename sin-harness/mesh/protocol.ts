@@ -125,7 +125,7 @@ export interface NodeEventInput {
 
 // ---------- coordinator-side helpers ----------
 
-const DEFAULT_TIMEOUT_MS = 60_000;
+const DEFAULT_TIMEOUT_MS = 180_000;
 
 async function request<T>(
   url: string,

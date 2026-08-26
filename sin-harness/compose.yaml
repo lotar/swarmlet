@@ -1,0 +1,108 @@
+# Sovereign Intelligence Network — dockerized mesh topology.
+#
+# Simulates "large MoE across multiple small inference hardware over the
+# internet", e2e on one box:
+#   rpc1..rpc3   — llama.cpp RPC shards (SMALL: hard mem/cpu caps). The host
+#                  llama-server pushes the large model's tensors to them over
+#                  the bridge network at load; every token crosses this network.
+#   node-n1..n3  — SIN harness nodes (mesh/node.ts) with private shards.
+#
+# Internet simulation:
+#   - NETEM_DELAY_MS / NETEM_RATE_MBIT applied via tc inside each rpc shard
+#   - NODE_RTT_MS adds control-plane RTT inside each harness node
+# Profiles let you run inference-only, nodes-only, or both (default).
+name: sin-mesh
+
+x-rpc-common: &rpc-common
+  build:
+    context: /Users/lotar/projects/local-llm/llama.cpp-rpc
+    dockerfile: Dockerfile.rpc-sin
+  image: sin/rpc-server:latest
+  restart: unless-stopped
+  cap_add: [NET_ADMIN]
+  environment: &rpc-env
+    NETEM_DELAY_MS: ${NETEM_DELAY_MS:-0}      # per-packet delay; token-layer RPC needs LAN-grade links
+    NETEM_RATE_MBIT: ${NETEM_RATE_MBIT:-0}    # 0 = unlimited; WAN latency is simulated at harness level (NODE_RTT_MS)
+    RPC_EXTRA_ARGS: --threads ${RPC_THREADS:-2}  # match cgroup cpu cap; avoids thrashing
+  # SAFETY ENVELOPE (post kernel-panic fix): Docker Desktop VM is capped at
+  # 28 GB / 6 CPUs. Shard sums MUST stay well under the VM limit or the Linux
+  # VM enters a swap death-spiral that has taken down the macOS host:
+  #   3 x 7g mem = 21g << 28g VM;  3 x 1.5 cpu + 3 x 0.5 (nodes) = 6 cpus
+  mem_limit: 7g           # "small hardware" hard caps — the big MoE must FIT
+  cpus: 1.5
+  healthcheck:
+    test: ["CMD", "nc", "-z", "127.0.0.1", "50052"]
+    interval: 3s
+    timeout: 2s
+    retries: 30
+    start_period: 5s
+
+services:
+  rpc1:
+    <<: *rpc-common
+    container_name: sin-rpc-1
+    environment:
+      <<: *rpc-env
+      RPC_PORT: "50052"
+    ports: ["51052:50052"]
+
+  rpc2:
+    <<: *rpc-common
+    container_name: sin-rpc-2
+    environment:
+      <<: *rpc-env
+      RPC_PORT: "50052"       # container-internal port; host maps 50053
+    ports: ["51053:50052"]
+
+  rpc3:
+    <<: *rpc-common
+    container_name: sin-rpc-3
+    environment:
+      <<: *rpc-env
+      RPC_PORT: "50052"
+    ports: ["51054:50052"]
+
+  node-n1:
+    image: oven/bun:1
+    container_name: sin-node-1
+    working_dir: /app
+    volumes: [".:/app"]
+    command: sh -c "bun mesh/node.ts --id n1 --port 9301 --db data-docker/events-n1.sqlite --endpoint http://host.docker.internal:8081"
+    ports: ["9301:9301"]
+    extra_hosts: ["host.docker.internal:host-gateway"]
+    environment:
+      NODE_RTT_MS: ${NODE_RTT_MS:-15}
+      SIN_L0_TIMEOUT_MS: "900000"
+    mem_limit: 256m
+    cpus: 0.5
+    stop_grace_period: 3s
+
+  node-n2:
+    image: oven/bun:1
+    container_name: sin-node-2
+    working_dir: /app
+    volumes: [".:/app"]
+    command: sh -c "bun mesh/node.ts --id n2 --port 9302 --db data-docker/events-n2.sqlite --endpoint http://host.docker.internal:8081"
+    ports: ["9302:9302"]
+    extra_hosts: ["host.docker.internal:host-gateway"]
+    environment:
+      NODE_RTT_MS: ${NODE_RTT_MS:-15}
+      SIN_L0_TIMEOUT_MS: "900000"
+    mem_limit: 256m
+    cpus: 0.5
+    stop_grace_period: 3s
+
+  node-n3:
+    image: oven/bun:1
+    container_name: sin-node-3
+    working_dir: /app
+    volumes: [".:/app"]
+    command: sh -c "bun mesh/node.ts --id n3 --port 9303 --db data-docker/events-n3.sqlite --endpoint http://host.docker.internal:8081"
+    ports: ["9303:9303"]
+    extra_hosts: ["host.docker.internal:host-gateway"]
+    environment:
+      NODE_RTT_MS: ${NODE_RTT_MS:-15}
+      SIN_L0_TIMEOUT_MS: "900000"
+    mem_limit: 256m
+    cpus: 0.5
+    stop_grace_period: 3s

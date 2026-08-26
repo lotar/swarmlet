@@ -44,6 +44,17 @@ interface CoordArgs {
   mock: boolean;
   /** SIGKILL the node at this index right after its first successful dispatch. */
   chaos?: number;
+  /** Kill at dispatch-start instead of after first success — deterministic
+   * mid-run death for remote/containerized victims where graceful stop races
+   * the (short) dispatch queue. Death is still discovered via failed fetch. */
+  chaosAtStart?: boolean;
+  /** Attach mode: nodes are externally managed (e.g. docker compose); the
+   * coordinator only connects, never spawns local processes. */
+  attach?: boolean;
+  /** Attach-mode chaos hook: fired instead of a local SIGKILL when the chaos
+   * victim has no coordinator-owned process. The death must still manifest as
+   * failed fetches — same discovery path as production churn. */
+  onExternalChaos?: (nodeId: string) => void;
 }
 
 function parseArgs(argv: readonly string[]): CoordArgs {
@@ -128,6 +139,9 @@ export async function runCertification(
     suiteSeed: opts.suiteSeed ?? cfg.suiteSeed,
     mock: opts.mock ?? false,
     chaos: opts.chaos,
+    attach: opts.attach ?? false,
+    chaosAtStart: opts.chaosAtStart ?? false,
+    onExternalChaos: opts.onExternalChaos,
   };
   if (!Number.isInteger(args.count) || args.count <= 0) {
     throw new Error(`--count must be a positive integer, got ${args.count}`);
@@ -140,23 +154,26 @@ export async function runCertification(
   const nodes: NodeHandle[] = [];
   for (const [i, port] of args.ports.entries()) {
     const nodeId = `n${i + 1}`;
-    const argv = [
-      process.execPath,
-      `${PROJECT_ROOT}/mesh/node.ts`,
-      "--id",
-      nodeId,
-      "--port",
-      String(port),
-      "--db",
-      `data/events-${nodeId}.sqlite`,
-    ];
-    if (args.mock) argv.push("--mock");
-    const proc = Bun.spawn(argv, {
-      cwd: PROJECT_ROOT,
-      stdin: "ignore",
-      stdout: "ignore",
-      stderr: "inherit",
-    });
+    let proc: Bun.Subprocess | null = null;
+    if (!args.attach) {
+      const argv = [
+        process.execPath,
+        `${PROJECT_ROOT}/mesh/node.ts`,
+        "--id",
+        nodeId,
+        "--port",
+        String(port),
+        "--db",
+        `data/events-${nodeId}.sqlite`,
+      ];
+      if (args.mock) argv.push("--mock");
+      proc = Bun.spawn(argv, {
+        cwd: PROJECT_ROOT,
+        stdin: "ignore",
+        stdout: "ignore",
+        stderr: "inherit",
+      });
+    }
     nodes.push({
       nodeId,
       port,
@@ -169,6 +186,30 @@ export async function runCertification(
 
   const killedNodes: string[] = [];
   let chaosFired = false;
+
+  // Declared BEFORE the try block: chaosAtStart fires it right after health
+  // checks, which precedes its old (post-dispatch) definition site — a const
+  // referenced that early would be a TDZ ReferenceError.
+  const killChaosTarget = (): void => {
+    if (chaosFired || args.chaos === undefined) return;
+    const victim = nodes[args.chaos];
+    if (!victim || !victim.alive) return;
+    chaosFired = true;
+    if (!killedNodes.includes(victim.nodeId)) killedNodes.push(victim.nodeId);
+    if (victim.proc) {
+      // External-crash semantics: SIGKILL WITHOUT touching `alive`. The
+      // coordinator must discover the death through a failed fetch, exactly
+      // as it would in production — that is what exercises the retry path.
+      victim.proc.kill(9);
+      console.log(`[coordinator] chaos: SIGKILLed ${victim.nodeId} mid-run`);
+    } else {
+      // Attach mode: no owned process; delegate the kill to the operator
+      // hook (e.g. `docker compose stop node-n3`). Same discovery contract:
+      // the coordinator learns of the death via failed fetches.
+      args.onExternalChaos?.(victim.nodeId);
+      console.log(`[coordinator] chaos: external kill signaled for ${victim.nodeId}`);
+    }
+  };
 
   try {
     // --- wait for health (fail fast on nodes that never come up) ------------
@@ -185,6 +226,7 @@ export async function runCertification(
       if (!up) throw new Error(`node ${n.nodeId} did not become healthy`);
     }
     await Promise.all(nodes.map(ensurePubkey));
+    if (args.chaosAtStart && args.chaos !== undefined) killChaosTarget();
 
     // --- deterministic suite --------------------------------------------------
     const instances = generateSuite(args.suiteSeed ?? 0, args.version, args.count);
@@ -230,19 +272,6 @@ export async function runCertification(
       return picked ?? null;
     };
 
-    const killChaosTarget = (): void => {
-      if (chaosFired || args.chaos === undefined) return;
-      const victim = nodes[args.chaos];
-      if (!victim || !victim.alive || !victim.proc) return;
-      chaosFired = true;
-      // External-crash semantics: SIGKILL WITHOUT touching `alive`. The
-      // coordinator must discover the death through a failed fetch, exactly
-      // as it would in production — that is what exercises the retry path.
-      victim.proc.kill(9);
-      if (!killedNodes.includes(victim.nodeId)) killedNodes.push(victim.nodeId);
-      console.log(`[coordinator] chaos: SIGKILLed ${victim.nodeId} mid-run`);
-    };
-
     function record(n: NodeHandle, item: WorkItem, r: EvalResult): void {
       const stats = perNode[n.nodeId];
       if (!stats) return;
@@ -269,7 +298,9 @@ export async function runCertification(
             requestId: `req-${item.inst.id}-${item.attempts}-${attemptsSalt++}`,
             instances: [item.inst],
           },
-          60_000,
+          // Distributed/slow backends: an instance may run minutes. Override
+          // with SIN_EXECUTE_TIMEOUT_MS.
+          Number(process.env.SIN_EXECUTE_TIMEOUT_MS ?? 300_000),
         );
         if (resp.nodeId !== n.nodeId || resp.results.length === 0) return "bad";
         const pub = await ensurePubkey(n);
@@ -277,11 +308,15 @@ export async function runCertification(
         record(n, item, resp.results[0] as EvalResult);
         return "ok";
       } catch (e) {
-        // Any network-level failure (refused, reset, abort, timeout — Bun's
-        // wording varies) is a node-reachability signal: retry elsewhere.
-        console.error(
-          `[coordinator] dispatch to ${n.nodeId} failed: ${e instanceof Error ? e.message : String(e)}`,
-        );
+        // A TIMEOUT means the node is alive but slow — do NOT eject it from
+        // the pool (that would cascade every queued item to failure on any
+        // slow backend). Only network-level refusal/reset means "dead".
+        const msg = e instanceof Error ? e.message : String(e);
+        if (/timed out|timeout|abort/i.test(msg)) {
+          console.error(`[coordinator] dispatch to ${n.nodeId} timed out (node kept)`);
+          return "bad";
+        }
+        console.error(`[coordinator] dispatch to ${n.nodeId} failed: ${msg}`);
         return "dead";
       }
     }
@@ -309,7 +344,7 @@ export async function runCertification(
         }
         const outcome = await executeOn(n, item);
         if (outcome === "ok") {
-          killChaosTarget(); // fire once, after the first successful response
+          if (!args.chaosAtStart) killChaosTarget(); // fire once, after the first successful response
           continue;
         }
         if (outcome === "dead" && n.alive) {

@@ -1,0 +1,12 @@
+{
+  "id": "gate-2026-08-26-9f2bb7dea8",
+  "date": "2026-08-26T07:45:17.295Z",
+  "knowledgeSha": "9f2bb7dea8d6d94c8ca4e443416102cdb1f695ad",
+  "baseModel": "/Users/lotar/projects/ai-mesh/models/OLMoE-1B-7B-0125-Instruct-Q8_0.gguf",
+  "suiteSeed": 20260807,
+  "instanceCount": 6,
+  "oldScore": 0.5833333333333334,
+  "newScore": 0.5833333333333334,
+  "decision": "keep",
+  "signature": "1hEoRsMPn8Z9iPJRM4+8+7rSLgvjifoMJXIJ4oeZvfdpbyAxuxXLtgJFC0wiwICsX0dUR1buQv6bLlT1TXWkAA=="
+}

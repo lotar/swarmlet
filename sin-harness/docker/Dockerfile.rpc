@@ -1,0 +1,31 @@
+# llama.cpp rpc-server — the "small inference hardware" shard.
+# Built from the SAME source commit as the host build (protocol match).
+# Weights are NOT baked in: the host coordinator pushes tensor data over
+# the network at load time — that transfer IS the simulated internet hop.
+FROM ubuntu:24.04 AS build
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      git cmake build-essential libcurl4-openssl-dev ca-certificates && \
+    rm -rf /var/lib/apt/lists/*
+WORKDIR /src
+COPY . .
+RUN cmake -B build -DGGML_RPC=ON -DLLAMA_CURL=OFF -DBUILD_SHARED_LIBS=OFF \
+      -DGGML_NATIVE=ON -DLLAMA_BUILD_TESTS=OFF -DLLAMA_BUILD_EXAMPLES=OFF \
+      -DLLAMA_BUILD_SERVER=OFF \
+ && cmake --build build --config Release -j"$(nproc)" --target ggml-rpc-server
+
+FROM ubuntu:24.04
+# NET_ADMIN lets the entrypoint apply `tc netem` — the internet-latency sim.
+# netcat-openbsd provides a real healthcheck against the raw RPC TCP port.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      iproute2 netcat-openbsd ca-certificates libgomp1 && rm -rf /var/lib/apt/lists/*
+COPY --from=build /src/build/bin/ggml-rpc-server /usr/local/bin/rpc-server
+# NOTE: build-rpc-image.sh stages this file at the CONTEXT ROOT (the pinned
+# llama.cpp source tree), hence the flat path.
+COPY rpc-entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
+# hard cap: this image must stay "small hardware"
+ENV RPC_PORT=50052
+ENV NETEM_DELAY_MS=0
+ENV NETEM_RATE_MBIT=0
+EXPOSE 50052
+ENTRYPOINT ["/entrypoint.sh"]

@@ -79,6 +79,24 @@ export class HttpL0Client implements L0Client {
   }
 
   async chat(messages: ChatMsg[], opts: ChatOptions = {}): Promise<string> {
+    // Churn-tolerant transport: connect-level failures (ECONNREFUSED/RESET,
+    // "Unable to connect") get ONE retry after a short backoff. HTTP errors
+    // (400/500 from the model) do NOT retry — they are deterministic answers.
+    for (let attempt = 0; ; attempt++) {
+      try {
+        return await this.chatOnce(messages, opts);
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e);
+        const connectLevel =
+          /unable to connect|econnrefused|econnreset|socket|fetch failed/i.test(msg) &&
+          !/HTTP \d+/.test(msg);
+        if (!connectLevel || attempt >= 1) throw e;
+        await new Promise((r) => setTimeout(r, 1500));
+      }
+    }
+  }
+
+  private async chatOnce(messages: ChatMsg[], opts: ChatOptions = {}): Promise<string> {
     const body: Record<string, unknown> = {
       model: this.model,
       messages,
@@ -92,7 +110,9 @@ export class HttpL0Client implements L0Client {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify(body),
-      signal: AbortSignal.timeout(120_000),
+      // Generous ceiling: eval instances against slow/distributed backends
+      // may legitimately run minutes. Override with SIN_L0_TIMEOUT_MS.
+      signal: AbortSignal.timeout(Number(process.env.SIN_L0_TIMEOUT_MS ?? 300_000)),
     });
     if (!res.ok) {
       throw new Error(
