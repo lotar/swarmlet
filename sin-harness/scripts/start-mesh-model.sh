@@ -79,7 +79,7 @@ nohup "$LLAMA_SERVER" \
   --n-gpu-layers "$NGL" \
   --split-mode layer \
   --tensor-split "$TSPLIT" \
-  "${EXPERT_ARGS[@]}" \
+  ${EXPERT_ARGS[@]+"${EXPERT_ARGS[@]}"} \
   -fa on \
   --jinja \
   --chat-template-kwargs '{"enable_thinking": false}' \
