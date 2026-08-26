@@ -1,0 +1,12 @@
+{
+  "id": "gate-2026-08-26-ed1b2131d5",
+  "date": "2026-08-26T13:35:44.242Z",
+  "knowledgeSha": "ed1b2131d5b88d69508a68d85dd68d6980e12a8a",
+  "baseModel": "OLMoE-1B-7B-0125-Instruct-Q4_K_M",
+  "suiteSeed": 20260807,
+  "instanceCount": 6,
+  "oldScore": 0.5833333333333334,
+  "newScore": 0.6666666666666666,
+  "decision": "keep",
+  "signature": "e91+JDKpcrg4Ks6FVwsY5AJ4mTBjmsa2AG8z4WzsE1D1lDoJGl5pkXN4BlwkV6G1T7Oy8v6RBXzeBYI63bNwDg=="
+}

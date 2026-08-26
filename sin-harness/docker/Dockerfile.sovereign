@@ -1,0 +1,42 @@
+# Sovereign node image: a COMPLETE European mesh site in one container.
+#
+# Everything a node needs is BAKED IN — zero host dependencies:
+#   - llama-server (linux/arm64, built from the SAME pinned commit 7584430)
+#   - bun runtime + the sin-harness sources (copied, NOT bind-mounted)
+#   - the model file (Q4_K_M) — weights are local, inference is localhost-only
+# The node's signing keys and sqlite event store live in its own filesystem
+# and are generated on first boot: genuine independent identity.
+#
+# Build context = sin-harness repo root (staged by scripts/build-sovereign-image.sh).
+FROM oven/bun:1 AS bun
+
+FROM ubuntu:24.04 AS build
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      git cmake build-essential libcurl4-openssl-dev ca-certificates && \
+      rm -rf /var/lib/apt/lists/*
+WORKDIR /src
+COPY llama.cpp/ /src/
+# llama-server for standalone local inference. CURL off (model is local),
+# RPC on (harmless; keeps the build identical to the pinned protocol family).
+RUN cmake -B build -DGGML_RPC=ON -DLLAMA_CURL=OFF -DBUILD_SHARED_LIBS=OFF \
+      -DGGML_NATIVE=ON -DLLAMA_BUILD_TESTS=OFF -DLLAMA_BUILD_EXAMPLES=OFF \
+      -DLLAMA_BUILD_SERVER=ON \
+ && cmake --build build --config Release -j"$(nproc)" --target llama-server
+
+FROM ubuntu:24.04
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      ca-certificates libgomp1 curl && rm -rf /var/lib/apt/lists/*
+COPY --from=build /src/build/bin/llama-server /usr/local/bin/llama-server
+COPY --from=bun /usr/local/bin/bun /usr/local/bin/bun
+WORKDIR /app
+COPY sin-harness/ /app/
+COPY model.gguf /app/model.gguf
+COPY docker/node-entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh && mkdir -p /app/data/keys /app/data-docker
+
+ENV NODE_PORT=9301
+ENV LLAMA_HOST=127.0.0.1
+ENV LLAMA_PORT=8081
+ENV CTX_SIZE=2048
+EXPOSE 9301
+ENTRYPOINT ["/entrypoint.sh"]

@@ -1,0 +1,12 @@
+{
+  "id": "gate-2026-08-26-285b232b5b",
+  "date": "2026-08-26T13:22:03.228Z",
+  "knowledgeSha": "285b232b5b2d294ccf5a739f79e2a17d79aa41d2",
+  "baseModel": "/app/model.gguf",
+  "suiteSeed": 20260807,
+  "instanceCount": 6,
+  "oldScore": 0.5833333333333334,
+  "newScore": 0.75,
+  "decision": "keep",
+  "signature": "DW+m539qx+QDm71ixQYLbWKj5/Tu6n3x/rn0hQkHfw0kdcgT0zPs+Pi0b8tcgr0DdCLY1uKoLcJjY48SK6S9Aw=="
+}

@@ -29,7 +29,17 @@ import { runGate } from "../loop/gate.ts";
 
 const CFG = await loadConfig();
 const NODE_PORTS = CFG.mesh.nodePorts; // host-mapped: 9201..9203
-const COMPOSE = ["docker", "compose", "-f", resolveFromRoot("compose.yaml")];
+// Sovereign mode (SIN_MESH_MODE=sovereign): three fully isolated sites
+// (compose.sovereign.yaml), each with its OWN llama-server + baked-in weights;
+// the host runs NO model. Node containers are independent of the host.
+const SOVEREIGN = process.env.SIN_MESH_MODE === "sovereign";
+const COMPOSE = SOVEREIGN
+  ? ["compose", "-f", resolveFromRoot("compose.yaml"), "-f", resolveFromRoot("compose.sovereign.yaml")]
+  : ["compose", "-f", resolveFromRoot("compose.yaml")];
+/** Container names of the three mesh nodes in the active topology. */
+const NODE_CONTAINERS = SOVEREIGN
+  ? ["sin-site-vienna", "sin-site-milan", "sin-site-munich"]
+  : ["sin-rpc-1", "sin-rpc-2", "sin-rpc-3"];
 const EMAIL_PII = "ivan.horvat@primjer.hr";
 
 interface SummaryRow {
@@ -50,7 +60,7 @@ function docker(...args: string[]): string {
 }
 
 function compose(...args: string[]): string {
-  return docker("compose", "-f", resolveFromRoot("compose.yaml"), ...args);
+  return docker(...COMPOSE, ...args);
 }
 
 async function postJson<T>(url: string, body: unknown): Promise<T> {
@@ -100,12 +110,20 @@ function seedEvents(nodeId: string) {
 
 beforeAll(async () => {
   // --- bring up containers (idempotent) ------------------------------------
-  compose("up", "-d");
+  if (SOVEREIGN) {
+    // isolated-site topology: boot ONLY the sovereign nodes; the old rpc/node
+    // services must stay DOWN (memory fence: they'd double-count VM RAM).
+    compose("up", "-d", "sovereign-n1", "sovereign-n2", "sovereign-n3");
+    // n1's baked-in llama-server is published on host :8081 and doubles as the
+    // trust plane's L0 — there is NO host-native model process.
+  } else {
+    compose("up", "-d");
+  }
 
   // --- boot the large MoE across the rpc shards ----------------------------
   const pidfile = resolveFromRoot("data/mesh-model.pid");
   const up = await fetch("http://127.0.0.1:8081/health").then((r) => r.ok).catch(() => false);
-  if (!up) {
+  if (!up && !SOVEREIGN) {
     const res = spawnSync(resolveFromRoot("scripts/start-mesh-model.sh"), {
       encoding: "utf8",
       timeout: 600_000,
@@ -141,17 +159,26 @@ describe("P0a-docker end-to-end acceptance (large MoE split across small contain
     //   olmoe        — full acceptance loop at practical throughput
     expect(/qwen3\.8|olmoe/i.test(m.name)).toBe(true);
     // proof of distribution: each small shard holds real weights (>2 GiB RSS)
-    for (const c of ["sin-rpc-1", "sin-rpc-2", "sin-rpc-3"]) {
+    for (const c of NODE_CONTAINERS) {
       const stats = docker(
         "stats", "--no-stream", "--format", "{{.MemUsage}}", c,
       ).trim();
       const memStr = stats.split("/")[0]!.trim();
       const value = parseFloat(memStr); // e.g. "2.769GiB"
       const mib = memStr.includes("GiB") ? value * 1024 : value;
-      // threshold proves REAL weights resident (~33 MiB when empty); OLMoE
-      // even-split puts ~1.8 GiB per shard, Qwen3.8 split ~7 GiB
-      expect(mib, `${c} holds shard weights (${stats})`).toBeGreaterThan(1024);
+      // threshold proves REAL weights resident (~33 MiB when empty);
+      // sovereign sites bake Q4_K_M (~4.5 GiB resident on CPU)
+      expect(mib, `${c} holds weights (${stats})`).toBeGreaterThan(
+        SOVEREIGN ? 3000 : 1024,
+      );
       console.log(`[shard] ${c}: ${stats}`);
+    }
+    if (SOVEREIGN) {
+      summary.push({
+        step: "1c sovereign isolation",
+        result: "ok",
+        detail: "3 self-contained sites: own llama-server + weights + keys; no host model",
+      });
     }
     // EXPERT-SPLIT mode: prove per-layer expert tensors were PINNED to the
     // intended shards. llama-server -lv 5 logs one line per overridden
@@ -374,7 +401,7 @@ describe("P0a-docker end-to-end acceptance (large MoE split across small contain
       chaos: 2,
       chaosAtStart: true, // deterministic: victim dead before dispatch begins
       onExternalChaos: (_nodeId) => {
-        compose("stop", "node-n3"); // container death, discovered via failed fetch
+        compose("stop", SOVEREIGN ? "sovereign-n3" : "node-n3"); // container death, discovered via failed fetch
       },
     });
     expect(res.accepted).toBe(true);
@@ -382,7 +409,7 @@ describe("P0a-docker end-to-end acceptance (large MoE split across small contain
     expect(res.requeues).toBeGreaterThan(0);
     expect(res.failedInstances).toBe(0);
     // bring the dead node back for any later steps
-    compose("start", "node-n3");
+    compose("start", SOVEREIGN ? "sovereign-n3" : "node-n3");
     summary.push({
       step: "7 churn drill (docker stop n3)",
       result: "ok",

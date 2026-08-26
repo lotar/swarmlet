@@ -1,0 +1,56 @@
+# ─── SOVEREIGN NODES — fully isolated European sites (override file) ───────
+# Usage:
+#   docker compose -f compose.yaml -f compose.sovereign.yaml up -d sovereign-n1 sovereign-n2 sovereign-n3
+#
+# Each container is a COMPLETE node: bun harness + LOCAL llama-server +
+# baked-in weights + own signing keys/sqlite. Zero host dependencies: no bind
+# mounts, no host.docker.internal. Coordinator reaches only published ports
+# over the simulated WAN (NODE_RTT_MS per city).
+#
+#   Vienna n1: RTT 12ms   Milan n2: RTT 16ms   Munich n3: RTT 22ms
+#
+# Fence math (VM 28GB/6cpu): 3 x 7g mem = 21g << 28g; 3 x 2 cpu = 6.
+# The rpc/node services from compose.yaml must be STOPPED while sovereigns run.
+x-sovereign-common: &sovereign-common
+  image: sin/sovereign-node:latest
+  restart: unless-stopped
+  mem_limit: 7g
+  memswap_limit: 7g          # swap disabled — absolute fence (see compose.yaml rpc comment)
+  cpus: 2.0
+
+services:
+  sovereign-n1:
+    <<: *sovereign-common
+    container_name: sin-site-vienna
+    environment:
+      NODE_ID: "n1"
+      NODE_PORT: "9301"
+      LLAMA_PORT: "8081"
+      # bind all interfaces so the published :8081 reaches the trust plane;
+      # safe: container netns isolates it, only this port is published
+      LLAMA_HOST: "0.0.0.0"
+      CTX_SIZE: "2048"
+      NODE_RTT_MS: "12"        # Zagreb <-> Vienna fiber RTT
+    ports: ["9301:9301", "8081:8081"]   # n1 also serves the trust plane's L0
+
+  sovereign-n2:
+    <<: *sovereign-common
+    container_name: sin-site-milan
+    environment:
+      NODE_ID: "n2"
+      NODE_PORT: "9302"
+      LLAMA_PORT: "8081"
+      CTX_SIZE: "2048"
+      NODE_RTT_MS: "16"        # Zagreb <-> Milan fiber RTT
+    ports: ["9302:9302"]
+
+  sovereign-n3:
+    <<: *sovereign-common
+    container_name: sin-site-munich
+    environment:
+      NODE_ID: "n3"
+      NODE_PORT: "9303"
+      LLAMA_PORT: "8081"
+      CTX_SIZE: "2048"
+      NODE_RTT_MS: "22"        # Zagreb <-> Munich fiber RTT
+    ports: ["9303:9303"]

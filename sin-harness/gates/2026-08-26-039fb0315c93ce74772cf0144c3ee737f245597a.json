@@ -1,0 +1,12 @@
+{
+  "id": "gate-2026-08-26-039fb0315c",
+  "date": "2026-08-26T13:22:57.474Z",
+  "knowledgeSha": "039fb0315c93ce74772cf0144c3ee737f245597a",
+  "baseModel": "/app/model.gguf",
+  "suiteSeed": 20260807,
+  "instanceCount": 6,
+  "oldScore": 0.9166666666666666,
+  "newScore": 0,
+  "decision": "revert",
+  "signature": "H7yc/T2KwL8auYGbtGI95YJRi81ZElC6rlLOG16U1JnqNcMgNpxHJP/FTzVSXFw1jxjzEnwpkULbG2evK2+vAw=="
+}
