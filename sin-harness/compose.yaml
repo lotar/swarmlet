@@ -29,6 +29,9 @@ x-rpc-common: &rpc-common
   # VM enters a swap death-spiral that has taken down the macOS host:
   #   3 x 7g mem = 21g << 28g VM;  3 x 1.5 cpu + 3 x 0.5 (nodes) = 6 cpus
   mem_limit: 7g           # "small hardware" hard caps — the big MoE must FIT
+  memswap_limit: 7g       # = mem_limit: swap DISABLED. Without this a shard can
+                          # balloon to 14g swap-backed → 42g aggregate → VM
+                          # swap death-spiral → macOS kernel panic.
   cpus: 1.5
   healthcheck:
     test: ["CMD", "nc", "-z", "127.0.0.1", "50052"]
@@ -74,6 +77,7 @@ services:
       NODE_RTT_MS: ${NODE_RTT_MS:-15}
       SIN_L0_TIMEOUT_MS: "900000"
     mem_limit: 256m
+    memswap_limit: 256m   # no swap: fence must be absolute (see x-rpc-common)
     cpus: 0.5
     stop_grace_period: 3s
 
@@ -89,6 +93,7 @@ services:
       NODE_RTT_MS: ${NODE_RTT_MS:-15}
       SIN_L0_TIMEOUT_MS: "900000"
     mem_limit: 256m
+    memswap_limit: 256m   # no swap: fence must be absolute (see x-rpc-common)
     cpus: 0.5
     stop_grace_period: 3s
 
@@ -104,5 +109,6 @@ services:
       NODE_RTT_MS: ${NODE_RTT_MS:-15}
       SIN_L0_TIMEOUT_MS: "900000"
     mem_limit: 256m
+    memswap_limit: 256m   # no swap: fence must be absolute (see x-rpc-common)
     cpus: 0.5
     stop_grace_period: 3s

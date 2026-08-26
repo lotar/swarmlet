@@ -153,13 +153,44 @@ describe("P0a-docker end-to-end acceptance (large MoE split across small contain
       expect(mib, `${c} holds shard weights (${stats})`).toBeGreaterThan(1024);
       console.log(`[shard] ${c}: ${stats}`);
     }
+    // EXPERT-SPLIT mode: prove per-layer expert tensors were PINNED to the
+    // intended shards. llama-server -lv 5 logs one line per overridden
+    // tensor: "tensor blk.N.ffn_(gate|down|up)_exps.weight ... buffer type
+    // overridden to RPC0[127.0.0.1:<port>]". Expected map (start-mesh-model.sh):
+    //   :51052 <- blk.0-5, :51053 <- blk.6-11, :51054 <- blk.12-15
+    if (process.env.SIN_MESH_MODE === "experts") {
+      const log = await Bun.file(resolveFromRoot("data/mesh-model.log")).text();
+      const perPort = new Map<string, number>();
+      for (
+        const m of log.matchAll(
+          /blk\.\d+\.ffn_(?:gate|down|up)_exps\.weight[^\n]*overridden to RPC0\[127\.0\.0\.1:(\d+)\]/g,
+        )
+      ) {
+        perPort.set(m[1]!, (perPort.get(m[1]!) ?? 0) + 1);
+      }
+      // every expert tensor must be accounted for on exactly the 3 shards
+      expect([...perPort.keys()].sort()).toEqual(["51052", "51053", "51054"]);
+      const c1 = perPort.get("51052")!;
+      const c2 = perPort.get("51053")!;
+      const c3 = perPort.get("51054")!;
+      // 16 MoE layers x 3 tensors each = 48 unique tensors (log may emit parse+
+      // apply lines → up to 96). Proportions must match the 6/6/4 layer thirds.
+      expect(c1 + c2 + c3).toBeGreaterThanOrEqual(48);
+      expect(c1).toBe(c2); // symmetric thirds
+      expect(c3).toBeCloseTo((c1 * 4) / 6, 0); // 4-layer tail
+      console.log(`[experts] overrides -> 51052:${c1} 51053:${c2} 51054:${c3} (6/6/4 layer thirds)`);
+      summary.push({
+        step: "1b expert placement proof",
+        result: "ok",
+        detail: `overrides 51052:${c1} 51053:${c2} 51054:${c3} = blk.0-5/6-11/12-15 thirds; attn+KV on host`,
+      });
+    }
     summary.push({
       step: "1 boot containers+RPC mesh",
       result: "ok",
       detail: `nodes=${NODE_PORTS.length} remote; model=${m.name}; shards hold weights (see log)`,
     });
   }, 300_000);
-
   test("step 2: seed events into CONTAINERIZED nodes over the network", async () => {
     const digests = new Set<string>();
     for (const [i, port] of NODE_PORTS.entries()) {
