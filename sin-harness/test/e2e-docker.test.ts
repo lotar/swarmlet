@@ -29,17 +29,30 @@ import { runGate } from "../loop/gate.ts";
 
 const CFG = await loadConfig();
 const NODE_PORTS = CFG.mesh.nodePorts; // host-mapped: 9201..9203
-// Sovereign mode (SIN_MESH_MODE=sovereign): three fully isolated sites
-// (compose.sovereign.yaml), each with its OWN llama-server + baked-in weights;
-// the host runs NO model. Node containers are independent of the host.
-const SOVEREIGN = process.env.SIN_MESH_MODE === "sovereign";
+const MODE = process.env.SIN_MESH_MODE ?? "rpc";
+// Sovereign: engine+weights live inside each container (CPU, zero host model).
+const SOVEREIGN = MODE === "sovereign";
+// GPU simulation: controller/keys/sqlite stay isolated per container; each site
+// owns one dedicated native Metal sidecar (separate process/model/KV), while all
+// three logical GPUs share this Mac's one physical M5 GPU.
+const GPU_SIM = MODE === "gpu-sim";
+const ISOLATED = SOVEREIGN || GPU_SIM;
 const COMPOSE = SOVEREIGN
   ? ["compose", "-f", resolveFromRoot("compose.yaml"), "-f", resolveFromRoot("compose.sovereign.yaml")]
-  : ["compose", "-f", resolveFromRoot("compose.yaml")];
+  : GPU_SIM
+    ? ["compose", "-f", resolveFromRoot("compose.yaml"), "-f", resolveFromRoot("compose.gpu-sim.yaml")]
+    : ["compose", "-f", resolveFromRoot("compose.yaml")];
 /** Container names of the three mesh nodes in the active topology. */
 const NODE_CONTAINERS = SOVEREIGN
   ? ["sin-site-vienna", "sin-site-milan", "sin-site-munich"]
-  : ["sin-rpc-1", "sin-rpc-2", "sin-rpc-3"];
+  : GPU_SIM
+    ? ["sin-gpu-vienna", "sin-gpu-milan", "sin-gpu-munich"]
+    : ["sin-rpc-1", "sin-rpc-2", "sin-rpc-3"];
+const NODE_SERVICES = SOVEREIGN
+  ? ["sovereign-n1", "sovereign-n2", "sovereign-n3"]
+  : GPU_SIM
+    ? ["gpu-n1", "gpu-n2", "gpu-n3"]
+    : ["node-n1", "node-n2", "node-n3"];
 const EMAIL_PII = "ivan.horvat@primjer.hr";
 
 interface SummaryRow {
@@ -110,12 +123,18 @@ function seedEvents(nodeId: string) {
 
 beforeAll(async () => {
   // --- bring up containers (idempotent) ------------------------------------
-  if (SOVEREIGN) {
-    // isolated-site topology: boot ONLY the sovereign nodes; the old rpc/node
-    // services must stay DOWN (memory fence: they'd double-count VM RAM).
-    compose("up", "-d", "sovereign-n1", "sovereign-n2", "sovereign-n3");
-    // n1's baked-in llama-server is published on host :8081 and doubles as the
-    // trust plane's L0 — there is NO host-native model process.
+  if (ISOLATED) {
+    // isolated-site topologies: boot ONLY active services; old rpc/node services
+    // stay DOWN (memory fence: they'd double-count VM RAM).
+    if (GPU_SIM) {
+      const r = spawnSync(resolveFromRoot("scripts/start-gpu-sites.sh"), {
+        encoding: "utf8", timeout: 600_000,
+      });
+      if (r.status !== 0) throw new Error(`start-gpu-sites failed:\n${r.stdout}\n${r.stderr}`);
+    }
+    compose("up", "-d", ...NODE_SERVICES);
+    // sovereign n1's baked-in engine OR GPU n1's dedicated Metal sidecar is
+    // published on host :8081 and doubles as the trust plane's L0.
   } else {
     compose("up", "-d");
   }
@@ -123,7 +142,7 @@ beforeAll(async () => {
   // --- boot the large MoE across the rpc shards ----------------------------
   const pidfile = resolveFromRoot("data/mesh-model.pid");
   const up = await fetch("http://127.0.0.1:8081/health").then((r) => r.ok).catch(() => false);
-  if (!up && !SOVEREIGN) {
+  if (!up && !ISOLATED) {
     const res = spawnSync(resolveFromRoot("scripts/start-mesh-model.sh"), {
       encoding: "utf8",
       timeout: 600_000,
@@ -168,8 +187,8 @@ describe("P0a-docker end-to-end acceptance (large MoE split across small contain
       const mib = memStr.includes("GiB") ? value * 1024 : value;
       // threshold proves REAL weights resident (~33 MiB when empty);
       // sovereign sites bake Q4_K_M (~4.5 GiB resident on CPU)
-      expect(mib, `${c} holds weights (${stats})`).toBeGreaterThan(
-        SOVEREIGN ? 3000 : 1024,
+      expect(mib, `${c} holds weights/controller (${stats})`).toBeGreaterThan(
+        SOVEREIGN ? 3000 : GPU_SIM ? 5 : 1024,
       );
       console.log(`[shard] ${c}: ${stats}`);
     }
@@ -178,6 +197,19 @@ describe("P0a-docker end-to-end acceptance (large MoE split across small contain
         step: "1c sovereign isolation",
         result: "ok",
         detail: "3 self-contained sites: own llama-server + weights + keys; no host model",
+      });
+    }
+    if (GPU_SIM) {
+      const ids: string[] = [];
+      for (const port of [8081, 18082, 18083]) {
+        const r = await getJson<{ data: Array<{ id: string }> }>(`http://127.0.0.1:${port}/v1/models`);
+        ids.push(r.data[0]?.id ?? "");
+      }
+      expect(ids).toEqual(["OLMoE-GPU-n1", "OLMoE-GPU-n2", "OLMoE-GPU-n3"]);
+      summary.push({
+        step: "1d GPU site simulation",
+        result: "ok",
+        detail: "3 dedicated Metal processes: separate model mappings/KV/ports; one shared physical M5 GPU",
       });
     }
     // EXPERT-SPLIT mode: prove per-layer expert tensors were PINNED to the
@@ -401,7 +433,14 @@ describe("P0a-docker end-to-end acceptance (large MoE split across small contain
       chaos: 2,
       chaosAtStart: true, // deterministic: victim dead before dispatch begins
       onExternalChaos: (_nodeId) => {
-        compose("stop", SOVEREIGN ? "sovereign-n3" : "node-n3"); // container death, discovered via failed fetch
+        compose("stop", NODE_SERVICES[2]!); // controller death, discovered via failed fetch
+        if (GPU_SIM) {
+          // Full GPU-site failure: kill Munich's dedicated model/KV process too.
+          const r = spawnSync(resolveFromRoot("scripts/stop-gpu-sites.sh"), ["n3"], {
+            encoding: "utf8", timeout: 30_000,
+          });
+          if (r.status !== 0) throw new Error(`stop GPU n3 failed: ${r.stderr}`);
+        }
       },
     });
     expect(res.accepted).toBe(true);
@@ -409,7 +448,13 @@ describe("P0a-docker end-to-end acceptance (large MoE split across small contain
     expect(res.requeues).toBeGreaterThan(0);
     expect(res.failedInstances).toBe(0);
     // bring the dead node back for any later steps
-    compose("start", SOVEREIGN ? "sovereign-n3" : "node-n3");
+    if (GPU_SIM) {
+      const r = spawnSync(resolveFromRoot("scripts/start-gpu-sites.sh"), ["n3"], {
+        encoding: "utf8", timeout: 600_000,
+      });
+      if (r.status !== 0) throw new Error(`restart GPU n3 failed: ${r.stderr}`);
+    }
+    compose("start", NODE_SERVICES[2]!);
     summary.push({
       step: "7 churn drill (docker stop n3)",
       result: "ok",

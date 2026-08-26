@@ -1,0 +1,45 @@
+# GPU performance simulation for sovereign European nodes.
+#
+# Docker Desktop's WebGPU CDI reaches Metal (verified), but its Dawn-2024 API
+# is incompatible with pinned llama.cpp's Dawn-2026 WebGPU backend. Until that
+# backend is ported, each Docker node gets a dedicated native Metal sidecar:
+# separate process, model mapping, KV cache, port and lifecycle; one-to-one with
+# the container. All three logical sites share this Mac's one physical GPU.
+x-gpu-site-common: &gpu-site-common
+  image: sin/sovereign-node:latest
+  restart: unless-stopped
+  mem_limit: 512m          # controller only; model/KV live in Metal sidecar
+  memswap_limit: 512m
+  cpus: 0.5
+  extra_hosts: ["host.docker.internal:host-gateway"]
+
+services:
+  gpu-n1:
+    <<: *gpu-site-common
+    container_name: sin-gpu-vienna
+    environment:
+      NODE_ID: "n1"
+      NODE_PORT: "9301"
+      NODE_RTT_MS: "12"
+      EXTERNAL_L0_URL: "http://host.docker.internal:8081"
+    ports: ["9301:9301"]
+
+  gpu-n2:
+    <<: *gpu-site-common
+    container_name: sin-gpu-milan
+    environment:
+      NODE_ID: "n2"
+      NODE_PORT: "9302"
+      NODE_RTT_MS: "16"
+      EXTERNAL_L0_URL: "http://host.docker.internal:18082"
+    ports: ["9302:9302"]
+
+  gpu-n3:
+    <<: *gpu-site-common
+    container_name: sin-gpu-munich
+    environment:
+      NODE_ID: "n3"
+      NODE_PORT: "9303"
+      NODE_RTT_MS: "22"
+      EXTERNAL_L0_URL: "http://host.docker.internal:18083"
+    ports: ["9303:9303"]

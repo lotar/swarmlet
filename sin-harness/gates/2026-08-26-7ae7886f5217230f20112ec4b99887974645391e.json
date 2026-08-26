@@ -1,0 +1,12 @@
+{
+  "id": "gate-2026-08-26-7ae7886f52",
+  "date": "2026-08-26T19:18:02.513Z",
+  "knowledgeSha": "7ae7886f5217230f20112ec4b99887974645391e",
+  "baseModel": "OLMoE-GPU-n1",
+  "suiteSeed": 20260807,
+  "instanceCount": 6,
+  "oldScore": 0.3333333333333333,
+  "newScore": 0,
+  "decision": "revert",
+  "signature": "9EIaJquJiR0GTIjNWsvZASGdj3bSDGKPDH8+0HDGHM2HJ4bWpqpAorqYflVvKdHqgW5dNceO0YFoZ8bU2i9NBw=="
+}
