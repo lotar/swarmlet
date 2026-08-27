@@ -153,33 +153,39 @@ experts/layer, top-10, hidden width 2560 and expert FFN width 640. GGUF stores
 the expert dimension first in its raw data view, so one expert can be sliced
 without reading the complete fused bank.
 
-The PoC evaluates the real layer-0 router, extracts only its selected top-10
-actual expert slices, distributes them 4/3/3, executes real SiLU-gated FFNs and
-compares against a streamed monolithic routed-FFN reference.
+The service evaluates the real layer-0 router, extracts only its selected
+top-10 actual expert slices, distributes them 4/3/3, executes real SiLU-gated
+FFNs, performs deterministic routed reduction, then adds the actual local Qwen
+shared expert and sigmoid gate. It compares the complete FFN branch against a
+streamed monolithic reference.
 
-| Qwen real-weight result | Measurement |
+| Qwen real-weight service result | Measurement |
 |---|---:|
 | Expert IDs selected by real router | 10 of 512 |
-| Dequantized expert weights resident | 187.5 MiB |
-| Distributed/reference max error | 0 |
-| Layer-0 batch 1, no added delay | 9.4 ms |
-| Layer-0 batch 1, +10 ms delay | 22.7 ms |
-| Projected 48-layer +10ms floor | 1.09 s/token (0.92 tok/s) |
-| Peak proof RSS / swap growth | 501.25 MiB / 0 MiB |
-| Owner death/restart | fail closed / exact parity restored |
+| Dequantized routed expert weights resident | 187.5 MiB |
+| Complete FFN distributed/reference max error | 0 |
+| LAN layer API, batch 1 | 19.3 ms |
+| EU 12/16/22ms layer API, batch 1 | 39.2 ms |
+| EU layer API, batch 16 | 256.5 ms / 62.4 tok/s aggregate |
+| Projected 48-layer EU floor | 1.88 s/token (0.53 tok/s) |
+| Peak sampled aggregate RSS delta / swap | 696.0 MiB / 0 MiB |
+| Content-bound epoch | enforced service→workers; unsigned PoC |
+| Stale/nonresident route | fails closed |
+| Owner death/restart | fails closed / exact parity restored |
 
-This proves real Qwen tensor slicing and expert math, not full-model logits: it
-omits attention/SSM, shared expert, residual, KV and sampling.
+This proves a reusable complete Qwen FFN service boundary, not full-model
+logits: attention/SSM, residual, KV and sampling remain in the skeleton runtime.
 
 ## Staged implementation plan
 
 1. **Done — protocol semantics:** disjoint expert ownership, true top-k routing,
    batched dispatch/reduce, parity, WAN barriers and fail-closed churn.
-2. **Done — small real MoE weights:** Qwen layer-0 actual router + top-10 actual
-   Q4 expert slices; exact routed-FFN parity under a 501-MiB proof envelope.
-3. **Next — graph integration:** intercept Qwen's MoE boundary in a small layer
-   subset, replace local fused expert execution with the expert service, and
-   compare full layer/logits against the unmodified model.
+2. **Done — real MoE service:** Qwen layer-0 actual router + top-10 Q4
+   expert slices + shared expert/gate; exact batch parity under a continuously
+   measured 696-MiB peak aggregate RSS delta.
+3. **Next — llama graph integration:** intercept Qwen's `build_moe_ffn` boundary,
+   replace local fused execution with `/v1/ffn`, and compare full layer/logits
+   against the unmodified model.
 4. **Regional LAN cell:** binary activation frames, persistent connections,
    one packed dispatch/return per owner/layer, continuous batching, p50/p99
    barrier telemetry, exact replicas and signed placement epochs.

@@ -1,51 +1,75 @@
-# Qwen3.8 Flash Next real-weight expert-sharding PoC
+# Qwen3.8 Flash Next real-weight expert service
 
-Uses the already-present local GGUF without loading a second model. It reads
-metadata plus explicitly selected expert slices from layer 0.
+A reusable layer-0 FFN service built from the already-present local GGUF. It
+never loads a second full model: only the layer-0 router, shared expert, and the
+router-selected expert slices are touched.
 
-Local GGUF metadata:
+Local metadata:
 
-- architecture: `qwen4exp` (Qwen3.8 Flash Next preview of Qwen4)
-- 48 layers
-- 512 routed experts/layer
-- top-10 routing
-- hidden width 2560
-- expert FFN width 640
-- model file set: `UD-Q4_K_XL`, 104 GB on disk
+- architecture `qwen4exp` / Qwen3.8 Flash Next
+- 48 layers, 512 routed experts/layer, top-10
+- hidden width 2560, expert FFN width 640
+- `UD-Q4_K_XL`, 104 GB checkpoint already on this machine
 
-Run:
+## Run
 
 ```bash
 cd sin-harness
-python3 proofs/qwen-flash-experts/poc.py
-# or
 bun run test:qwen-experts
 ```
 
-The PoC:
+Standalone service:
 
-1. memory-maps GGUF shard 2 read-only;
-2. evaluates the real layer-0 512x2560 router on a deterministic activation;
-3. takes its actual top-10 experts;
-4. partitions those expert IDs 4/3/3 among three Python processes;
-5. each worker dequantizes only its own gate/up/down slices;
-6. dispatches real 2560-wide activations and reduces weighted outputs;
-7. checks exact parity against a streamed monolithic layer-0 reference;
-8. benchmarks batch 1/4/16 with 0/10ms request delay;
-9. kills one selected expert owner, requires fail-closed behavior, restarts the
-   exact owner, and verifies parity again;
-10. asserts proof RSS <900 MiB and swap growth <512 MiB.
+```bash
+PYTHONPATH=/Users/lotar/projects/local-llm/llama.cpp-rpc/gguf-py \
+python3 proofs/qwen-flash-experts/server.py \
+  --shard /Users/lotar/projects/local-llm/models/qwen3.8-flash-next/UD-Q4_K_XL/Qwen3.8-Flash-Next-UD-Q4_K_XL-00002-of-00005.gguf
+```
 
-Measured result on this machine:
+Endpoints (loopback only):
 
-- selected IDs: `194,255,140,417,298,119,374,259,21,284`
-- resident dequantized expert bytes: 196,608,000 (~187.5 MiB)
-- parity max absolute / relative error: 0 / 0
-- peak proof RSS: 501.25 MiB; swap growth: 0 MiB
-- actual one-layer top-10 service, batch 1: 9.4 ms LAN, 22.7 ms at +10ms
-- projected 48-layer +10ms barrier floor: ~1.09 s/token (~0.92 tok/s)
+- `GET /health`
+- `GET /manifest` — model/layer/top-k, selected IDs, ownership, epoch, profiles
+- `POST /v1/ffn` — `{placementEpoch, activations:[[2560 floats]], profile:"lan"|"eu"}`
+- `POST /admin/stop-owner` / `/admin/start-owner` — `{placementEpoch,nodeId}` churn drill
+- `POST /shutdown`
 
-This proves actual Qwen expert slicing, ownership, execution and reduction. It
-is intentionally only the routed MoE component of layer 0: no attention/SSM,
-shared expert, residual, KV, sampling, or full-model logits. Full-model parity
-requires runtime integration at the graph boundary, not this standalone PoC.
+## Implementation
+
+1. Real layer-0 router selects actual top-10 IDs.
+2. A content-bound placement epoch (router/shared/selected expert raw digests)
+   partitions IDs 4/3/3 and is enforced at service and worker boundaries.
+   The PoC epoch is intentionally unsigned; production manifests require Ed25519.
+   Fetch the required value from `GET /manifest` before every FFN/admin request.
+3. Three worker processes dequantize only owned gate/up/down slices.
+4. Coordinator dispatches 2560-wide activations to owners in parallel.
+5. Results reduce in ascending expert-ID order.
+6. The actual local Qwen shared expert and sigmoid gate are added.
+7. Routes outside the resident placement epoch fail with 409.
+8. Owner loss fails with 503; exact restart restores parity.
+
+## Measured result
+
+Selected IDs: `194,255,140,417,298,119,374,259,21,284`.
+
+| Profile | Batch | API median | Internal FFN | Aggregate throughput |
+|---|---:|---:|---:|---:|
+| LAN | 1 | 19.3 ms | 14.4 ms | 51.7 tok/s |
+| LAN | 4 | 65.2 ms | 51.9 ms | 61.4 tok/s |
+| LAN | 16 | 239.6 ms | 189.6 ms | 66.8 tok/s |
+| EU 12/16/22ms | 1 | 39.2 ms | 35.0 ms | 25.5 tok/s |
+| EU 12/16/22ms | 4 | 82.7 ms | 68.9 ms | 48.4 tok/s |
+| EU 12/16/22ms | 16 | 256.5 ms | 205.9 ms | 62.4 tok/s |
+
+- complete layer-0 FFN parity (routed + shared), batch 1 and rank-varied batch 4: max error `0`
+- projected 48-layer EU barrier floor: 1.88 s/token, **0.53 tok/s**
+- expert weights resident: ~187.5 MiB
+- continuously sampled peak aggregate RSS delta: 696.0 MiB (<900 MiB cap)
+- final aggregate RSS delta: 661.5 MiB; swap growth: 0 MiB
+- no Docker/model server started
+
+The projection excludes attention/SSM, residual, KV and sampling, so complete
+model decode would be slower. The FFN formula is cross-checked against pinned
+`qwen3next.cpp`, but an independent llama.cpp graph-callback fixture remains the
+next integration gate. JSON is intentionally observable instrumentation;
+production needs packed FP16/FP8 binary frames and persistent connections.
