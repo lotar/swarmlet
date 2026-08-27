@@ -145,23 +145,51 @@ throughput, but serial decode latency remains dominated by layer barriers.
   explicit 1-GiB test abort cap;
 - all child processes terminated after the run.
 
+## Real-weight Qwen3.8 Flash Next proxy
+
+The next stage uses the already-resident `Qwen3.8 Flash Next UD-Q4_K_XL`
+checkpoint rather than Kimi weights. Header metadata gives 48 layers, 512
+experts/layer, top-10, hidden width 2560 and expert FFN width 640. GGUF stores
+the expert dimension first in its raw data view, so one expert can be sliced
+without reading the complete fused bank.
+
+The PoC evaluates the real layer-0 router, extracts only its selected top-10
+actual expert slices, distributes them 4/3/3, executes real SiLU-gated FFNs and
+compares against a streamed monolithic routed-FFN reference.
+
+| Qwen real-weight result | Measurement |
+|---|---:|
+| Expert IDs selected by real router | 10 of 512 |
+| Dequantized expert weights resident | 187.5 MiB |
+| Distributed/reference max error | 0 |
+| Layer-0 batch 1, no added delay | 9.4 ms |
+| Layer-0 batch 1, +10 ms delay | 22.7 ms |
+| Projected 48-layer +10ms floor | 1.09 s/token (0.92 tok/s) |
+| Peak proof RSS / swap growth | 501.25 MiB / 0 MiB |
+| Owner death/restart | fail closed / exact parity restored |
+
+This proves real Qwen tensor slicing and expert math, not full-model logits: it
+omits attention/SSM, shared expert, residual, KV and sampling.
+
 ## Staged implementation plan
 
 1. **Done — protocol semantics:** disjoint expert ownership, true top-k routing,
    batched dispatch/reduce, parity, WAN barriers and fail-closed churn.
-2. **Small real MoE:** repack OLMoE or a tiny Mixtral fixture into one tensor per
-   expert; compare distributed logits against monolithic execution. Hard cap
-   model+runtime RSS before any load.
-3. **Regional LAN cell:** binary activation frames, persistent connections,
+2. **Done — small real MoE weights:** Qwen layer-0 actual router + top-10 actual
+   Q4 expert slices; exact routed-FFN parity under a 501-MiB proof envelope.
+3. **Next — graph integration:** intercept Qwen's MoE boundary in a small layer
+   subset, replace local fused expert execution with the expert service, and
+   compare full layer/logits against the unmodified model.
+4. **Regional LAN cell:** binary activation frames, persistent connections,
    one packed dispatch/return per owner/layer, continuous batching, p50/p99
    barrier telemetry, exact replicas and signed placement epochs.
-4. **16-GB hardware validation:** test native/fused MXFP4 kernels, 12-GiB weight
+5. **16-GB hardware validation:** test native/fused MXFP4 kernels, 12-GiB weight
    budget, 4-GiB runtime reserve, compressed MLA cache and exact target GPU SKU.
-5. **K3 metadata-only planner:** parse checkpoint indexes (not weights), emit a
+6. **K3 metadata-only planner:** parse checkpoint indexes (not weights), emit a
    signed `(layer,expert)->primary+replica` manifest and validate bin packing.
-6. **Frontier cell:** scale only after p99 layer network <1 ms, exact parity,
+7. **Frontier cell:** scale only after p99 layer network <1 ms, exact parity,
    hot-expert balancing, replica failover and cost criteria pass.
-7. **European federation:** deploy complete regional cells; route requests by
+8. **European federation:** deploy complete regional cells; route requests by
    locality/capacity. Consider contiguous coarse pipeline stages or speculative
    block verification only if complete replication is unaffordable.
 

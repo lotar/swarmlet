@@ -10,6 +10,7 @@
     "test": "bun test test/",
     "test:l0": "bun test test/l0.test.ts",
     "test:e2e": "bun test test/e2e.test.ts",
-    "test:tiny-moe": "bun test test/tiny-moe-distributed.test.ts"
+    "test:tiny-moe": "bun test test/tiny-moe-distributed.test.ts",
+    "test:qwen-experts": "python3 proofs/qwen-flash-experts/poc.py"
   }
 }
