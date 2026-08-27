@@ -20,7 +20,14 @@ It cannot be attached. DFlash is target-feature-conditioned and shares target
 embedding/LM-head semantics; a Flash-Next-specific drafter must be trained.
 
 The live `:8099` server has no speculative flags and its DFlash counters are
-zero. Current cumulative throughput (~8.27 tok/s) is not a controlled baseline.
+zero. Current cumulative throughput (~8.29 tok/s) is not a controlled baseline.
+
+The official Flash Next safetensors index does contain a one-layer native MTP
+head, omitted from the local GGUF. Remote safetensors headers (range reads only)
+show **4.856 GiB BF16** across 31 MTP tensors, dominated by 3.2-GiB gate/up and
+1.6-GiB down expert banks. It is architecture-matched and useful as a native
+MTP baseline/teacher, but it is not DFlash2: DFlash2 needs a separately trained
+five-layer block-diffusion drafter plus selector/convolution weights.
 
 ## DFlash2 evidence
 
@@ -110,9 +117,12 @@ the target; Europe routes whole requests among complete cells.
 ## Required runtime work
 
 1. Train Flash-Next-specific DFlash2: hidden 2560, 48 target layers, target
-   feature taps selected by experiment, block 8, selector/conv tensors.
-2. Rebase onto llama.cpp DFlash2 implementation (PR #27342 or successor); the
-   local `dfa0c0f` tree lacks selector/conv loading.
+   feature taps selected by experiment, block 8, selector/conv tensors. The
+   upstream 4.856-GiB native MTP can provide a matched baseline/teacher but
+   cannot be relabeled as DFlash2.
+2. **Runtime port compiled:** SHA-pinned PR #27342 applies cleanly to local
+   `dfa0c0f` and `llama-server` builds. Script:
+   `sin-harness/patches/apply-dflash2-pr27342.sh`. No compatible weights yet.
 3. Enable and validate Qwen4Exp recurrent rollback. Compile-checked patch:
    `sin-harness/patches/llama-qwen4exp-rs-rollback.patch`.
 4. Build 8 contiguous compute-balanced stage manifests, complete expert banks

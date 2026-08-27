@@ -25,6 +25,14 @@ The custom op transfers Metal activations to CPU, encodes FP16, calls
 `/v1/ffn-bin`, decodes FP16 output and resumes the graph. Service errors abort
 inference fail-closed rather than silently substituting local/wrong experts.
 
+## `apply-dflash2-pr27342.sh`
+
+Fetches a SHA-256-pinned upstream DFlash2 implementation patch, verifies it,
+and applies it only after `git apply --check`. It applied cleanly to the local
+`dfa0c0f` Qwen4Exp tree (alongside the external FFN hook), and `llama-server`
+compiled successfully with two build jobs. This ports runtime logic only; it
+does not create target-specific DFlash2 weights.
+
 ## `llama-qwen4exp-rs-rollback.patch`
 
 Compile-checked enablement of recurrent-state snapshots for Qwen4Exp. DFlash2
