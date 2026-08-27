@@ -11,6 +11,8 @@
     "test:l0": "bun test test/l0.test.ts",
     "test:e2e": "bun test test/e2e.test.ts",
     "test:tiny-moe": "bun test test/tiny-moe-distributed.test.ts",
-    "test:qwen-experts": "python3 proofs/qwen-flash-experts/poc.py"
+    "test:qwen-experts": "python3 proofs/qwen-flash-experts/poc.py",
+    "test:dflash-pipeline": "python3 proofs/dflash-pipeline/simulator.py",
+    "test:dflash-compat": "python3 proofs/dflash-pipeline/check_compat.py --expect-incompatible"
   }
 }

@@ -1,0 +1,15 @@
+diff --git a/src/llama-arch.cpp b/src/llama-arch.cpp
+index 07bf881..c9ae989 100644
+--- a/src/llama-arch.cpp
++++ b/src/llama-arch.cpp
+@@ -1076,6 +1076,10 @@ bool llm_arch_is_diffusion(const llm_arch & arch) {
+ 
+ bool llm_arch_supports_rs_rollback(const llm_arch & arch) {
+     switch (arch) {
++        // Qwen4Exp is hybrid recurrent/full-attention. DFlash/MTP block
++        // verification needs recurrent snapshots for lossless partial reject.
++        // Runtime validation is still required before enabling in production.
++        case LLM_ARCH_QWEN4EXP:
+         case LLM_ARCH_QWEN35:
+         case LLM_ARCH_QWEN35MOE:
+         case LLM_ARCH_DEEPSEEK4:
