@@ -1,0 +1,87 @@
+diff --git a/src/models/external-ffn.cpp b/src/models/external-ffn.cpp
+new file mode 100644
+index 0000000..f5425a1
+--- /dev/null
++++ b/src/models/external-ffn.cpp
+@@ -0,0 +1,42 @@
++#include "external-ffn.h"
++#include <arpa/inet.h>
++#include <netdb.h>
++#include <sys/socket.h>
++#include <unistd.h>
++#include <algorithm>
++#include <cerrno>
++#include <cstdio>
++#include <cstdlib>
++#include <cstring>
++#include <stdexcept>
++#include <string>
++#include <vector>
++
++namespace {
++struct config { std::string host; int port=9590; int layer=0; uint8_t profile=0; uint8_t epoch[32]{}; };
++static void put16(std::vector<uint8_t>&b,uint16_t v){b.push_back(v&255);b.push_back(v>>8);} 
++static uint16_t get16(const uint8_t*p){return uint16_t(p[0])|(uint16_t(p[1])<<8);} 
++static bool unhex(const char*s,uint8_t*out){if(!s||strlen(s)!=64)return false;for(int i=0;i<32;i++){char x[3]={s[2*i],s[2*i+1],0};char*e=nullptr;long v=strtol(x,&e,16);if(!e||*e)return false;out[i]=uint8_t(v);}return true;}
++static const config * cfg(){
++ static config c; static bool init=false,valid=false; if(init)return valid?&c:nullptr;init=true;
++ const char*u=getenv("SIN_EXTERNAL_FFN_URL"),*ep=getenv("SIN_EXTERNAL_FFN_EPOCH");if(!u||!ep)return nullptr;
++ std::string s=u,prefix="http://";if(s.rfind(prefix,0)!=0)return nullptr;s=s.substr(prefix.size());auto slash=s.find('/');if(slash!=std::string::npos)s=s.substr(0,slash);auto col=s.rfind(':');c.host=col==std::string::npos?s:s.substr(0,col);c.port=col==std::string::npos?80:std::stoi(s.substr(col+1));
++ if(const char*l=getenv("SIN_EXTERNAL_FFN_LAYER"))c.layer=std::stoi(l);if(const char*p=getenv("SIN_EXTERNAL_FFN_PROFILE"))c.profile=strcmp(p,"eu")==0?1:0;
++ valid=unhex(ep,c.epoch);return valid?&c:nullptr;
++}
++static void send_all(int fd,const uint8_t*p,size_t n){while(n){ssize_t k=send(fd,p,n,0);if(k<=0)throw std::runtime_error("send failed");p+=k;n-=size_t(k);}}
++static std::vector<uint8_t> http(const config&c,const std::vector<uint8_t>&body){
++ addrinfo hints{},*res=nullptr;hints.ai_family=AF_UNSPEC;hints.ai_socktype=SOCK_STREAM;std::string ps=std::to_string(c.port);if(getaddrinfo(c.host.c_str(),ps.c_str(),&hints,&res)!=0)throw std::runtime_error("dns failed");int fd=-1;for(auto*p=res;p;p=p->ai_next){fd=socket(p->ai_family,p->ai_socktype,p->ai_protocol);if(fd>=0&&connect(fd,p->ai_addr,p->ai_addrlen)==0)break;if(fd>=0)close(fd);fd=-1;}freeaddrinfo(res);if(fd<0)throw std::runtime_error("connect failed");
++ std::string h="POST /v1/ffn-bin HTTP/1.0\r\nHost: "+c.host+"\r\nContent-Type: application/octet-stream\r\nContent-Length: "+std::to_string(body.size())+"\r\n\r\n";send_all(fd,(const uint8_t*)h.data(),h.size());send_all(fd,body.data(),body.size());std::vector<uint8_t>all;uint8_t buf[65536];for(;;){ssize_t n=recv(fd,buf,sizeof(buf),0);if(n<0){close(fd);throw std::runtime_error("recv failed");}if(!n)break;all.insert(all.end(),buf,buf+n);}close(fd);
++ const char*sep="\r\n\r\n";auto it=std::search(all.begin(),all.end(),sep,sep+4);if(it==all.end())throw std::runtime_error("bad http response");std::string headers(all.begin(),it);if(headers.find(" 200 ")==std::string::npos)throw std::runtime_error("service HTTP error: "+headers.substr(0,headers.find("\r\n")));return std::vector<uint8_t>(it+4,all.end());
++}
++static float readv(const ggml_tensor*a,size_t i){if(a->type==GGML_TYPE_F32)return ((float*)a->data)[i];if(a->type==GGML_TYPE_F16)return ggml_fp16_to_fp32(((ggml_fp16_t*)a->data)[i]);throw std::runtime_error("external FFN input must be F32/F16");}
++static void writev(ggml_tensor*d,size_t i,float v){if(d->type==GGML_TYPE_F32)((float*)d->data)[i]=v;else if(d->type==GGML_TYPE_F16)((ggml_fp16_t*)d->data)[i]=ggml_fp32_to_fp16(v);else throw std::runtime_error("external FFN output type");}
++static void callback(ggml_tensor*dst,const ggml_tensor*a,int ith,int,void*ud){if(ith)return;try{
++ const config&c=*(const config*)ud;if(!ggml_is_contiguous(a)||a->ne[0]!=2560)throw std::runtime_error("bad external FFN tensor shape");uint16_t batch=uint16_t(ggml_nelements(a)/a->ne[0]);if(batch<1||batch>16)throw std::runtime_error("external FFN batch 1..16 only");
++ std::vector<uint8_t>b;b.insert(b.end(),{'Q','F','F','N'});b.push_back(1);b.push_back(c.profile);put16(b,batch);put16(b,2560);b.insert(b.end(),c.epoch,c.epoch+32);for(size_t i=0;i<size_t(batch)*2560;i++){ggml_fp16_t h=ggml_fp32_to_fp16(readv(a,i));const uint8_t*p=(const uint8_t*)&h;b.insert(b.end(),p,p+2);}auto r=http(c,b);
++ if(r.size()!=41+size_t(batch)*2560*2||memcmp(r.data(),"QFFR",4)||r[4]!=1||get16(r.data()+5)!=batch||get16(r.data()+7)!=2560||memcmp(r.data()+9,c.epoch,32))throw std::runtime_error("bad FFN frame");for(size_t i=0;i<size_t(batch)*2560;i++){ggml_fp16_t h;memcpy(&h,r.data()+41+2*i,2);writev(dst,i,ggml_fp16_to_fp32(h));}
++ }catch(const std::exception&e){fprintf(stderr,"external FFN fatal: %s\n",e.what());std::abort();}}
++}
++bool llama_external_ffn_enabled(int layer){const config*c=cfg();return c&&c->layer==layer;}
++ggml_tensor * llama_external_ffn_map(ggml_context*ctx,ggml_tensor*input,int layer){const config*c=cfg();if(!c||c->layer!=layer)return nullptr;return ggml_map_custom1(ctx,input,callback,1,(void*)c);}
+diff --git a/src/models/external-ffn.h b/src/models/external-ffn.h
+new file mode 100644
+index 0000000..b488bd3
+--- /dev/null
++++ b/src/models/external-ffn.h
+@@ -0,0 +1,8 @@
++#pragma once
++#include "ggml.h"
++
++// Experimental fail-closed Qwen FFN service hook.
++// Enabled only when SIN_EXTERNAL_FFN_URL + SIN_EXTERNAL_FFN_EPOCH are set and
++// layer matches SIN_EXTERNAL_FFN_LAYER (default 0).
++bool llama_external_ffn_enabled(int layer);
++ggml_tensor * llama_external_ffn_map(ggml_context * ctx, ggml_tensor * input, int layer);
+diff --git a/src/models/qwen4exp.cpp b/src/models/qwen4exp.cpp
+index f906af2..49ee89c 100644
+--- a/src/models/qwen4exp.cpp
++++ b/src/models/qwen4exp.cpp
+@@ -1,4 +1,5 @@
+ #include "models.h"
++#include "external-ffn.h"
+ #include "llama-impl.h"
+ #include "llama-memory-hybrid.h"
+ #include "llama-memory-recurrent.h"
+@@ -1374,6 +1375,14 @@ ggml_tensor * llama_model_qwen4exp::graph::build_layer_attn_linear(
+ }
+ 
+ ggml_tensor * llama_model_qwen4exp::graph::build_layer_ffn(ggml_tensor * cur, const int il) {
++    // Experimental service boundary: complete routed+shared FFN is evaluated by
++    // the signed Qwen expert cell. Disabled unless all SIN_EXTERNAL_FFN_* envs
++    // are present; unmodified behavior remains the default.
++    if (ggml_tensor * external = llama_external_ffn_map(ctx0, cur, il)) {
++        cb(external, "ffn_external", il);
++        return external;
++    }
++
+     ggml_tensor * moe_out =
+         build_moe_ffn(cur,
+             model.layers[il].ffn_gate_inp,

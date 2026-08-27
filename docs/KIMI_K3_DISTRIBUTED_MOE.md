@@ -164,14 +164,15 @@ streamed monolithic reference.
 | Expert IDs selected by real router | 10 of 512 |
 | Dequantized routed expert weights resident | 187.5 MiB |
 | Complete FFN distributed/reference max error | 0 |
-| LAN layer API, batch 1 | 19.3 ms |
-| EU 12/16/22ms layer API, batch 1 | 39.2 ms |
-| EU layer API, batch 16 | 256.5 ms / 62.4 tok/s aggregate |
-| Projected 48-layer EU floor | 1.88 s/token (0.53 tok/s) |
-| Peak sampled aggregate RSS delta / swap | 696.0 MiB / 0 MiB |
-| Content-bound epoch | enforced service→workers; unsigned PoC |
-| Stale/nonresident route | fails closed |
-| Owner death/restart | fails closed / exact parity restored |
+| MLX + FP16 binary LAN, batch 1 | 30.4 ms |
+| MLX + FP16 binary EU 12/16/22ms, batch 1 | 51.5 ms |
+| EU binary batch 16 | 58.2 ms / 274.7 tok/s aggregate |
+| Projected 48-layer EU floor | 2.47 s/token (0.40 tok/s) |
+| Peak sampled aggregate RSS delta / swap | 814.6 MiB / 0 MiB |
+| Content-bound epoch | Ed25519 signed; enforced service→workers |
+| FP16 binary vs NumPy reference max error | 1.21e-4 |
+| Primary loss | exact cold replica succeeds in 334.8 ms |
+| Primary+replica loss | fails closed |
 
 This proves a reusable complete Qwen FFN service boundary, not full-model
 logits: attention/SSM, residual, KV and sampling remain in the skeleton runtime.
@@ -181,12 +182,14 @@ logits: attention/SSM, residual, KV and sampling remain in the skeleton runtime.
 1. **Done — protocol semantics:** disjoint expert ownership, true top-k routing,
    batched dispatch/reduce, parity, WAN barriers and fail-closed churn.
 2. **Done — real MoE service:** Qwen layer-0 actual router + top-10 Q4
-   expert slices + shared expert/gate; exact batch parity under a continuously
-   measured 696-MiB peak aggregate RSS delta.
-3. **Next — llama graph integration:** intercept Qwen's `build_moe_ffn` boundary,
-   replace local fused execution with `/v1/ffn`, and compare full layer/logits
-   against the unmodified model.
-4. **Regional LAN cell:** binary activation frames, persistent connections,
+   expert slices + shared expert/gate on MLX, signed epochs, FP16 binary frames,
+   exact replica/fail-closed dual loss, under an 815-MiB sampled peak.
+3. **Compiled — llama graph hook; live validation pending:** an opt-in
+   `ggml_map_custom1` patch replaces Qwen4Exp layer-0 `build_moe_ffn` with
+   `/v1/ffn-bin`. A separate llama-server at commit `dfa0c0f` compiles cleanly.
+   Restart the active 104-GB model only in a maintenance window, then compare
+   full layer/logits against the unmodified server.
+4. **Regional LAN cell:** persistent binary connections,
    one packed dispatch/return per owner/layer, continuous batching, p50/p99
    barrier telemetry, exact replicas and signed placement epochs.
 5. **16-GB hardware validation:** test native/fused MXFP4 kernels, 12-GiB weight
