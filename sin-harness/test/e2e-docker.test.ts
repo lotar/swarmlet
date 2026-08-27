@@ -212,8 +212,10 @@ describe("P0a-docker end-to-end acceptance (large MoE split across small contain
         detail: "3 dedicated Metal processes: separate model mappings/KV/ports; one shared physical M5 GPU",
       });
     }
-    // EXPERT-SPLIT mode: prove per-layer expert tensors were PINNED to the
-    // intended shards. llama-server -lv 5 logs one line per overridden
+    // EXPERT-BANK mode: prove complete per-layer fused expert-bank tensors
+    // were pinned to intended shards. This does NOT prove individual expert-ID
+    // ownership; that contract lives in tiny-moe-distributed.test.ts.
+    // llama-server -lv 5 logs one line per overridden
     // tensor: "tensor blk.N.ffn_(gate|down|up)_exps.weight ... buffer type
     // overridden to RPC0[127.0.0.1:<port>]". Expected map (start-mesh-model.sh):
     //   :51052 <- blk.0-5, :51053 <- blk.6-11, :51054 <- blk.12-15
@@ -239,7 +241,7 @@ describe("P0a-docker end-to-end acceptance (large MoE split across small contain
       expect(c3).toBeCloseTo((c1 * 4) / 6, 0); // 4-layer tail
       console.log(`[experts] overrides -> 51052:${c1} 51053:${c2} 51054:${c3} (6/6/4 layer thirds)`);
       summary.push({
-        step: "1b expert placement proof",
+        step: "1b expert-bank placement proof",
         result: "ok",
         detail: `overrides 51052:${c1} 51053:${c2} 51054:${c3} = blk.0-5/6-11/12-15 thirds; attn+KV on host`,
       });

@@ -9,6 +9,7 @@
     "model": "./scripts/start-model.sh",
     "test": "bun test test/",
     "test:l0": "bun test test/l0.test.ts",
-    "test:e2e": "bun test test/e2e.test.ts"
+    "test:e2e": "bun test test/e2e.test.ts",
+    "test:tiny-moe": "bun test test/tiny-moe-distributed.test.ts"
   }
 }

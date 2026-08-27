@@ -11,11 +11,13 @@
 #                                                 #  nothing on host Metal — device order
 #                                                 #  is [rpc1,rpc2,rpc3,Metal])
 #
-# EXPERT-SPLIT MODE (EXPERT_SPLIT=1):
-#   Each shard owns SPECIFIC EXPERT TENSORS — attention, router, embeddings,
-#   lm_head AND the KV cache stay on host Metal; only blk.N.ffn_(gate|up|down)_exps
-#   tensors are pinned to shards via --override-tensor. OLMoE has 16 MoE layers;
-#   even thirds: blk.0-5 -> RPC0, blk.6-11 -> RPC1, blk.12-15 -> RPC2.
+# EXPERT-BANK SPLIT MODE (legacy env: EXPERT_SPLIT=1):
+#   Each shard owns complete per-LAYER fused expert banks — attention, router,
+#   embeddings, lm_head AND KV stay on host Metal; blk.N.ffn_(gate|up|down)_exps
+#   tensors are pinned via --override-tensor. This is NOT true expert-ID
+#   ownership: every fused tensor contains all 64 experts for that layer.
+#   True per-expert dispatch/reduce is proven separately in proofs/tiny-moe/.
+#   OLMoE has 16 MoE layers; banks: blk.0-5 -> RPC0, 6-11 -> RPC1, 12-15 -> RPC2.
 #   Rules discovered by exploration (pinned commit 7584430):
 #     - --rpc MUST precede every -ot flag (RPC buffer types register lazily)
 #     - -ot RHS is a BUFFER-TYPE name: "RPC0[127.0.0.1:51052]" etc.
