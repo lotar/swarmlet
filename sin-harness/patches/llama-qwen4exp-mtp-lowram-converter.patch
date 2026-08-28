@@ -1,0 +1,44 @@
+--- a/conversion/base.py
++++ b/conversion/base.py
+@@ -912,8 +912,12 @@
+ 
+             old_dtype = data_torch.dtype
+ 
+-            # convert any unsupported data types to float32
+-            if data_torch.dtype not in (torch.float16, torch.float32):
++            # Preserve very large BF16 tensors for the raw streaming path below.
++            # The generic path promotes BF16 -> F32 -> BF16, tripling peak RSS
++            # for Qwen's 3.2-GiB fused expert bank. Small/special tensors retain
++            # the original conversion path and its force-F32 rules.
++            raw_bf16_large = data_torch.dtype == torch.bfloat16 and data_torch.numel()*2 >= 100*1024*1024
++            if data_torch.dtype not in (torch.float16, torch.float32) and not raw_bf16_large:
+                 data_torch = data_torch.to(torch.float32)
+ 
+             # use the first number-like part of the tensor name as the block id
+@@ -924,6 +928,15 @@
+                     break
+ 
+             for new_name, data_torch in (self.modify_tensors(data_torch, name, bid)):
++                if data_torch.dtype == torch.bfloat16 and data_torch.numel()*2 >= 100*1024*1024 and self.ftype == gguf.LlamaFileType.MOSTLY_BF16:
++                    eager_bf16 = LazyTorchTensor.to_eager(data_torch)
++                    raw = eager_bf16.view(torch.uint16).numpy()
++                    shape_str = f"{{{', '.join(str(n) for n in reversed(eager_bf16.shape))}}}"
++                    logger.info(f"{f'%-{max_name_len}s' % f'{new_name},'} torch.bfloat16 --> BF16(raw), shape = {shape_str}")
++                    self.gguf_writer.add_tensor(new_name, raw, raw_shape=eager_bf16.shape, raw_dtype=gguf.GGMLQuantizationType.BF16)
++                    del eager_bf16
++                    continue
++
+                 # TODO: why do we squeeze here?
+                 # data = data_torch.squeeze().numpy()
+                 data = data_torch.numpy()
+--- a/conversion/qwen4exp.py
++++ b/conversion/qwen4exp.py
+@@ -63,7 +63,7 @@
+             for t in layer_types:
+                 if t == "linear_attention":
+                     recurrent.append(True)
+-                elif t.endswith("sparse_attention"):
++                elif t.endswith("sparse_attention") or t == "full_attention":
+                     recurrent.append(False)
+                 else:
+                     raise ValueError(f"unsupported qwen4exp layer type {t!r}")

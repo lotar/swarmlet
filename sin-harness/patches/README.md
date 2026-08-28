@@ -33,6 +33,21 @@ and applies it only after `git apply --check`. It applied cleanly to the local
 compiled successfully with two build jobs. This ports runtime logic only; it
 does not create target-specific DFlash2 weights.
 
+## `llama-qwen4exp-mtp-lowram-converter.patch`
+
+Avoids Torch's BF16→F32→BF16 promotion for >100-MiB tensors by writing a
+zero-copy uint16 BF16 view to GGUF, and accepts Qwen4Exp's `full_attention`
+metadata as non-recurrent. Required to convert the 7.224-GiB MTP source under
+an 8-GiB process cap. Measured conversion peak: 5.8 GiB.
+
+## `llama-spec-force-reject-test.patch`
+
+Test-only sampler hook `SIN_FORCE_REJECT_POS`. It may force an *earlier*
+rejection only; natural mismatches still win, so it never accepts an invalid
+draft-conditioned prefix. Compiles with the local DFlash2/rollback worktree.
+Runtime positions 1–7 remain unvalidated because the full-target rollback test
+exceeded the host memory gate.
+
 ## `llama-qwen4exp-rs-rollback.patch`
 
 Compile-checked enablement of recurrent-state snapshots for Qwen4Exp. DFlash2

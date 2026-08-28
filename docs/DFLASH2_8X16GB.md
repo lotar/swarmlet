@@ -114,6 +114,54 @@ Therefore a way exists only if the 8 cards are one regional low-latency cell
 and actual six-layer stage p99 is ≤9–10.5 ms. Pan-European stages cannot meet
 the target; Europe routes whole requests among complete cells.
 
+## Executed native-MTP build/verification status
+
+### Step 1 — complete
+
+A resumable two-stream range extractor downloaded exactly 33 tensors (31 MTP
+plus tied embedding/head), 7,757,098,496 bytes, at **86.5 MiB peak RSS**.
+Consolidated safetensors SHA-256:
+`3867daa8f92f8aece6ee3740a01ed4615f1850ea57d132e6f7a8fba7fcd415fd`.
+
+The standard Torch converter exceeded 8 GiB and 16 GiB safety gates. A
+compile-reviewed low-RAM BF16 raw-copy path avoided BF16→F32→BF16 promotion for
+>100-MiB tensors. Conversion completed at **5.8 GiB peak**. Quantizers required
+14.15/14.17 GiB peaks with production stopped, >80% free, and zero phase swap
+growth.
+
+| Artifact | Size | SHA-256 |
+|---|---:|---|
+| MTP BF16 | 7.2 GB | `873b3bf098464b8a47032f14364ea02a8e06fb2b63cb7f65d12784581ca3944a` |
+| MTP Q8_0 | 3.9 GB | `274b5f7dc81654e9f84937be74fd3fb539e1ff9b68b466224fc7cc88ae6983f5` |
+| MTP Q4_K_M | 2.6 GB | `650b7bb3b9b53e662da85f0a529a3e89452f7bcac2e7133ba5c9c32b8b328d2a` |
+
+Both Q8 and Q4 loaded successfully as MTP drafts against the target using the
+rollback-enabled binary (CPU placement, no decode). Metadata: qwen4exp,
+block_count 49, nextn layers 1, embedding_out 10240, 34 tensors, only blk.48
+plus token/output weights.
+
+### Step 2 — blocked by host GPU state, not compatibility
+
+Controlled all-Metal target-only inference repeatedly failed at first decode
+with `kIOGPUCommandBufferCallbackErrorOutOfMemory`, even after 120-second
+cooldown and reduced context. Production restores and remains healthy. CPU-only
+baseline completed at ~3 tok/s but pushed free-memory below the fixed 8% gate
+before an MTP arm could start. No target-vs-MTP throughput/acceptance result is
+claimed.
+
+A reboot/Metal-driver reset or separate benchmark host is required. The MTP
+artifacts themselves load correctly.
+
+### Step 3 — blocked by full-target memory on this host
+
+The compile-checked recurrent rollback test was attempted CPU-only at context
+128. It crossed 31.6 GiB, then 81.4 GiB RSS on progressively measured caps;
+both runs were terminated by the watchdog with no phase swap growth. Forced
+rejection code compiles, but positions 1–7 are not runtime-attested.
+
+Repeated model reloads accumulated host swap (~21 GiB) despite healthy
+restoration, so further heavy tests are prohibited this session.
+
 ## Required runtime work
 
 1. Train Flash-Next-specific DFlash2: hidden 2560, 48 target layers, target
