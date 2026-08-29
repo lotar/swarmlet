@@ -202,6 +202,27 @@ logits: attention/SSM, residual, KV and sampling remain in the skeleton runtime.
    locality/capacity. Consider contiguous coarse pipeline stages or speculative
    block verification only if complete replication is unaffordable.
 
+## Disk-streaming experiment
+
+A real Qwen GGUF expert store now uses `pread` + `F_NOCACHE`, a hard bounded
+cache, continuous RSS/free/swap guards and pinned-hotset policy. Actual Qwen
+48-layer selected routes fit under 16 GB: worst tested changed-route pass peaked
+at 8.12 GiB RSS with an 8-GiB cache and zero safety breach.
+
+Naive 512-MiB LRU had zero second-token hits; pinned 8-GiB stable routes hit
+436/528 entries and reduced expert preparation from 6.47 to 1.00 seconds.
+Changed routes hit only 55/528 and took 5.49 seconds. Disk pread was ~0.1 s;
+F32 dequantization/cache churn dominated.
+
+For Kimi, sequential top-16 MXFP4 activations are ~267 MiB/layer and fit easily,
+but the 92-layer selected working set is ~25.8 GB compressed. A 16-GB node must
+pin hot experts and stream misses layer-by-layer. Naive cold projection from the
+measured compressed-to-ready rate is ~0.01 tok/s. Production requires compressed
+GPU cache, fused MXFP4 kernels and asynchronous prefetch; disk streaming solves
+capacity, not interactive latency.
+
+See `sin-harness/proofs/qwen-disk-experts/`.
+
 ## Kill criteria
 
 Stop or redesign if any holds:

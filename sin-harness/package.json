@@ -15,6 +15,8 @@
     "test:dflash-pipeline": "python3 proofs/dflash-pipeline/simulator.py",
     "test:dflash-compat": "python3 proofs/dflash-pipeline/check_compat.py --expect-incompatible",
     "inspect:flashnext-mtp": "python3 proofs/dflash-pipeline/inspect_flashnext_mtp.py",
-    "extract:flashnext-mtp:plan": "python3 proofs/dflash-pipeline/extract_flashnext_mtp.py --plan"
+    "extract:flashnext-mtp:plan": "python3 proofs/dflash-pipeline/extract_flashnext_mtp.py --plan",
+    "test:qwen-disk-experts": "python3 proofs/qwen-disk-experts/stream_experts.py --cache-mib 512 --layers 48 --passes 2",
+    "bench:qwen-disk-experts": "python3 proofs/qwen-disk-experts/stream_experts.py --cache-mib 8192 --rss-limit-mib 15360 --layers 48 --passes 2 --policy pinned"
   }
 }
