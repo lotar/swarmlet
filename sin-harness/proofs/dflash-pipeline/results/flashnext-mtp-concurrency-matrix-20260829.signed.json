@@ -1,0 +1,58 @@
+{
+  "artifacts": [
+    {
+      "bytes": 4773,
+      "path": "sin-harness/proofs/dflash-pipeline/results/flashnext-mtp-concurrency-matrix-20260829.json",
+      "sha256": "76c4440362c6fd8d75166be437645af74f09fdb621b8857134e5412b836f2f71"
+    },
+    {
+      "bytes": 1410,
+      "path": "/Users/lotar/projects/local-llm/models/qwen3.8-flash-next/mtp/full-matrix-20260829T090416Z/result.json",
+      "sha256": "df770c224e6db7b239d296add6756b8bbbb362a865f7a9140e6454224eadbafa"
+    },
+    {
+      "bytes": 4268,
+      "path": "/Users/lotar/projects/local-llm/models/qwen3.8-flash-next/mtp/full-matrix-20260829T085058Z/result.json",
+      "sha256": "b6d704547efbe087bb2246ac3f6a6eac98040de1071ffbae9c246c0f20ca63a5"
+    }
+  ],
+  "command": [
+    "full-mtp-matrix"
+  ],
+  "config": {
+    "concurrency": [
+      1,
+      4,
+      8
+    ],
+    "ctx": 8192,
+    "drafts": [
+      "MTP-Q8_0",
+      "MTP-Q4_K_M"
+    ],
+    "specN": 3,
+    "target": "Qwen3.8-Flash-Next-UD-Q4_K_XL"
+  },
+  "gitCommit": "3fd5e51404f613cf59365756fbe5d7a325bbe6c9",
+  "gitDiffSha256": "1aa2d5f56052e87e344beae06baf87de3074bfff74819b4fed7f2ef1f8ec344b",
+  "gitDirty": true,
+  "gitStatus": [
+    " M .gitignore",
+    "?? sin-harness/proofs/dflash-pipeline/results/flashnext-mtp-concurrency-matrix-20260829.json",
+    "?? site/"
+  ],
+  "host": {
+    "machine": "arm64",
+    "platform": "macOS-26.5.1-arm64-arm-64bit-Mach-O"
+  },
+  "metrics": {
+    "productionRestored": true,
+    "webReady": true
+  },
+  "publicKeyPem": "-----BEGIN PUBLIC KEY-----\nMCowBQYDK2VwAyEAcdrWFcwnW7rstmqllFFVWRI+ouHOX6Rjtk7gW3/a+ic=\n-----END PUBLIC KEY-----\n",
+  "runId": "cfca19d7-4fab-4403-9710-7a52065826c4",
+  "schemaVersion": 1,
+  "signature": "+n5VYdod8Hr+PdRglAFneSc8miqU0O2w1IwQaaZe871k8dyucXdIiSLC99pHPvbVJSI77xCOodeXaQuLNdDDCQ==",
+  "signerFingerprint": "90c6b530967b3280febf2ba4c9184559be265ce807fb1917b2b1367d14d24954",
+  "timestampUtc": "2026-08-29T09:10:30.352579+00:00"
+}

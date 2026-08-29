@@ -1,0 +1,163 @@
+{
+  "arms": {
+    "q4-n3-c1": {
+      "acceptanceRatio": 0.8787878787878788,
+      "accepted": 87.0,
+      "aggregateTps": 40.16461477409168,
+      "concurrency": 1,
+      "drafted": 99.0,
+      "meanOutputPerVerification": 3.6363636363636362,
+      "parity": {
+        "sameContent": 1,
+        "sameIds": 1,
+        "total": 1
+      },
+      "perStreamMedianTps": 43.71243140246001,
+      "perStreamMinTps": 43.71243140246001,
+      "perStreamP95FloorTps": 43.71243140246001,
+      "verifications": 33.0,
+      "wallSeconds": 3.186884791997727
+    },
+    "q4-n3-c4": {
+      "acceptanceRatio": 0.7216981132075472,
+      "accepted": 306.0,
+      "aggregateTps": 38.56235292858448,
+      "concurrency": 4,
+      "drafted": 424.0,
+      "meanOutputPerVerification": 3.1549295774647885,
+      "parity": {
+        "sameContent": 1,
+        "sameIds": 1,
+        "total": 4
+      },
+      "perStreamMedianTps": 11.596411184704023,
+      "perStreamMinTps": 10.280695363568292,
+      "perStreamP95FloorTps": 10.280695363568292,
+      "verifications": 142.0,
+      "wallSeconds": 13.277198125026189
+    },
+    "q4-n3-c8": {
+      "acceptanceRatio": 0.7024504084014003,
+      "accepted": 602.0,
+      "aggregateTps": 41.823813784221684,
+      "concurrency": 8,
+      "drafted": 857.0,
+      "meanOutputPerVerification": 3.0902777777777777,
+      "parity": {
+        "sameContent": 1,
+        "sameIds": 1,
+        "total": 8
+      },
+      "perStreamMedianTps": 6.000934179258472,
+      "perStreamMinTps": 5.487151230510946,
+      "perStreamP95FloorTps": 5.487151230510946,
+      "verifications": 288.0,
+      "wallSeconds": 24.48365912499139
+    },
+    "q8-n3-c1": {
+      "acceptanceRatio": 0.898989898989899,
+      "accepted": 89.0,
+      "aggregateTps": 39.24037130502709,
+      "concurrency": 1,
+      "drafted": 99.0,
+      "meanOutputPerVerification": 3.696969696969697,
+      "parity": {
+        "sameContent": 1,
+        "sameIds": 1,
+        "total": 1
+      },
+      "perStreamMedianTps": 43.51031639879843,
+      "perStreamMinTps": 43.51031639879843,
+      "perStreamP95FloorTps": 43.51031639879843,
+      "verifications": 33.0,
+      "wallSeconds": 3.261946708022151
+    },
+    "q8-n3-c4": {
+      "acceptanceRatio": 0.7529976019184652,
+      "accepted": 314.0,
+      "aggregateTps": 38.74190579354353,
+      "concurrency": 4,
+      "drafted": 417.0,
+      "meanOutputPerVerification": 3.258992805755396,
+      "parity": {
+        "sameContent": 2,
+        "sameIds": 2,
+        "total": 4
+      },
+      "perStreamMedianTps": 11.799820866183174,
+      "perStreamMinTps": 10.367564446045929,
+      "perStreamP95FloorTps": 10.367564446045929,
+      "verifications": 139.0,
+      "wallSeconds": 13.215663749957457
+    },
+    "q8-n3-c8": {
+      "acceptanceRatio": 0.6921296296296297,
+      "accepted": 598.0,
+      "aggregateTps": 40.449733688224214,
+      "concurrency": 8,
+      "drafted": 864.0,
+      "meanOutputPerVerification": 3.0620689655172413,
+      "parity": {
+        "sameContent": 2,
+        "sameIds": 2,
+        "total": 8
+      },
+      "perStreamMedianTps": 5.800885022267218,
+      "perStreamMinTps": 5.328130169492436,
+      "perStreamP95FloorTps": 5.328130169492436,
+      "verifications": 290.0,
+      "wallSeconds": 25.31537062500138
+    },
+    "target-c1": {
+      "acceptanceRatio": 0,
+      "accepted": 0.0,
+      "aggregateTps": 31.619364118492342,
+      "concurrency": 1,
+      "drafted": 0.0,
+      "meanOutputPerVerification": 1,
+      "parity": null,
+      "perStreamMedianTps": 33.27345857428208,
+      "perStreamMinTps": 33.27345857428208,
+      "perStreamP95FloorTps": 33.27345857428208,
+      "verifications": 0.0,
+      "wallSeconds": 4.048152250004932
+    },
+    "target-c4": {
+      "acceptanceRatio": 0,
+      "accepted": 0.0,
+      "aggregateTps": 60.16240707139376,
+      "concurrency": 4,
+      "drafted": 0.0,
+      "meanOutputPerVerification": 1,
+      "parity": null,
+      "perStreamMedianTps": 15.894614952564794,
+      "perStreamMinTps": 15.893822259010232,
+      "perStreamP95FloorTps": 15.893822259010232,
+      "verifications": 0.0,
+      "wallSeconds": 8.510297790984623
+    },
+    "target-c8": {
+      "acceptanceRatio": 0,
+      "accepted": 0.0,
+      "aggregateTps": 76.94003085429678,
+      "concurrency": 8,
+      "drafted": 0.0,
+      "meanOutputPerVerification": 1,
+      "parity": null,
+      "perStreamMedianTps": 10.32177072728578,
+      "perStreamMinTps": 10.224412160706505,
+      "perStreamP95FloorTps": 10.224412160706505,
+      "verifications": 0.0,
+      "wallSeconds": 13.309066666988656
+    }
+  },
+  "productionRestored": {
+    "health": "ok",
+    "service": "com.lotar.llm-flashnext"
+  },
+  "webReady": {
+    "beforeAfterUnchanged": true,
+    "pid": 74163,
+    "url": "http://127.0.0.1:8123/"
+  }
+}

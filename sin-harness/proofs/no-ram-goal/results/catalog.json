@@ -129,6 +129,96 @@
       "status": "miss",
       "tps": 0.011,
       "variant": "Cold disk projection"
+    },
+    {
+      "category": "Qwen concurrency matrix",
+      "kind": "measured",
+      "latencyMs": 30.053946834568052,
+      "notes": "concurrency 1; aggregate 31.62 tok/s",
+      "source": "sin-harness/proofs/dflash-pipeline/results/flashnext-mtp-concurrency-matrix-20260829.json",
+      "status": "pass",
+      "tps": 33.2735,
+      "variant": "Target c1"
+    },
+    {
+      "category": "Qwen concurrency matrix",
+      "kind": "measured",
+      "latencyMs": 22.983063780300295,
+      "notes": "concurrency 1; aggregate 39.24 tok/s",
+      "source": "sin-harness/proofs/dflash-pipeline/results/flashnext-mtp-concurrency-matrix-20260829.json",
+      "status": "pass",
+      "tps": 43.5103,
+      "variant": "MTP Q8 n3 c1"
+    },
+    {
+      "category": "Qwen concurrency matrix",
+      "kind": "measured",
+      "latencyMs": 22.876803835982464,
+      "notes": "concurrency 1; aggregate 40.16 tok/s",
+      "source": "sin-harness/proofs/dflash-pipeline/results/flashnext-mtp-concurrency-matrix-20260829.json",
+      "status": "pass",
+      "tps": 43.7124,
+      "variant": "MTP Q4 n3 c1"
+    },
+    {
+      "category": "Qwen concurrency matrix",
+      "kind": "measured",
+      "latencyMs": 62.9144489323418,
+      "notes": "concurrency 4; aggregate 60.16 tok/s",
+      "source": "sin-harness/proofs/dflash-pipeline/results/flashnext-mtp-concurrency-matrix-20260829.json",
+      "status": "pass",
+      "tps": 15.8946,
+      "variant": "Target c4"
+    },
+    {
+      "category": "Qwen concurrency matrix",
+      "kind": "measured",
+      "latencyMs": 84.74719910506958,
+      "notes": "concurrency 4; aggregate 38.74 tok/s",
+      "source": "sin-harness/proofs/dflash-pipeline/results/flashnext-mtp-concurrency-matrix-20260829.json",
+      "status": "regression",
+      "tps": 11.7998,
+      "variant": "MTP Q8 n3 c4"
+    },
+    {
+      "category": "Qwen concurrency matrix",
+      "kind": "measured",
+      "latencyMs": 86.23365872167226,
+      "notes": "concurrency 4; aggregate 38.56 tok/s",
+      "source": "sin-harness/proofs/dflash-pipeline/results/flashnext-mtp-concurrency-matrix-20260829.json",
+      "status": "regression",
+      "tps": 11.5964,
+      "variant": "MTP Q4 n3 c4"
+    },
+    {
+      "category": "Qwen concurrency matrix",
+      "kind": "measured",
+      "latencyMs": 96.88232672595865,
+      "notes": "concurrency 8; aggregate 76.94 tok/s",
+      "source": "sin-harness/proofs/dflash-pipeline/results/flashnext-mtp-concurrency-matrix-20260829.json",
+      "status": "pass",
+      "tps": 10.3218,
+      "variant": "Target c8"
+    },
+    {
+      "category": "Qwen concurrency matrix",
+      "kind": "measured",
+      "latencyMs": 172.3870433898188,
+      "notes": "concurrency 8; aggregate 40.45 tok/s",
+      "source": "sin-harness/proofs/dflash-pipeline/results/flashnext-mtp-concurrency-matrix-20260829.json",
+      "status": "regression",
+      "tps": 5.8009,
+      "variant": "MTP Q8 n3 c8"
+    },
+    {
+      "category": "Qwen concurrency matrix",
+      "kind": "measured",
+      "latencyMs": 166.64167041610426,
+      "notes": "concurrency 8; aggregate 41.82 tok/s",
+      "source": "sin-harness/proofs/dflash-pipeline/results/flashnext-mtp-concurrency-matrix-20260829.json",
+      "status": "regression",
+      "tps": 6.0009,
+      "variant": "MTP Q4 n3 c8"
     }
   ]
 }

@@ -17,10 +17,19 @@ Measured and simulated values are intentionally separated. Disk-expert rows meas
 | Disk expert prep | 8GiB pinned stable | measured | 1.00 | 1002.00 ms | -97.1% | capacity proof | `sin-harness/proofs/qwen-disk-experts/README.md` | 436/528 hits; not full inference |
 | Disk expert prep | 8GiB pinned churn | measured | 0.18 | 5485.00 ms | -99.5% | miss | `sin-harness/proofs/qwen-disk-experts/README.md` | 55/528 hits; not full inference |
 | Kimi expert stream | Cold disk projection | projected | 0.01 | 90000.00 ms | -100.0% | miss | `docs/KIMI_K3_DISTRIBUTED_MOE.md` | capacity only; fused kernels absent |
+| Qwen concurrency matrix | Target c1 | measured | 33.27 | 30.05 ms | -2.1% | pass | `sin-harness/proofs/dflash-pipeline/results/flashnext-mtp-concurrency-matrix-20260829.json` | concurrency 1; aggregate 31.62 tok/s |
+| Qwen concurrency matrix | MTP Q8 n3 c1 | measured | 43.51 | 22.98 ms | +28.0% | pass | `sin-harness/proofs/dflash-pipeline/results/flashnext-mtp-concurrency-matrix-20260829.json` | concurrency 1; aggregate 39.24 tok/s |
+| Qwen concurrency matrix | MTP Q4 n3 c1 | measured | 43.71 | 22.88 ms | +28.6% | pass | `sin-harness/proofs/dflash-pipeline/results/flashnext-mtp-concurrency-matrix-20260829.json` | concurrency 1; aggregate 40.16 tok/s |
+| Qwen concurrency matrix | Target c4 | measured | 15.89 | 62.91 ms | -53.2% | pass | `sin-harness/proofs/dflash-pipeline/results/flashnext-mtp-concurrency-matrix-20260829.json` | concurrency 4; aggregate 60.16 tok/s |
+| Qwen concurrency matrix | MTP Q8 n3 c4 | measured | 11.80 | 84.75 ms | -65.3% | regression | `sin-harness/proofs/dflash-pipeline/results/flashnext-mtp-concurrency-matrix-20260829.json` | concurrency 4; aggregate 38.74 tok/s |
+| Qwen concurrency matrix | MTP Q4 n3 c4 | measured | 11.60 | 86.23 ms | -65.9% | regression | `sin-harness/proofs/dflash-pipeline/results/flashnext-mtp-concurrency-matrix-20260829.json` | concurrency 4; aggregate 38.56 tok/s |
+| Qwen concurrency matrix | Target c8 | measured | 10.32 | 96.88 ms | -69.6% | pass | `sin-harness/proofs/dflash-pipeline/results/flashnext-mtp-concurrency-matrix-20260829.json` | concurrency 8; aggregate 76.94 tok/s |
+| Qwen concurrency matrix | MTP Q8 n3 c8 | measured | 5.80 | 172.39 ms | -82.9% | regression | `sin-harness/proofs/dflash-pipeline/results/flashnext-mtp-concurrency-matrix-20260829.json` | concurrency 8; aggregate 40.45 tok/s |
+| Qwen concurrency matrix | MTP Q4 n3 c8 | measured | 6.00 | 166.64 ms | -82.3% | regression | `sin-harness/proofs/dflash-pipeline/results/flashnext-mtp-concurrency-matrix-20260829.json` | concurrency 8; aggregate 41.82 tok/s |
 
 ## Best known points
 
-- Best measured full Qwen: **37.74 tok/s** (native MTP n=3).
+- Best measured full Qwen: **43.71 tok/s** (native MTP Q4 n=3, concurrency 1 campaign).
 - 50 tok/s remains a conditional rack-scale pipeline simulation, not an empirical result.
 - Pan-European token-path variants remain below target.
 - Kimi disk streaming fits memory but is not interactive.
