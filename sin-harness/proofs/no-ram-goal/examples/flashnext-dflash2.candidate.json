@@ -1,0 +1,41 @@
+{
+  "schemaVersion": 1,
+  "status": "candidate",
+  "target": {
+    "architecture": "qwen4exp",
+    "modelHash": null,
+    "tokenizerHash": null,
+    "hiddenSize": 2560,
+    "layers": 48,
+    "vocabSize": 248320
+  },
+  "draft": {
+    "architecture": "dflash2",
+    "layers": 5,
+    "blockSize": 8,
+    "selectorTopK": 16,
+    "selectorRank": 256,
+    "convKernel": 2,
+    "convGroups": 16
+  },
+  "tapSearch": [[4,14,24,34,44], [3,15,27,39,47], [7,17,27,37,47]],
+  "dataset": {
+    "manifestHash": null,
+    "featureCacheVersion": 1,
+    "sampleCount": null,
+    "maxSequenceLength": 3072
+  },
+  "training": {
+    "epochs": null,
+    "learningRate": null,
+    "warmupRatio": null,
+    "optimizer": null
+  },
+  "gates": {
+    "meanAcceptance": 4.8,
+    "worstClassAcceptance": 4.1,
+    "draftP99Ms": 10,
+    "greedyParity": true,
+    "stageP99Ms": 10.53
+  }
+}

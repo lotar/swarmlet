@@ -1,0 +1,134 @@
+{
+  "rows": [
+    {
+      "category": "Qwen full model",
+      "kind": "measured",
+      "latencyMs": 29.43,
+      "notes": "8K, concurrency 1",
+      "source": "sin-harness/proofs/dflash-pipeline/results/flashnext-native-mtp-20260829.json",
+      "status": "pass",
+      "tps": 33.98,
+      "variant": "Target A1"
+    },
+    {
+      "category": "Qwen full model",
+      "kind": "measured",
+      "latencyMs": 27.79,
+      "notes": "mean output/verify 1.86",
+      "source": "sin-harness/proofs/dflash-pipeline/results/flashnext-native-mtp-20260829.json",
+      "status": "pass",
+      "tps": 35.98,
+      "variant": "Native MTP n=1"
+    },
+    {
+      "category": "Qwen full model",
+      "kind": "measured",
+      "latencyMs": 26.5,
+      "notes": "+11.1%, mean output/verify 3.24",
+      "source": "sin-harness/proofs/dflash-pipeline/results/flashnext-native-mtp-20260829.json",
+      "status": "best measured",
+      "tps": 37.74,
+      "variant": "Native MTP n=3"
+    },
+    {
+      "category": "Qwen full model",
+      "kind": "measured",
+      "latencyMs": 33.2,
+      "notes": "mean output/verify 4.30",
+      "source": "sin-harness/proofs/dflash-pipeline/results/flashnext-native-mtp-20260829.json",
+      "status": "regression",
+      "tps": 30.12,
+      "variant": "Native MTP n=7"
+    },
+    {
+      "category": "8-stage pipeline",
+      "kind": "simulated",
+      "latencyMs": 95.75,
+      "notes": "A=4.8, stage=10.5ms, link=.25ms",
+      "source": "sin-harness/proofs/dflash-pipeline/simulator.py",
+      "status": "conditional",
+      "tps": 50.13,
+      "variant": "Rack limit"
+    },
+    {
+      "category": "8-stage pipeline",
+      "kind": "simulated",
+      "latencyMs": 130.0,
+      "notes": "A=4.8",
+      "source": "sin-harness/proofs/dflash-pipeline/simulator.py",
+      "status": "miss",
+      "tps": 36.92,
+      "variant": "EU 8ms"
+    },
+    {
+      "category": "8-stage pipeline",
+      "kind": "simulated",
+      "latencyMs": 634.0,
+      "notes": "A=4.8",
+      "source": "sin-harness/proofs/dflash-pipeline/simulator.py",
+      "status": "miss",
+      "tps": 6.82,
+      "variant": "10x EU"
+    },
+    {
+      "category": "Expert FFN service",
+      "kind": "measured",
+      "latencyMs": 30.4,
+      "notes": "one FFN layer",
+      "source": "docs/KIMI_K3_DISTRIBUTED_MOE.md",
+      "status": "pass",
+      "tps": 32.92,
+      "variant": "MLX binary LAN batch1"
+    },
+    {
+      "category": "Expert FFN service",
+      "kind": "measured",
+      "latencyMs": 51.5,
+      "notes": "one FFN layer",
+      "source": "docs/KIMI_K3_DISTRIBUTED_MOE.md",
+      "status": "miss",
+      "tps": 19.41,
+      "variant": "MLX binary EU batch1"
+    },
+    {
+      "category": "Disk expert prep",
+      "kind": "measured",
+      "latencyMs": 6123,
+      "notes": "0/528 hits",
+      "source": "sin-harness/proofs/qwen-disk-experts/README.md",
+      "status": "thrash",
+      "tps": 0.16,
+      "variant": "512MiB LRU repeated"
+    },
+    {
+      "category": "Disk expert prep",
+      "kind": "measured",
+      "latencyMs": 1002,
+      "notes": "436/528 hits; not full inference",
+      "source": "sin-harness/proofs/qwen-disk-experts/README.md",
+      "status": "capacity proof",
+      "tps": 1.0,
+      "variant": "8GiB pinned stable"
+    },
+    {
+      "category": "Disk expert prep",
+      "kind": "measured",
+      "latencyMs": 5485,
+      "notes": "55/528 hits; not full inference",
+      "source": "sin-harness/proofs/qwen-disk-experts/README.md",
+      "status": "miss",
+      "tps": 0.18,
+      "variant": "8GiB pinned churn"
+    },
+    {
+      "category": "Kimi expert stream",
+      "kind": "projected",
+      "latencyMs": 90000,
+      "notes": "capacity only; fused kernels absent",
+      "source": "docs/KIMI_K3_DISTRIBUTED_MOE.md",
+      "status": "miss",
+      "tps": 0.011,
+      "variant": "Cold disk projection"
+    }
+  ]
+}

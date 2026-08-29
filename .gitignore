@@ -7,6 +7,10 @@ sin-harness/*.pid
 # signing keys NEVER leave the machine (even into local git history)
 **/keys/
 
+# Python/runtime noise
+__pycache__/
+*.py[cod]
+
 # OS noise
 .DS_Store
 

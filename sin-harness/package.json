@@ -17,6 +17,8 @@
     "inspect:flashnext-mtp": "python3 proofs/dflash-pipeline/inspect_flashnext_mtp.py",
     "extract:flashnext-mtp:plan": "python3 proofs/dflash-pipeline/extract_flashnext_mtp.py --plan",
     "test:qwen-disk-experts": "python3 proofs/qwen-disk-experts/stream_experts.py --cache-mib 512 --layers 48 --passes 2",
-    "bench:qwen-disk-experts": "python3 proofs/qwen-disk-experts/stream_experts.py --cache-mib 8192 --rss-limit-mib 15360 --layers 48 --passes 2 --policy pinned"
+    "bench:qwen-disk-experts": "python3 proofs/qwen-disk-experts/stream_experts.py --cache-mib 8192 --rss-limit-mib 15360 --layers 48 --passes 2 --policy pinned",
+    "test:no-ram-goal": "python3 proofs/no-ram-goal/e2e.py",
+    "report:results-grid": "python3 proofs/no-ram-goal/compare_results.py --out ../docs/RESULTS_GRID.md"
   }
 }

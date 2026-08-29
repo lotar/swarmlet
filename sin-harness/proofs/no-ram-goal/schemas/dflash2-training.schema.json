@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ai-mesh.local/schemas/dflash2-training.schema.json",
+  "type": "object",
+  "required": ["schemaVersion", "status", "target", "draft", "tapSearch", "dataset", "training", "gates"],
+  "properties": {
+    "schemaVersion": {"const": 1},
+    "status": {"enum": ["candidate", "trained", "rejected"]},
+    "target": {
+      "type": "object",
+      "required": ["architecture", "modelHash", "tokenizerHash", "hiddenSize", "layers", "vocabSize"],
+      "properties": {
+        "architecture": {"const": "qwen4exp"}, "modelHash": {"type": ["string", "null"], "minLength": 64},
+        "tokenizerHash": {"type": ["string", "null"], "minLength": 64}, "hiddenSize": {"const": 2560},
+        "layers": {"const": 48}, "vocabSize": {"const": 248320}
+      }, "additionalProperties": false
+    },
+    "draft": {
+      "type": "object", "required": ["architecture", "layers", "blockSize", "selectorTopK", "selectorRank", "convKernel", "convGroups"],
+      "properties": {"architecture": {"const": "dflash2"}, "layers": {"const": 5}, "blockSize": {"enum": [4,5,8]}, "selectorTopK": {"const": 16}, "selectorRank": {"const": 256}, "convKernel": {"const": 2}, "convGroups": {"const": 16}}, "additionalProperties": false
+    },
+    "tapSearch": {"type": "array", "minItems": 2, "items": {"type": "array", "minItems": 5, "maxItems": 5, "items": {"type": "integer", "minimum": 0, "maximum": 47}}},
+    "dataset": {"type": "object", "required": ["manifestHash", "featureCacheVersion", "sampleCount", "maxSequenceLength"], "properties": {"manifestHash": {"type": ["string", "null"], "minLength": 64}, "featureCacheVersion": {"const": 1}, "sampleCount": {"type": ["integer","null"], "minimum": 1}, "maxSequenceLength": {"type": "integer", "minimum": 128}}, "additionalProperties": false},
+    "training": {"type": "object", "required": ["epochs", "learningRate", "warmupRatio", "optimizer"], "properties": {"epochs": {"type": ["integer","null"], "minimum": 1}, "learningRate": {"type": ["number","null"], "exclusiveMinimum": 0}, "warmupRatio": {"type": ["number","null"], "minimum": 0, "maximum": 1}, "optimizer": {"type": ["string","null"]}}, "additionalProperties": false},
+    "gates": {"type": "object", "required": ["meanAcceptance", "worstClassAcceptance", "draftP99Ms", "greedyParity", "stageP99Ms"], "properties": {"meanAcceptance": {"const": 4.8}, "worstClassAcceptance": {"const": 4.1}, "draftP99Ms": {"const": 10}, "greedyParity": {"const": true}, "stageP99Ms": {"type": "number", "maximum": 10.53}}, "additionalProperties": false}
+  },
+  "additionalProperties": false
+}
