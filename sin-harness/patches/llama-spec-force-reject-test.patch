@@ -1,33 +1,40 @@
 --- a/common/sampling.cpp
 +++ b/common/sampling.cpp
-@@ -12,6 +12,7 @@
+@@ -12,6 +12,8 @@
  #include <climits>
  #include <cmath>
  #include <cstring>
 +#include <cstdlib>
++#include <fstream>
  #include <unordered_map>
  #include <vector>
- 
-@@ -681,6 +682,15 @@
+
+@@ -680,6 +682,21 @@
+
      std::vector<llama_token> result;
      result.reserve(idxs.size());
- 
++
 +    int force_reject_pos = -1;
-+    if (const char * value = std::getenv("SIN_FORCE_REJECT_POS")) {
++    if (const char * path = std::getenv("SIN_FORCE_REJECT_FILE")) {
++        std::ifstream input(path);
++        int parsed = -1;
++        if (input >> parsed && parsed >= 0 && parsed <= 1024) {
++            force_reject_pos = parsed;
++        }
++    } else if (const char * value = std::getenv("SIN_FORCE_REJECT_POS")) {
 +        char * end = nullptr;
 +        const long parsed = std::strtol(value, &end, 10);
 +        if (end && *end == '\0' && parsed >= 0 && parsed <= 1024) {
 +            force_reject_pos = (int) parsed;
 +        }
 +    }
-+
+
      size_t i = 0;
      for (; i < draft.size(); i++) {
-         const llama_token id = common_sampler_sample(gsmpl, ctx, idxs[i], grammar_first);
-@@ -689,7 +699,12 @@
- 
+@@ -689,7 +706,12 @@
+
          result.push_back(id);
- 
+
 -        if (draft[i] != id) {
 +        // Test-only forced *earlier* rejection. Natural mismatches always win;
 +        // never force acceptance beyond an invalid draft-conditioned prefix.

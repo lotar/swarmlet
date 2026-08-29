@@ -140,27 +140,42 @@ rollback-enabled binary (CPU placement, no decode). Metadata: qwen4exp,
 block_count 49, nextn layers 1, embedding_out 10240, 34 tensors, only blk.48
 plus token/output weights.
 
-### Step 2 — blocked by host GPU state, not compatibility
+### Step 2 — complete at concurrency 1
 
-Controlled all-Metal target-only inference repeatedly failed at first decode
-with `kIOGPUCommandBufferCallbackErrorOutOfMemory`, even after 120-second
-cooldown and reduced context. Production restores and remains healthy. CPU-only
-baseline completed at ~3 tok/s but pushed free-memory below the fixed 8% gate
-before an MTP arm could start. No target-vs-MTP throughput/acceptance result is
-claimed.
+After fully unloading the production LaunchAgent and clearing stale test
+listeners, controlled all-Metal A/B/A completed with four fixed prompts and 128
+forced decode tokens each. Greedy content parity passed for every MTP arm.
 
-A reboot/Metal-driver reset or separate benchmark host is required. The MTP
-artifacts themselves load correctly.
+| Arm | Median decode | Mean output/verification | Acceptance ratio | vs A1 |
+|---|---:|---:|---:|---:|
+| Target A1 | 33.98 tok/s | 1.00 | — | baseline |
+| MTP n=1 | 35.98 tok/s | 1.86 | 85.7% | +5.9% |
+| **MTP n=3** | **37.74 tok/s** | **3.24** | 75.1% | **+11.1%** |
+| MTP n=7 | 30.12 tok/s | 4.30 | 47.8% | -11.4% |
+| Target A2 | 34.42 tok/s | 1.00 | — | +1.3% drift |
 
-### Step 3 — blocked by full-target memory on this host
+Native MTP is useful but does not reach 50 tok/s; n=3 is the local optimum.
+Longer n=7 increases accepted output per verification but wider draft/verify
+cost dominates. Concurrency 4/8 remains unmeasured.
 
-The compile-checked recurrent rollback test was attempted CPU-only at context
-128. It crossed 31.6 GiB, then 81.4 GiB RSS on progressively measured caps;
-both runs were terminated by the watchdog with no phase swap growth. Forced
-rejection code compiles, but positions 1–7 are not runtime-attested.
+### Step 3 — partial runtime coverage
 
-Repeated model reloads accumulated host swap (~21 GiB) despite healthy
-restoration, so further heavy tests are prohibited this session.
+The lower-level CPU rollback test crossed 31.6 then 81.4 GiB RSS and was safely
+aborted. An environment/file-gated sampler hook was instead exercised in one
+rollback-enabled MTP server without reloads. Every position 0–6 was reached:
+
+```text
+forced hits: 436 / 207 / 126 / 75 / 56 / 37 / 32
+```
+
+No crashes occurred; throughput rose from 7.70 tok/s at forced position 0 to
+27.26 at position 6. Token IDs captured with `n_probs=1` matched the unforced
+same-process run in 18/28 prompt-position comparisons; one prompt matched all
+seven positions. Remaining drift is consistent with known Metal batch
+nondeterminism, so full state/logit parity is **not attested**. A smaller
+Qwen4Exp fixture or clean deterministic backend is still required.
+
+Evidence: `sin-harness/proofs/dflash-pipeline/results/flashnext-native-mtp-20260829.json`.
 
 ## Required runtime work
 

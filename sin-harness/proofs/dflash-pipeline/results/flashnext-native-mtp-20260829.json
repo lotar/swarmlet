@@ -1,0 +1,30 @@
+{
+  "target": "Qwen3.8-Flash-Next-UD-Q4_K_XL",
+  "draft": "Qwen3.8-Flash-Next-MTP-Q8_0",
+  "benchmark": {
+    "baselineA1Tps": 33.97893918521272,
+    "mtpN1": {"tps": 35.976724752538075, "drafted": 252, "accepted": 216, "verifications": 252, "meanOutputPerVerification": 1.8571428571428572, "acceptanceRatio": 0.8571428571428571},
+    "mtpN3": {"tps": 37.74479212553071, "drafted": 421, "accepted": 316, "verifications": 141, "meanOutputPerVerification": 3.2411347517730498, "acceptanceRatio": 0.7505938242280285},
+    "mtpN7": {"tps": 30.115909645720446, "drafted": 690, "accepted": 330, "verifications": 100, "meanOutputPerVerification": 4.3, "acceptanceRatio": 0.4782608695652174},
+    "baselineA2Tps": 34.418459109183985,
+    "greedyContentParityAllMtpArms": true,
+    "concurrency": 1,
+    "serverSlots": 4,
+    "context": 8192,
+    "tokensPerPrompt": 128,
+    "prompts": 4
+  },
+  "rollback": {
+    "forcedHits": {"0": 436, "1": 207, "2": 126, "3": 75, "4": 56, "5": 37, "6": 32},
+    "tpsByForcedPosition": {"natural": 35.89159353911625, "0": 7.697081920196499, "1": 13.615291270172344, "2": 16.581321955722302, "3": 20.98095741017331, "4": 23.097476039091234, "5": 22.45995097342845, "6": 27.26329248167648},
+    "tokenSequenceParityPromptPositions": 18,
+    "tokenSequenceComparisons": 28,
+    "onePromptPassedAllSevenPositions": true,
+    "status": "partial: all positions exercised/no crashes; full parity blocked by Metal batch nondeterminism"
+  },
+  "artifacts": {
+    "bf16Sha256": "873b3bf098464b8a47032f14364ea02a8e06fb2b63cb7f65d12784581ca3944a",
+    "q8Sha256": "274b5f7dc81654e9f84937be74fd3fb539e1ff9b68b466224fc7cc88ae6983f5",
+    "q4Sha256": "650b7bb3b9b53e662da85f0a529a3e89452f7bcac2e7133ba5c9c32b8b328d2a"
+  }
+}
