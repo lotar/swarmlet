@@ -56,7 +56,7 @@ export function orderedReduce(
   const sorted = [...pieces].sort((a, b) => a.expertId - b.expertId);
   const out = Array<number>(HIDDEN).fill(0);
   for (const p of sorted) {
-    for (let i = 0; i < HIDDEN; i++) out[i] += p.gateWeight * p.output[i]!;
+    for (let i = 0; i < HIDDEN; i++) out[i] = out[i]! + p.gateWeight * p.output[i]!;
   }
   return out;
 }
@@ -78,7 +78,7 @@ export function referenceForward(
 
 /** 64 vectors cover all sign quadrants, ties, zeros and deterministic noise. */
 export function makeCorpus(count = 64): number[][] {
-  const anchors = [[3, 2], [3, -2], [-3, 2], [-3, -2], [0, 0], [2, 2], [-2, -2], [1, -1]];
+  const anchors: Array<readonly [number, number]> = [[3, 2], [3, -2], [-3, 2], [-3, -2], [0, 0], [2, 2], [-2, -2], [1, -1]];
   return Array.from({ length: count }, (_, i) => {
     const [a, b] = anchors[i % anchors.length]!;
     return [a, b, ...Array.from({ length: 6 }, (__, j) => (((i + 1) * (j + 3)) % 13 - 6) / 6)];

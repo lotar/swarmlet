@@ -1,0 +1,957 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script>document.documentElement.className+=" js"</script>
+<title>Swarmlet — sovereign AI mesh: own the knowledge, rent the intelligence</title>
+<meta name="description" content="Swarmlet runs open frontier-adjacent models on hardware you already own, learns your recurring workflows, and proves every improvement against your own private eval shard. Five-layer harness, signed gates, EU data residency. P0a proven: 8/8 end-to-end.">
+<meta name="theme-color" content="#0A0F16">
+<meta name="color-scheme" content="light">
+<link rel="canonical" href="https://swarmlet.ai/">
+<meta name="robots" content="index,follow,max-image-preview:large">
+
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="Swarmlet">
+<meta property="og:title" content="Swarmlet — own the knowledge, rent the intelligence">
+<meta property="og:description" content="Sovereign AI mesh: open models on your hardware, a self-improving knowledge layer, and a deterministic gate that reverts regressions. Measured on real hardware, not vibes.">
+<meta property="og:url" content="https://swarmlet.ai/">
+<meta property="og:image" content="https://swarmlet.ai/og.png">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta property="og:image:alt" content="Swarmlet — sovereign AI mesh">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="Swarmlet — own the knowledge, rent the intelligence">
+<meta name="twitter:description" content="Sovereign AI mesh: open models on your hardware, a self-improving knowledge layer, a deterministic gate. P0a proven 8/8.">
+<meta name="twitter:image" content="https://swarmlet.ai/og.png">
+
+<link rel="icon" href="favicon.svg" type="image/svg+xml">
+
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@graph": [
+    {
+      "@type": "Organization",
+      "@id": "https://swarmlet.ai/#org",
+      "name": "Swarmlet",
+      "url": "https://swarmlet.ai/",
+      "email": "hello@swarmlet.ai",
+      "description": "Sovereign intelligence mesh: a source-available harness that runs open-weight models on customer hardware and verifies its own improvements."
+    },
+    {
+      "@type": "WebSite",
+      "@id": "https://swarmlet.ai/#website",
+      "url": "https://swarmlet.ai/",
+      "name": "Swarmlet",
+      "publisher": { "@id": "https://swarmlet.ai/#org" },
+      "inLanguage": "en"
+    },
+    {
+      "@type": "SoftwareApplication",
+      "name": "Swarmlet harness",
+      "applicationCategory": "DeveloperApplication",
+      "operatingSystem": "macOS, Linux",
+      "offers": { "@type": "Offer", "price": "0", "priceCurrency": "EUR", "description": "Community tier: source-available harness, free for personal and noncommercial use and Commercial Use while the Corporate Group's Worldwide Gross Annual Revenue is not more than EUR 1,000,000, as defined in the licence." },
+      "featureList": [
+        "Model-agnostic L0 contract (OpenAI-compatible)",
+        "Git-backed knowledge layer with provenance commits",
+        "Deterministic nightly eval gate with signed certificates and auto-revert",
+        "Private per-node eval shards with local audition of foreign artifacts",
+        "Behavioral-diff certificates against off-domain drift",
+        "Multi-node mesh with redundant-execution certification and churn tolerance"
+      ],
+      "publisher": { "@id": "https://swarmlet.ai/#org" }
+    }
+  ]
+}
+</script>
+
+<style>
+/* ── Swarmlet · sharp-line light theme · system fonts · zero webfont requests ── */
+*,*::before,*::after{box-sizing:border-box}
+:root{
+  --paper:#F4F6F8; --paper-2:#E9EDF2; --white:#fff;
+  --ink:#0A0F16; --ink-2:#212B38; --muted:#4E5A6B; --faint:#556170;
+  --line:rgba(10,15,22,.14); --line-2:rgba(10,15,22,.08); --line-3:rgba(10,15,22,.28);
+  --cobalt:#1232CE; --cobalt-2:#2A55FF; --cobalt-soft:rgba(18,50,206,.07);
+  --live:#0C6C4C; --warn:#9E3B06;
+  --sans:system-ui,-apple-system,"Segoe UI",Roboto,"Helvetica Neue",Arial,sans-serif;
+  --mono:ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,"Liberation Mono",monospace;
+  --g:clamp(20px,5vw,52px);
+  --sec:clamp(64px,9vw,124px);
+  --max:1240px;
+}
+html{-webkit-text-size-adjust:100%;scroll-behavior:smooth}
+@media (prefers-reduced-motion:reduce){html{scroll-behavior:auto}}
+body{
+  margin:0;background:var(--paper);color:var(--ink);
+  font-family:var(--sans);font-size:clamp(16px,.55vw + 14.4px,18px);line-height:1.62;
+  font-feature-settings:"tnum" 0;-webkit-font-smoothing:antialiased;
+  overflow-x:hidden;
+}
+/* blueprint hairline field */
+body::before{
+  content:"";position:fixed;inset:0;z-index:0;pointer-events:none;
+  background-image:linear-gradient(to right,var(--line-2) 1px,transparent 1px),
+                   linear-gradient(to bottom,var(--line-2) 1px,transparent 1px);
+  background-size:96px 96px;
+  -webkit-mask-image:linear-gradient(to bottom,rgba(0,0,0,.55),transparent 70%);
+          mask-image:linear-gradient(to bottom,rgba(0,0,0,.55),transparent 70%);
+}
+img,svg{display:block;max-width:100%}
+a{color:var(--cobalt);text-underline-offset:3px;text-decoration-thickness:1px}
+a:hover{color:var(--cobalt-2)}
+:focus-visible{outline:2px solid var(--cobalt);outline-offset:3px}
+::selection{background:#DCE4FF;color:var(--ink)}
+h1,h2,h3,h4{margin:0;font-weight:700;letter-spacing:-.026em;line-height:1.06;text-wrap:balance}
+p{margin:0}
+p,li{text-wrap:pretty}
+.skip{position:absolute;left:-9999px;top:0;z-index:99;background:var(--ink);color:#fff;padding:12px 18px;font:600 13px/1 var(--mono)}
+.skip:focus{left:12px;top:12px}
+.wrap{width:100%;max-width:var(--max);margin-inline:auto;padding-inline:var(--g);position:relative;z-index:1}
+.mono{font-family:var(--mono)}
+.eyebrow{font:600 11px/1 var(--mono);letter-spacing:.16em;text-transform:uppercase;color:var(--cobalt)}
+.eyebrow--muted{color:var(--faint)}
+.eyebrow--seg{display:flex;flex-wrap:wrap;column-gap:.9em;align-items:baseline}
+.eyebrow--seg i{font-style:normal;position:relative}
+.eyebrow--seg i+ i::before{content:"/";position:absolute;left:-.62em;color:var(--cobalt);opacity:.5}
+@media (max-width:600px){.eyebrow{font-size:10px;letter-spacing:.1em;line-height:1.5}.eyebrow--seg{display:grid;row-gap:5px}.eyebrow--seg i+ i::before{content:none}}
+.hairline{height:1px;background:var(--line);border:0;margin:0}
+
+/* ── nav ── */
+.nav{position:sticky;top:0;z-index:40;background:rgba(244,246,248,.86);backdrop-filter:blur(10px) saturate(1.2);-webkit-backdrop-filter:blur(10px) saturate(1.2);border-bottom:1px solid var(--line)}
+.nav__in{display:flex;align-items:center;gap:22px;height:62px}
+.brand{display:flex;align-items:center;gap:10px;text-decoration:none;color:var(--ink);font-weight:700;letter-spacing:-.02em;font-size:16.5px}
+.brand svg{width:23px;height:23px;flex:0 0 auto;overflow:visible}
+.brand b{font-weight:700}
+.brand span{color:#546074;font-weight:500}
+.nav__links{display:flex;gap:2px;margin-left:auto;align-items:center}
+.nav__links a{color:var(--ink-2);text-decoration:none;font:500 13.5px/1 var(--sans);padding:11px 11px;border:1px solid transparent}
+.nav__links a:hover{color:var(--cobalt);background:var(--cobalt-soft);border-color:rgba(18,50,206,.16)}
+.nav__links a[aria-current="true"]{color:var(--cobalt);border-bottom-color:var(--cobalt)}
+.nav__cta{display:inline-flex;align-items:center;gap:8px;background:var(--ink);color:#fff!important;text-decoration:none;font:600 13px/1 var(--mono);letter-spacing:.04em;padding:13px 16px;min-height:44px;border:1px solid var(--ink)}
+.nav__cta:hover{background:var(--cobalt);border-color:var(--cobalt)}
+.nav__cta svg{width:13px;height:13px;flex:0 0 auto}
+.nav__menu{display:none;margin-left:auto}
+.nav__menu>summary{list-style:none;cursor:pointer;font:600 12px/1 var(--mono);letter-spacing:.12em;text-transform:uppercase;border:1px solid var(--line-3);padding:13px 14px;min-height:44px;display:flex;align-items:center;gap:10px}
+.nav__menu>summary::-webkit-details-marker{display:none}
+.nav__menu>summary::after{content:"";width:9px;height:9px;border-right:1.5px solid currentColor;border-bottom:1.5px solid currentColor;transform:rotate(45deg) translateY(-2px)}
+.nav__menu[open]>summary::after{transform:rotate(-135deg) translateY(-1px)}
+.nav__pop{position:absolute;right:var(--g);top:60px;background:var(--white);border:1px solid var(--line-3);padding:6px;display:grid;min-width:216px;box-shadow:0 18px 44px -20px rgba(10,15,22,.34)}
+.nav__pop a{display:flex;align-items:center;min-height:46px;padding:0 12px;text-decoration:none;color:var(--ink);font:500 14px/1 var(--sans);border-bottom:1px solid var(--line-2)}
+.nav__pop a:last-of-type{border-bottom:0}
+.nav__pop a:hover{background:var(--cobalt-soft);color:var(--cobalt)}
+.nav__pop .nav__cta{margin:6px;justify-content:center}
+.prog{position:absolute;left:0;bottom:-1px;height:2px;width:100%;background:var(--cobalt);transform:scaleX(0);transform-origin:0 50%;will-change:transform}
+@media (max-width:900px){.nav__links{display:none}.nav__menu{display:block}
+  /* per-frame blur over an animating canvas is the most expensive thing a phone nav can do */
+  .nav{background:#F4F6F8;-webkit-backdrop-filter:none;backdrop-filter:none}}
+
+/* ── hero ── */
+.hero{position:relative;isolation:isolate;overflow:hidden;border-bottom:1px solid var(--line);background:linear-gradient(180deg,#FBFCFD 0%,#F1F4F7 62%,#ECF0F4 100%)}
+#mesh-canvas{position:absolute;inset:0;width:100%;height:100%;z-index:-1;display:block}
+.hero__in{padding:clamp(56px,10vw,104px) 0 clamp(46px,6vw,72px);display:grid;grid-template-columns:minmax(0,1.32fr) minmax(0,1fr);gap:clamp(32px,5vw,68px);align-items:end}
+@media (max-width:980px){.hero__in{grid-template-columns:1fr;align-items:start;padding-block:clamp(46px,9vw,72px) 46px}}
+h1{font-size:clamp(2.35rem,6.6vw,4.5rem);letter-spacing:-.042em;margin-top:18px}
+h1 em{font-style:normal;color:var(--cobalt);position:relative;white-space:nowrap}
+h1 em::after{content:"";position:absolute;left:0;right:0;bottom:.06em;height:.075em;background:var(--cobalt);opacity:.22}
+.lede{margin-top:22px;font-size:clamp(1.02rem,.5vw + .92rem,1.2rem);color:var(--muted);max-width:60ch}
+.lede b{color:var(--ink);font-weight:600}
+.cta{display:flex;flex-wrap:wrap;gap:12px;margin-top:32px}
+.btn{display:inline-flex;align-items:center;gap:10px;font:600 13.5px/1 var(--mono);letter-spacing:.03em;text-decoration:none;padding:16px 20px;min-height:50px;border:1px solid var(--ink);color:var(--ink);background:transparent}
+.btn--pri{background:var(--ink);color:#fff}
+.btn--pri:hover{background:var(--cobalt);border-color:var(--cobalt);color:#fff}
+.btn--ghost:hover{border-color:var(--cobalt);color:var(--cobalt);background:var(--cobalt-soft)}
+.btn svg{width:14px;height:14px}
+.status{display:inline-flex;align-items:center;gap:9px;font:600 11px/1 var(--mono);letter-spacing:.13em;text-transform:uppercase;color:var(--live);border:1px solid rgba(12,108,76,.32);background:rgba(12,108,76,.07);padding:8px 11px}
+.dot{width:7px;height:7px;background:var(--live);border-radius:50%;box-shadow:0 0 0 0 rgba(12,108,76,.5);animation:pulse 2.4s cubic-bezier(.24,0,.38,1) infinite}
+@keyframes pulse{0%{box-shadow:0 0 0 0 rgba(12,108,76,.45)}70%,100%{box-shadow:0 0 0 9px rgba(12,108,76,0)}}
+@media (prefers-reduced-motion:reduce){.dot{animation:none}}
+
+/* hero telemetry card */
+.panel{background:var(--white);border:1px solid var(--line-3);position:relative}
+.panel::before,.panel::after{content:"";position:absolute;width:9px;height:9px;border:1px solid var(--cobalt);pointer-events:none}
+.panel::before{top:-1px;left:-1px;border-right:0;border-bottom:0}
+.panel::after{bottom:-1px;right:-1px;border-left:0;border-top:0}
+.panel__hd{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:13px 16px;border-bottom:1px solid var(--line);font:600 10.5px/1 var(--mono);letter-spacing:.14em;text-transform:uppercase;color:var(--muted)}
+.panel__hd b{color:var(--ink)}
+.metrics{display:grid;grid-template-columns:1fr 1fr}
+.metric{padding:17px 16px;border-right:1px solid var(--line);border-bottom:1px solid var(--line)}
+.metric:nth-child(2n){border-right:0}
+.metric:nth-last-child(-n+2){border-bottom:0}
+.metric dt{font:600 10px/1.3 var(--mono);letter-spacing:.12em;text-transform:uppercase;color:var(--faint)}
+.metric dd{margin:9px 0 0;font:700 clamp(1.5rem,2.2vw,2rem)/1 var(--mono);letter-spacing:-.03em;color:var(--ink);font-variant-numeric:tabular-nums}
+.metric dd small{font-size:.5em;font-weight:600;color:var(--muted);letter-spacing:0;margin-left:3px}
+.panel__ft{padding:12px 16px;font:500 11.5px/1.5 var(--mono);color:var(--muted);border-top:1px solid var(--line)}
+.panel__ft code{color:var(--cobalt)}
+/* the three logical sites from the accepted GPU-site simulation run */
+.rack{list-style:none;margin:0;padding:0;border-top:1px solid var(--line)}
+.rack li{display:grid;grid-template-columns:9px minmax(0,auto) 1fr auto;align-items:center;gap:9px;padding:9px 16px;border-bottom:1px solid var(--line);font:500 11px/1.2 var(--mono);color:var(--muted)}
+.rack li+li{border-top:0}
+.rack b{color:var(--ink);font-weight:700;letter-spacing:.06em;text-transform:uppercase;font-size:10.5px}
+.rack .port{color:var(--ink);font-variant-numeric:tabular-nums}
+.rack .role{font-size:10px;letter-spacing:.06em;text-transform:uppercase;color:var(--faint);text-align:right;white-space:nowrap}
+.rack i{width:7px;height:7px;background:var(--live);display:block;box-shadow:0 0 0 2px rgba(12,108,76,.14)}
+.rack .i--cold{background:var(--faint);box-shadow:0 0 0 2px rgba(124,140,163,.16)}
+
+/* ── section chrome ── */
+section{position:relative;z-index:1}
+.sec{padding-block:var(--sec)}
+.sec--tight{padding-block:clamp(48px,7vw,84px)}
+.sec__hd{position:relative;display:grid;grid-template-columns:minmax(0,auto) 1fr;gap:18px;align-items:baseline;margin-bottom:clamp(28px,4vw,48px);padding-bottom:clamp(14px,1.8vw,20px);border-bottom:1px solid var(--line)}
+.sec__hd .num{font:600 11px/1 var(--mono);letter-spacing:.14em;color:var(--cobalt);padding-top:9px}
+.sec__hd h2{font-size:clamp(1.72rem,3.5vw,2.6rem);max-width:26ch}
+/* the rule is the hairline under the heading, with a cobalt tick at its left end */
+.sec__hd .rule{position:absolute;left:0;bottom:-1px;width:38px;height:2px;background:var(--cobalt)}
+.sec__lede{max-width:74ch;color:var(--muted);font-size:clamp(1rem,.42vw + .93rem,1.12rem)}
+.sec__lede + .grid,.sec__lede + .sec__body{margin-top:clamp(28px,4vw,44px)}
+.sec--ink{background:var(--ink);color:#EEF2F7;border-block:1px solid var(--ink)}
+.sec--ink .sec__hd h2,.sec--ink h3{color:#fff}
+.sec--ink .sec__lede,.sec--ink p{color:#B7C2D2}
+.sec--ink .num{color:#7EA0FF}
+.sec--ink .sec__hd{border-bottom-color:rgba(255,255,255,.14)}
+.sec--ink .sec__hd .rule{background:var(--cobalt-2)}
+.sec--ink .eyebrow{color:#8FAEFF}
+.sec--paper2{background:var(--paper-2);border-block:1px solid var(--line)}
+
+/* reveal */
+.rv{opacity:1}
+.js .rv{opacity:0;transform:translateY(12px);transition:opacity .42s cubic-bezier(.2,.7,.2,1),transform .42s cubic-bezier(.2,.7,.2,1)}
+.js .rv.in{opacity:1;transform:none}
+@media (prefers-reduced-motion:reduce){.js .rv{opacity:1;transform:none;transition:none}}
+
+/* ── grids / cards ── */
+.grid{display:grid;gap:1px;background:var(--line);border:1px solid var(--line)}
+.g2{grid-template-columns:repeat(2,minmax(0,1fr))}
+.g3{grid-template-columns:repeat(3,minmax(0,1fr))}
+.g4{grid-template-columns:repeat(4,minmax(0,1fr))}
+@media (max-width:980px){.g3,.g4{grid-template-columns:repeat(2,minmax(0,1fr))}}
+@media (max-width:660px){.g2,.g3,.g4{grid-template-columns:1fr}}
+.cell{background:var(--paper);padding:clamp(20px,2.4vw,30px);position:relative}
+.cell--w{background:var(--white)}
+.cell h3{font-size:1.075rem;margin-bottom:9px;letter-spacing:-.015em}
+.cell p{color:var(--muted);font-size:.945rem}
+.cell .k{font:600 10.5px/1 var(--mono);letter-spacing:.14em;text-transform:uppercase;color:var(--cobalt);display:block;margin-bottom:14px}
+.cell--ink{background:var(--ink);color:#C7D2E0}
+.cell--ink h3{color:#fff}
+.cell--ink p{color:#AEBBCB}
+.tag{display:inline-flex;align-items:center;font:600 10px/1 var(--mono);letter-spacing:.1em;text-transform:uppercase;padding:6px 8px;border:1px solid currentColor;color:var(--muted)}
+.tag--live{color:var(--live)}.tag--warn{color:var(--warn)}.tag--cobalt{color:var(--cobalt)}
+.cell .tag{position:absolute;top:16px;right:16px}
+@media (max-width:660px){.cell .tag{position:static;margin-bottom:12px}}
+
+/* ── layers accordion (native, no JS) ── */
+.layers{border-top:1px solid var(--line-3)}
+.layer{border-bottom:1px solid var(--line-3)}
+.layer>summary{list-style:none;cursor:pointer;display:grid;grid-template-columns:64px minmax(0,1fr) auto 30px;gap:clamp(12px,2vw,26px);align-items:center;padding:clamp(18px,2.4vw,26px) 0;min-height:64px}
+.layer>summary::-webkit-details-marker{display:none}
+.layer>summary:hover h3{color:var(--cobalt)}
+.layer>summary .id{font:700 13px/1 var(--mono);color:var(--cobalt);letter-spacing:.06em}
+.layer>summary h3{font-size:clamp(1.06rem,1.9vw,1.42rem);transition:color .18s}
+.layer>summary .meta{font:500 11px/1 var(--mono);letter-spacing:.1em;text-transform:uppercase;color:var(--faint);text-align:right}
+.layer>summary .pm{justify-self:end;width:14px;height:14px;position:relative}
+.layer>summary .pm::before,.layer>summary .pm::after{content:"";position:absolute;background:var(--ink);transition:transform .22s cubic-bezier(.2,.7,.2,1),opacity .22s}
+.layer>summary .pm::before{left:0;right:0;top:6px;height:1.5px}
+.layer>summary .pm::after{top:0;bottom:0;left:6px;width:1.5px}
+.layer[open]>summary .pm::after{transform:scaleY(0)}
+.layer__body{padding:0 0 clamp(22px,3vw,34px);display:grid;grid-template-columns:64px minmax(0,1fr);gap:clamp(12px,2vw,26px)}
+.layer__body>div{display:grid;gap:18px;grid-template-columns:minmax(0,1.25fr) minmax(0,1fr);gap:clamp(20px,3vw,40px)}
+@media (max-width:760px){
+  .layer>summary{grid-template-columns:44px minmax(0,1fr) 24px}
+  .layer>summary .meta{display:none}
+  .layer__body{grid-template-columns:1fr;padding-left:0}
+  .layer__body>div{grid-template-columns:1fr}
+}
+.layer p{color:var(--muted);font-size:.98rem}
+.layer .why{border-left:2px solid var(--cobalt);padding-left:16px}
+.layer .why b{display:block;font:600 10.5px/1 var(--mono);letter-spacing:.14em;text-transform:uppercase;color:var(--cobalt);margin-bottom:8px}
+.layer .why p{font-size:.93rem}
+.facts{list-style:none;margin:0;padding:0;display:grid;gap:9px}
+/* markers are positioned, not grid items: inline <b>/<code> children stay inline */
+.facts li{position:relative;padding-left:20px;font:500 .875rem/1.6 var(--mono);color:var(--ink-2)}
+.facts li::before{content:"";position:absolute;left:1px;top:.62em;width:6px;height:6px;background:var(--cobalt);transform:rotate(45deg)}
+
+/* ── loop pipeline ── */
+.loop{display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:1px;background:var(--line-3);border:1px solid var(--line-3)}
+@media (max-width:1040px){.loop{grid-template-columns:repeat(3,minmax(0,1fr))}}
+@media (max-width:660px){.loop{grid-template-columns:1fr}}
+.step{background:var(--ink);padding:20px 18px 20px;position:relative;min-height:172px;display:flex;flex-direction:column}
+.step .n{font:600 10px/1 var(--mono);letter-spacing:.14em;color:#7EA0FF}
+.step h3{color:#fff;font-size:1.02rem;margin:12px 0 8px}
+.step p{color:#A9B6C7;font-size:.855rem;line-height:1.55;margin-bottom:14px}
+.step .cad{margin-top:auto;font:600 10px/1 var(--mono);letter-spacing:.1em;text-transform:uppercase;color:#E4EBF5;border-top:1px solid rgba(255,255,255,.14);padding-top:11px}
+.step::after{content:"";position:absolute;top:0;left:0;height:2px;width:100%;background:var(--cobalt-2)}
+.js .step::after{width:0}
+.js .loop.in .step::after{width:100%;transition:width .5s cubic-bezier(.2,.7,.2,1)}
+.loop.in .step:nth-child(2)::after{transition-delay:.09s}.loop.in .step:nth-child(3)::after{transition-delay:.18s}
+.loop.in .step:nth-child(4)::after{transition-delay:.27s}.loop.in .step:nth-child(5)::after{transition-delay:.36s}.loop.in .step:nth-child(6)::after{transition-delay:.45s}
+@media (prefers-reduced-motion:reduce){.loop.in .step::after{transition-delay:0s;transition-duration:.01s}}
+/* short stagger, capped: a long page must not dribble in */
+.rv:nth-child(2){transition-delay:.05s}.rv:nth-child(3){transition-delay:.1s}
+.rv:nth-child(4){transition-delay:.14s}.rv:nth-child(n+5){transition-delay:.18s}
+.loopnote{margin-top:22px;padding-top:16px;border-top:1px solid rgba(255,255,255,.14);display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px 34px;font:500 12px/1.55 var(--mono);color:#9FB0C6}
+.loopnote>span{position:relative;padding-left:17px}
+.loopnote>span::before{content:"";position:absolute;left:0;top:.45em;width:6px;height:6px;background:var(--cobalt-2);transform:rotate(45deg)}
+@media (max-width:760px){.loopnote{grid-template-columns:1fr}}
+.loopnote b{color:#E7EDF5}
+.loopnote .mono{color:#B9C6D8}
+
+/* ── evidence ── */
+.term{background:var(--ink);color:#DCE6F2;border:1px solid var(--ink);overflow:hidden}
+.term__hd{display:flex;justify-content:space-between;gap:12px;padding:12px 15px;border-bottom:1px solid rgba(255,255,255,.14);font:600 10.5px/1 var(--mono);letter-spacing:.13em;text-transform:uppercase;color:#94A6BE}
+.term__cmd,.term__ft{padding:13px 15px;font:500 11.8px/1.6 var(--mono)}
+.term__cmd{border-bottom:1px solid rgba(255,255,255,.1)}
+.term__ft{border-top:1px solid rgba(255,255,255,.14);color:#A9B6C7}
+.tlog{list-style:none;margin:0;padding:8px 0 9px;font:500 11.8px/1.5 var(--mono)}
+.tlog li{display:grid;grid-template-columns:auto minmax(0,1fr) auto;gap:4px 12px;align-items:baseline;padding:4px 15px}
+.tlog .g{color:var(--live)}
+.tlog .t{color:#DCE6F2}
+.tlog .y{color:#F5C46B;text-align:right;white-space:nowrap;font-size:.94em}
+@media (max-width:620px){.tlog li{grid-template-columns:auto minmax(0,1fr)}.tlog .y{grid-column:2;text-align:left}}
+.term .c{color:#7C8CA3}.term .g{color:#5FD6A4}.term .b{color:#8FAEFF}.term .y{color:#F5C46B}.term .w{color:#E7EDF5;font-weight:700}
+.ev{display:grid;gap:1px;background:var(--line);border:1px solid var(--line);margin-top:26px}
+.ev>div{background:var(--white);padding:18px;display:grid;grid-template-columns:minmax(0,1fr) auto;gap:14px;align-items:center}
+.ev p{color:var(--muted);font-size:.92rem;margin-top:5px}
+.ev b{font-size:.98rem}
+.ev .v{font:700 1.16rem/1 var(--mono);color:var(--ink);white-space:nowrap;font-variant-numeric:tabular-nums}
+.ev .v.ok{color:var(--live)}.ev .v.no{color:var(--warn)}
+@media (max-width:660px){.ev>div{grid-template-columns:1fr}.ev .v{justify-self:start}}
+
+/* ── table + chart ── */
+.tablewrap{overflow-x:auto;border:1px solid var(--line-3);background:var(--white);-webkit-overflow-scrolling:touch}
+.tablewrap:focus-visible{outline:2px solid var(--cobalt);outline-offset:2px}
+.scrollhint{display:none;font:600 10.5px/1 var(--mono);letter-spacing:.12em;text-transform:uppercase;color:var(--faint);margin:0 0 9px}
+@media (max-width:760px){.scrollhint{display:flex;align-items:center;gap:8px}
+ .scrollhint::after{content:"";flex:1;height:1px;background:linear-gradient(90deg,var(--line-3),transparent)}}
+table{border-collapse:collapse;width:100%;min-width:640px;font-variant-numeric:tabular-nums}
+caption{text-align:left;padding:15px 16px;border-bottom:1px solid var(--line);font:600 10.5px/1.5 var(--mono);letter-spacing:.12em;text-transform:uppercase;color:var(--muted)}
+th,td{padding:13px 16px;text-align:right;border-bottom:1px solid var(--line-2);font:500 13.4px/1.4 var(--mono);white-space:nowrap}
+th{font:600 10.5px/1.4 var(--mono);letter-spacing:.1em;text-transform:uppercase;color:var(--faint);vertical-align:bottom}
+th:first-child,td:first-child{text-align:left;font-family:var(--sans);font-weight:600;white-space:normal;min-width:180px}
+tbody tr:hover{background:var(--cobalt-soft)}
+tbody tr:last-child td{border-bottom:0}
+td.hi{color:var(--live);font-weight:700}td.lo{color:var(--warn);font-weight:700}
+.note{font:500 12px/1.6 var(--mono);color:var(--faint);margin-top:14px;max-width:92ch}
+.chart{margin-top:30px;border:1px solid var(--line-3);background:var(--white);padding:clamp(18px,2.6vw,28px)}
+.chart h3{font-size:1.02rem}
+.chart .sub{font:500 11.5px/1.6 var(--mono);color:var(--faint);margin-top:6px}
+.bars{margin-top:22px;display:grid;gap:13px}
+.bar{display:grid;grid-template-columns:minmax(112px,1.35fr) minmax(0,4fr) 78px;gap:clamp(10px,1.6vw,18px);align-items:center}
+.bar span:first-child{font:600 12px/1.35 var(--mono);letter-spacing:.01em;color:var(--ink-2)}
+.bar .track{height:22px;background:repeating-linear-gradient(to right,var(--line-2) 0 1px,transparent 1px 40px);border-left:1px solid var(--line-3);position:relative}
+.bar i{position:absolute;inset:0 auto 0 0;width:var(--w);background:var(--ink);transition:width .62s cubic-bezier(.2,.7,.2,1)}
+.js .bar i{width:0}
+.js .chart.in .bar i{width:var(--w)}
+.bar.best i{background:var(--live)}.bar.bad i{background:var(--warn)}
+.bar em{font:700 12.6px/1 var(--mono);font-style:normal;text-align:right;color:var(--ink);font-variant-numeric:tabular-nums}
+.bar.bad em{color:var(--warn)}
+@media (prefers-reduced-motion:reduce){.chart.in .bar i{transition-duration:.01s}}
+@media (max-width:660px){.bar{grid-template-columns:1fr auto;gap:6px 10px}.bar .track{grid-column:1/-1;order:3;height:16px}}
+
+/* ── claims / honesty ── */
+.claims{border-top:1px solid rgba(255,255,255,.18)}
+.claim{border-bottom:1px solid rgba(255,255,255,.18);padding:clamp(18px,2.4vw,26px) 0;display:grid;grid-template-columns:minmax(0,1.4fr) minmax(0,196px) minmax(0,2fr);gap:clamp(12px,2vw,28px)}
+@media (max-width:880px){.claim{grid-template-columns:minmax(0,1fr) minmax(0,170px)}.claim p{grid-column:1/-1}}
+.claim h3{font-size:1.04rem;color:#fff;font-weight:600;letter-spacing:-.01em}
+.claim p{color:#A9B6C7;font-size:.9rem}
+.verdict{display:block;font:700 11px/1.45 var(--mono);letter-spacing:.06em;text-transform:uppercase;padding:8px 10px;border:1px solid currentColor;align-self:start;justify-self:stretch;overflow-wrap:anywhere}
+.v-no{color:#FF8A6B}.v-yes{color:#5FD6A4}.v-mid{color:#F5C46B}
+.refuse{list-style:none;margin:0;padding:0;display:grid;gap:1px;background:rgba(255,255,255,.16);border:1px solid rgba(255,255,255,.16)}
+.refuse li{background:var(--ink);padding:17px 18px;display:grid;grid-template-columns:26px 1fr;gap:14px;color:#B7C2D2;font-size:.925rem}
+.refuse li span{font:700 11px/1.5 var(--mono);color:#7EA0FF}
+.refuse li b{color:#fff;font-weight:600}
+
+/* ── roadmap ── */
+.road{display:grid;gap:0;border-top:1px solid var(--line-3)}
+.phase{display:grid;grid-template-columns:150px minmax(0,1fr) 128px;gap:clamp(12px,2.4vw,30px);padding:clamp(20px,2.6vw,30px) 0;border-bottom:1px solid var(--line-3);position:relative}
+@media (max-width:820px){.phase{grid-template-columns:1fr;gap:10px}}
+.phase .when{font:700 12px/1.4 var(--mono);letter-spacing:.06em;text-transform:uppercase;color:var(--cobalt)}
+.phase h3{font-size:1.1rem;margin-bottom:8px}
+.phase p{color:var(--muted);font-size:.93rem}
+.phase .st{justify-self:start;align-self:start}
+.phase[data-done] .when::before{content:"";display:inline-block;width:6px;height:6px;background:var(--live);margin-right:8px;transform:translateY(-2px)}
+
+/* ── tiers ── */
+.tiers{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:1px;background:var(--line);border:1px solid var(--line)}
+@media (max-width:1040px){.tiers{grid-template-columns:repeat(2,minmax(0,1fr))}}
+@media (max-width:620px){.tiers{grid-template-columns:1fr}}
+.tier{background:var(--white);padding:22px 20px 24px;display:flex;flex-direction:column;gap:12px;min-height:210px}
+.tier--key{background:var(--ink);color:#C7D2E0}
+.tier--key h3,.tier--key .price{color:#fff}
+.tier h3{font-size:1.02rem}
+.tier p{font-size:.875rem;color:var(--muted);flex:1}
+.tier--key p{color:#A9B6C7}
+.tier .price{font:700 1rem/1.25 var(--mono);letter-spacing:-.01em;color:var(--ink)}
+.tier .price small{display:block;font:500 10.5px/1.5 var(--mono);letter-spacing:.1em;text-transform:uppercase;color:var(--faint)}
+
+/* ── faq ── */
+.faq{border-top:1px solid var(--line-3);counter-reset:q}
+.qa{border-bottom:1px solid var(--line-3)}
+.qa>summary{list-style:none;cursor:pointer;padding:14px 40px 14px 0;position:relative;font-weight:600;font-size:1.02rem;min-height:50px;display:flex;align-items:center;gap:18px}
+.qa>summary::before{counter-increment:q;content:counter(q,decimal-leading-zero);flex:0 0 auto;font:600 11px/1 var(--mono);letter-spacing:.12em;color:var(--cobalt);opacity:.85}
+.qa>summary::-webkit-details-marker{display:none}
+.qa>summary::after{content:"";position:absolute;right:6px;top:50%;width:11px;height:11px;border-right:1.6px solid var(--cobalt);border-bottom:1.6px solid var(--cobalt);transform:translateY(-70%) rotate(45deg);transition:transform .2s}
+.qa[open]>summary::after{transform:translateY(-25%) rotate(-135deg)}
+.qa>summary:hover{color:var(--cobalt)}
+.qa__b{padding:0 0 22px;max-width:78ch}
+.qa__b p{color:var(--muted);font-size:.95rem}
+.qa__b p+p{margin-top:12px}
+.qa__b code{font:500 .86em/1.5 var(--mono);background:var(--white);border:1px solid var(--line);padding:1px 5px}
+
+/* ── access / form ── */
+#access{position:relative;isolation:isolate;overflow:hidden}
+#access canvas{position:absolute;inset:0;width:100%;height:100%;z-index:-1}
+.access-grid{display:grid;grid-template-columns:minmax(0,1.05fr) minmax(0,1fr);gap:clamp(28px,5vw,64px);align-items:start}
+@media (max-width:940px){.access-grid{grid-template-columns:1fr}}
+form{background:#0C121B;border:1px solid rgba(255,255,255,.18);padding:clamp(20px,3vw,30px);box-shadow:0 30px 70px -40px rgba(0,0,0,.8)}
+.field{display:grid;gap:7px;margin-bottom:16px}
+.field label{font:600 10.5px/1 var(--mono);letter-spacing:.13em;text-transform:uppercase;color:#9FB0C6}
+.field input,.field select{width:100%;background:#0E1420;color:#fff;border:1px solid rgba(255,255,255,.26);border-radius:0;padding:14px 13px;font:500 15px/1.3 var(--sans);min-height:48px}
+.field input:focus-visible,.field select:focus-visible{outline:2px solid #7EA0FF;outline-offset:1px;border-color:#7EA0FF}
+.field input::placeholder{color:#6D7C92}
+.field.two{grid-template-columns:1fr 1fr;gap:14px}
+@media (max-width:520px){.field.two{grid-template-columns:1fr;row-gap:16px}}
+.field.two>.field{margin-bottom:0}
+@media (max-width:520px){.field.two{grid-template-columns:1fr}}
+.err{color:#FFB59B;font:500 12px/1.4 var(--mono);min-height:0}
+.err:empty{display:none}
+form .btn--pri{width:100%;justify-content:center;background:#fff;color:var(--ink);border-color:#fff}
+form .btn--pri:hover{background:#7EA0FF;border-color:#7EA0FF;color:#04080F}
+.field label{color:#9FB0C6}
+.privacy{margin-top:14px;font:500 11.5px/1.6 var(--mono);color:#93A2B7}
+.ok{display:none;border:1px solid #5FD6A4;background:rgba(95,214,164,.09);padding:22px}
+.ok.show{display:block}
+.ok h3{color:#fff;font-size:1.06rem;margin-bottom:8px}
+.ok p{color:#B7C2D2;font-size:.9rem}
+.ok a{color:#7EA0FF}
+form.done .fields{display:none}
+.access-list{list-style:none;margin:22px 0 0;padding:0;display:grid;gap:1px;background:rgba(255,255,255,.16);border:1px solid rgba(255,255,255,.16)}
+.access-list li{background:#0C121B;padding:15px 17px;display:grid;grid-template-columns:16px 1fr;gap:13px;color:#B7C2D2;font-size:.925rem}
+.access-list li::before{content:"";width:8px;height:8px;background:#5FD6A4;margin-top:8px;transform:rotate(45deg)}
+.access-list b{color:#fff}
+
+/* ── thesis band ── */
+#thesis{position:relative;isolation:isolate;overflow:hidden}
+#thesis canvas{position:absolute;inset:0;width:100%;height:100%;z-index:-1;opacity:.85}
+.thesis-q{font-size:clamp(1.3rem,3.1vw,2.05rem);line-height:1.28;letter-spacing:-.025em;max-width:34ch;color:var(--ink);font-weight:700}
+.thesis-q b{color:var(--cobalt)}
+.thesis-grid{display:grid;grid-template-columns:minmax(0,1.15fr) minmax(0,1fr);gap:clamp(26px,4vw,60px);align-items:end}
+@media (max-width:900px){.thesis-grid{grid-template-columns:1fr;gap:32px}}
+.kv{display:grid;gap:1px;background:var(--line);border:1px solid var(--line)}
+.kv>div{background:rgba(255,255,255,.88);padding:15px 17px;display:grid;grid-template-columns:minmax(0,.9fr) minmax(0,1.1fr);gap:14px;align-items:baseline}
+.kv dt{font:600 10.5px/1.4 var(--mono);letter-spacing:.12em;text-transform:uppercase;color:var(--faint)}
+.kv dd{margin:0;font-size:.93rem;color:var(--ink-2)}
+.kv .no{color:var(--warn);font-weight:600}
+.kv .yes{color:var(--live);font-weight:600}
+
+/* ── mesh diagram ── */
+.diagram{border:1px solid var(--line-3);background:var(--white);padding:clamp(16px,2.4vw,26px)}
+.diagram svg{width:100%;height:auto}
+.diagram figcaption{margin-top:16px;font:500 12px/1.65 var(--mono);color:var(--faint)}
+.dash{stroke-dasharray:5 7;animation:flow 1.4s linear infinite}
+@keyframes flow{to{stroke-dashoffset:-24}}
+@media (prefers-reduced-motion:reduce){.dash{animation:none}}
+.sw{display:flex;flex-wrap:wrap;gap:8px;margin-top:18px}
+.sw .tag{color:var(--muted)}
+
+/* ── footer ── */
+footer{background:var(--ink);color:#A9B6C7;padding:clamp(40px,6vw,66px) 0 26px;font-size:.9rem}
+.f-grid{display:grid;grid-template-columns:minmax(0,1.4fr) repeat(3,minmax(0,1fr));gap:clamp(22px,4vw,44px)}
+@media (max-width:820px){.f-grid{grid-template-columns:1fr 1fr}}
+@media (max-width:520px){.f-grid{grid-template-columns:1fr}}
+footer h3{font:600 10.5px/1 var(--mono);letter-spacing:.14em;text-transform:uppercase;color:#7C8CA3;margin-bottom:15px}
+footer ul{list-style:none;margin:0;padding:0;display:grid;gap:11px}
+footer a{color:#D6DFEA;text-decoration:none;border-bottom:1px solid rgba(255,255,255,.18)}
+footer a:hover{color:#fff;border-color:#7EA0FF}
+.f-brand{display:flex;align-items:center;gap:10px;color:#fff;font-weight:700;font-size:17px;margin-bottom:14px}
+.f-brand svg{width:24px;height:24px}
+.f-bot{margin-top:clamp(30px,5vw,52px);padding-top:20px;border-top:1px solid rgba(255,255,255,.14);display:flex;flex-wrap:wrap;gap:12px 26px;justify-content:space-between;font:500 11.5px/1.6 var(--mono);color:#7C8CA3}
+.f-bot a{color:#A9B6C7}
+
+/* utility */
+.mt-s{margin-top:14px}.mt-m{margin-top:26px}.mt-l{margin-top:clamp(32px,5vw,54px)}
+.two{display:grid;grid-template-columns:minmax(0,1.06fr) minmax(0,1fr);gap:clamp(22px,4vw,56px);align-items:start}
+@media (max-width:900px){.two{grid-template-columns:1fr;gap:28px}}
+.pull{font-size:clamp(1.06rem,1.9vw,1.3rem);line-height:1.42;letter-spacing:-.015em;color:var(--ink);border-left:2px solid var(--cobalt);padding-left:20px;max-width:56ch}
+.sec--ink .pull{color:#fff;border-color:#7EA0FF}
+.small{font-size:.9rem;color:var(--muted)}
+code.k{font:600 .86em/1 var(--mono);background:var(--cobalt-soft);color:var(--cobalt);border:1px solid rgba(18,50,206,.2);padding:3px 6px;white-space:nowrap}
+noscript .ns{border:1px solid var(--line-3);background:var(--white);padding:14px 16px;font:500 13px/1.5 var(--mono);color:var(--muted)}
+</style>
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+
+<header class="nav">
+  <div class="wrap nav__in">
+    <a class="brand" href="#top" aria-label="swarmlet.ai — home">
+      <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 2 22 12 12 22 2 12Z" stroke="#1232CE" stroke-width="1.6"/><path d="M12 6.6 17.4 12 12 17.4 6.6 12Z" stroke="#0A0F16" stroke-width="1.4"/><circle cx="12" cy="12" r="1.9" fill="#1232CE"/><path d="M12 2v4.6M22 12h-4.6M12 22v-4.6M2 12h4.6" stroke="#0A0F16" stroke-width="1.1"/></svg>
+      <b>swarmlet</b><span>.ai</span>
+    </a>
+    <nav class="nav__links" aria-label="Primary">
+      <a href="#architecture">Architecture</a>
+      <a href="#loop">The loop</a>
+      <a href="#proof">Proof</a>
+      <a href="#bench">Benchmarks</a>
+      <a href="#roadmap">Roadmap</a>
+      <a href="https://github.com/lotar/swarmlet">Source</a>
+      <a class="nav__cta" href="#access">Request access<svg viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M2 8h11M9 4l4 4-4 4" stroke="currentColor" stroke-width="1.6"/></svg></a>
+    </nav>
+    <details class="nav__menu">
+      <summary>Menu</summary>
+      <div class="nav__pop">
+        <a href="#architecture">Architecture</a>
+        <a href="#loop">The loop</a>
+        <a href="#proof">Proof</a>
+        <a href="#bench">Benchmarks</a>
+        <a href="#mesh">Mesh</a>
+        <a href="#roadmap">Roadmap</a>
+        <a href="#commons">Commons</a>
+        <a href="#faq">FAQ</a>
+        <a href="https://github.com/lotar/swarmlet">Source</a>
+        <a class="nav__cta" href="#access">Request access</a>
+      </div>
+    </details>
+    <div class="prog" id="prog" aria-hidden="true"></div>
+  </div>
+</header>
+
+<main id="main">
+
+<!-- ══════════════ HERO ══════════════ -->
+<section class="hero" id="top">
+  <canvas id="mesh-canvas" aria-hidden="true"></canvas>
+  <div class="wrap hero__in">
+    <div>
+      <p class="eyebrow eyebrow--seg"><i>Sovereign intelligence mesh</i><i>built in Europe</i><i>community licensed</i></p>
+      <h1>Own the knowledge.<br>Rent the intelligence.<br><em>Keep the receipts.</em></h1>
+      <p class="lede">Swarmlet is built to run open-weight models on hardware you own, turn recurring workflows into versioned knowledge, and <b>test every proposed improvement against a local private eval shard</b>. The alpha proves the deterministic capture→refine→gate loop and automatic regression revert; customer workflow learning is the next deployment phase. Private eval inputs stay local by default. Opt-in aggregate statistics, published artifacts and prompts deliberately escalated to a frontier provider are explicit exceptions.</p>
+      <div class="cta">
+        <a class="btn btn--pri" href="#access">Request an early deployment<svg viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M2 8h11M9 4l4 4-4 4" stroke="currentColor" stroke-width="1.6"/></svg></a>
+        <a class="btn btn--ghost" href="#architecture">Read the architecture</a>
+      </div>
+      <p class="mt-m"><span class="status"><span class="dot" aria-hidden="true"></span>P0a accepted · 8/8 end-to-end · 2026-08-24</span></p>
+    </div>
+
+    <div class="panel" aria-labelledby="tel-h">
+      <div class="panel__hd" id="tel-h"><span>Reference node · <b>Apple M5 Max</b></span><span>2026-08-26</span></div>
+      <dl class="metrics">
+        <div class="metric"><dt>Decode, local Metal</dt><dd><span class="num" data-count="306.6" data-dec="1">306.6</span><small>tok/s</small></dd></div>
+        <div class="metric"><dt>ms per output token</dt><dd><span class="num" data-count="3.3" data-dec="1">3.3</span><small>ms</small></dd></div>
+        <div class="metric"><dt>Mesh certification</dt><dd><span class="num" data-count="2.8" data-dec="1">2.8</span><small>sec</small></dd></div>
+        <div class="metric"><dt>Private eval bytes sent out in run</dt><dd>0</dd></div>
+      </dl>
+      <ul class="rack" aria-label="Logical sites in the accepted GPU-site simulation">
+        <li><i aria-hidden="true"></i><b>Vienna</b><span class="port">:8081 → n1</span><span class="role">controller + Metal</span></li>
+        <li><i aria-hidden="true"></i><b>Milan</b><span class="port">:18082 → n2</span><span class="role">controller + Metal</span></li>
+        <li><i class="i--cold" aria-hidden="true"></i><b>Munich</b><span class="port">:18083 → n3</span><span class="role">churn-drill target</span></li>
+      </ul>
+      <p class="panel__ft">Decode: <code>sin-harness/scripts/bench-ctx2k.sh</code> · P0a: <code>cd sin-harness &amp;&amp; bun test test/e2e.test.ts</code> · GPU simulation certification: <code>bun test test/e2e-docker.test.ts</code></p>
+    </div>
+  </div>
+</section>
+
+<!-- ══════════════ 01 PROBLEM ══════════════ -->
+<section class="sec" id="problem" aria-labelledby="h-problem">
+  <div class="wrap">
+    <div class="sec__hd"><span class="num">01</span><h2 id="h-problem">You are renting capability you paid for twice.</h2><span class="rule" aria-hidden="true"></span></div>
+    <p class="sec__lede">Frontier APIs are a lease with no equity. The price changes, the model is deprecated, the region is blocked — and every workflow you built quietly accrues value <em>for the vendor</em>, not for you. Five problems, one architectural answer.</p>
+
+    <div class="grid g2 mt-l rv">
+      <div class="cell cell--w"><span class="k">01 — Rented</span><h3>Capability is leased, never owned</h3><p>Workflows built on an endpoint that can reprice, deprecate or geo-block overnight. Nothing accumulates on your side of the wire. The model is the least durable component in the stack — a new generation ships roughly every four months and obsoletes every fine-tune built on its predecessor.</p></div>
+      <div class="cell cell--w"><span class="k">02 — Exfiltrated</span><h3>The data leaves the building</h3><p>For an EU SME, sending customer contracts, case files or internal code to a third-party inference endpoint is a liability you carry, not a feature you get. For an individual it is a privacy tax paid in exchange for competence.</p></div>
+      <div class="cell cell--w"><span class="k">03 — Amnesiac</span><h3>AI does not learn your work</h3><p>Frontier models are stateless generalists. The 20–30 processes your team repeats weekly are exactly where a specialist wins — and no product systematically builds that specialist out of daily usage. Every session starts from zero.</p></div>
+      <div class="cell cell--w"><span class="k">04 — Unreliable</span><h3>Small models fail where it counts</h3><p>Raw local models rank mid-pack overall and near the bottom of their cohort on agentic tasks. That gap is real. It is closed by architecture — retrieval, verification, best-of-n, routing — not by hoping the next quant behaves.</p></div>
+      <div class="cell cell--w" style="grid-column:1/-1"><span class="k">05 — Untrusted</span><h3>No trust fabric for shared improvements</h3><p>Thousands of community fine-tunes exist. They are opaque, unauditable, non-composable, and impossible to evaluate against <em>your</em> data before installing. The sharing economy for model improvements is stalled on trust, not on supply. Swarmlet's answer: <b>share recipes, never weights</b> — and decide by measurement, not by reputation.</p></div>
+    </div>
+  </div>
+</section>
+
+<!-- ══════════════ 02 THESIS ══════════════ -->
+<section class="sec sec--paper2" id="thesis" aria-labelledby="h-thesis">
+  <canvas data-shader="thesis" aria-hidden="true"></canvas>
+  <div class="wrap">
+    <div class="sec__hd"><span class="num">02</span><h2 id="h-thesis">The inversion</h2><span class="rule" aria-hidden="true"></span></div>
+    <div class="thesis-grid rv">
+      <div>
+        <p class="thesis-q">Everyone else bets on models. We bet on everything around them: <b>own the knowledge and the verification, rent the intelligence, give away the recipe</b> — and make all of it survive the thing everyone else is betting on.</p>
+        <p class="pull mt-m" style="margin-top:26px">Governing design test, applied to every feature: <em>does it survive a base-model swap untouched?</em> If not, it lives in the disposable layer and must be regenerable automatically.</p>
+      </div>
+      <dl class="kv">
+        <div><dt>Base model</dt><dd><span class="no">Disposable.</span> A config line. Re-baseline evals, re-audition adapters, done.</dd></div>
+        <div><dt>Knowledge (L1)</dt><dd><span class="yes">Permanent.</span> Markdown + git. Text instructs any base model that ever ships.</dd></div>
+        <div><dt>Verification (L2)</dt><dd><span class="yes">The moat.</span> The gate never learns, so it never moves with the attacker.</dd></div>
+        <div><dt>Adapters (L3)</dt><dd><span class="no">Cache.</span> Discarded at swap day, regenerated from the L1 recipe overnight.</dd></div>
+        <div><dt>Mesh (L4)</dt><dd><span class="yes">Last.</span> Funded by the layers that do not need network effects.</dd></div>
+        <div><dt>Frontier residue</dt><dd><span style="color:var(--warn);font-weight:600">Routed honestly.</span> Genuinely open-ended reasoning escalates — and the dependency shrinks every generation.</dd></div>
+      </dl>
+    </div>
+  </div>
+</section>
+
+<!-- ══════════════ 03 ARCHITECTURE ══════════════ -->
+<section class="sec" id="architecture" aria-labelledby="h-arch">
+  <div class="wrap">
+    <div class="sec__hd"><span class="num">03</span><h2 id="h-arch">Five layers. Each one ships alone. Each one survives the death of the layer below it.</h2><span class="rule" aria-hidden="true"></span></div>
+    <p class="sec__lede">The harness is TypeScript on Bun with <b>zero runtime npm dependencies</b> — development-only type packages are pinned. The knowledge store is a plain git repo of markdown. The event store is one SQLite file per node. Signing is ed25519. There is no database to migrate and no service to hold hostage.</p>
+
+    <div class="layers mt-l">
+      <details class="layer" open>
+        <summary><span class="id">L0</span><h3>Model contract</h3><span class="meta">Permanent · published source-available spec</span><span class="pm" aria-hidden="true"></span></summary>
+        <div class="layer__body"><div></div><div>
+          <div><p>An OpenAI-compatible endpoint plus a capability manifest: context length, tool calling, modalities, quantization, whether the thing is even MoE. The manifest is probed at runtime from <code class="k">/v1/models</code> and config — never hardcoded per model. llama.cpp serves it on Metal today; an EU-resident frontier proxy is the same interface with a different base URL.</p></div>
+          <aside class="why"><b>Why</b><p>The base model is the least durable component in the whole stack. So no value may be stored in it. The intended Qwen&nbsp;3.6 → 3.8 swap flow is re-baseline evals and re-audition adapters; the current alpha provides the underlying contracts and gates, not a finished one-command swap.</p></aside>
+          <ul class="facts"><li>OpenAI-compatible chat completions, pinned seeds, temperature 0 for evals</li><li>Planned release gate: make the swap procedure an executable command rather than a wiki-only checklist</li><li>Q8 quantisation chosen over Q4: precision over storage on the reference node</li><li>Measured native MTP Q4 n=3: 43.71 tok/s on one campaign prompt; concurrency results are reported separately</li></ul>
+        </div></div>
+      </details>
+
+      <details class="layer">
+        <summary><span class="id">L1</span><h3>Knowledge layer</h3><span class="meta">Permanent · free · compounding</span><span class="pm" aria-hidden="true"></span></summary>
+        <div class="layer__body"><div></div><div>
+          <div><p>A git repository of markdown: <code class="k">skills/</code>, <code class="k">memory/</code>, an immutable <code class="k">system.md</code>. Every artifact carries trigger→outcome provenance — which real events motivated it and what result it produced. Versioning, rollback, blame and audit are git's problem, solved since 2005. A GDPR right-of-access request becomes <code class="k">git show</code>.</p></div>
+          <aside class="why"><b>Why</b><p>This is where self-improvement actually lives for the first year. Weight updates are slower, riskier and disposable; text skills are instant, auditable, reversible and survive every model swap. Optimised skill artifacts have been shown to transfer across model scales and across harnesses — the asset follows you.</p></aside>
+          <ul class="facts"><li>Commit schema: <code class="k">refine(type): one-liner</code> + <code class="k">trigger:</code> / <code class="k">evidence:</code> lines</li><li>Revert by SHA. Provenance is grep-able forever.</li><li>PII is triaged before it can ever reach L1 prose</li><li><code class="k">system.md</code> is committed once and protected — the gate refuses edits to it</li></ul>
+        </div></div>
+      </details>
+
+      <details class="layer">
+        <summary><span class="id">L2</span><h3>Verification layer</h3><span class="meta">The moat · freemium</span><span class="pm" aria-hidden="true"></span></summary>
+        <div class="layer__body"><div></div><div>
+          <div><p>Three mechanisms, each killing a specific attack. <b>An eval generator, not an eval suite:</b> the alpha implements six task templates plus metamorphic transforms (paraphrase, HR↔EN translation, field permutation, value scaling, format shift) with property-based checks. The next-phase target is ~200 templates and freshly sampled ~5k-instance release gates. <b>Private per-node shards:</b> the alpha proves isolated local shards and audition on deterministic fixtures; auto-building ~50 tasks from each customer's real data is the next deployment phase. Foreign artifacts are admitted by local audition — an overnight trial against your shard, activated only if they beat the incumbent on your distribution. <b>Behavioral-diff certificates:</b> probe broadly outside the claimed domain; large off-domain drift is an automatic reject.</p></div>
+          <aside class="why"><b>Why</b><p>A fixed suite becomes the training target — for honest adapters and for adversaries alike. You cannot overfit a distribution you never see twice: frozen in design, moving in instances. And predicting whether a foreign adapter fits your data is genuinely unsolvable by cheap classifiers, so audition does not predict — it measures. The unsolvable problem is deleted, not solved.</p></aside>
+          <ul class="facts"><li>Deterministic scoring: same engine as serving, so no train/test skew</li><li>Noise-aware three-way verdict (accept / keep / revert) with a one-sided ~95% binomial margin over paired instances</li><li>A single flipped instance can never be misread as a regression; ties keep the incumbent</li><li>Gate certificates are ed25519-signed JSON, retained per node</li><li>Classifiers narrow the field cheaply; the deterministic gate decides. The gate never learns.</li></ul>
+        </div></div>
+      </details>
+
+      <details class="layer">
+        <summary><span class="id">L3</span><h3>Weight layer</h3><span class="meta">Disposable by design</span><span class="pm" aria-hidden="true"></span></summary>
+        <div class="layer__body"><div></div><div>
+          <div><p>LoRA adapters, one active per request, admitted only through L2 audition. Trained only when a pattern <em>saturates</em> — 20+ occurrences spread over weeks, with provenance evidence that a text-level skill was tried and the pattern still recurs. Discarded at base swap and regenerated overnight: the L1 skills plus logged trajectories are the recipe.</p></div>
+          <aside class="why"><b>Why</b><p>Adapters are cache, not state. That dissolves depreciation — models getting better is now a free upgrade absorbed on swap day — and it dissolves the data-scarcity problem too: one node's daily signal is far too thin for nightly weight training anyway. Training data is distilled and corrected samples, never raw self-outputs. That is the anti-collapse measure.</p></aside>
+          <ul class="facts"><li>MLX-LM LoRA on Apple Silicon, Unsloth QLoRA on CUDA nodes · 40–60 GB overnight budget</li><li>Exported back to GGUF for the same L0 server</li><li>Composition via merging is unsolved — we sidestep it (one active), we do not claim to solve it</li><li>Saturation detector enforces every PRD condition before a single gradient step</li></ul>
+        </div></div>
+      </details>
+
+      <details class="layer">
+        <summary><span class="id">L4</span><h3>Mesh &amp; commons</h3><span class="meta">The masses · sequenced last</span><span class="pm" aria-hidden="true"></span></summary>
+        <div class="layer__body"><div></div><div>
+          <div><p>The community source is free for personal and noncommercial use, and for Commercial Use while the Corporate Group's Worldwide Gross Annual Revenue is not more than EUR 1,000,000, as defined in the licence. Skill packs, eval templates and adapter <em>recipes</em> are text artifacts each node can inspect and execute locally. The mesh contributes idle GPU cycles to two workloads: distributed eval certification (embarrassingly parallel, churn-tolerant, 5% of tasks triple-run and cross-checked) and thin-client serving for people who own no capable hardware.</p></div>
+          <aside class="why"><b>Why</b><p>Distribution "to the world" fails as weights — incompatible LoRA piles — and succeeds as knowledge plus verification. Private eval inputs never leave a node; opt-in aggregate pass rates and signed recipes or skills may leave, and deliberately escalated prompts follow the configured frontier-provider boundary. That produces honest transferability scores nobody can game, including the authors, because no one knows the shard contents.</p></aside>
+          <ul class="facts"><li>Logical nodes are separate OS processes with their own SQLite state, Ed25519 keys, knowledge clone and private shard</li><li><code class="k">SIGKILL</code> one node mid-certification: the in-flight instance is requeued, run completes</li><li>Eval traffic is a better mesh workload than inference — no latency SLA, perfect parallelism</li><li>Explicit gate: revenue justifies this phase, not architecture elegance</li></ul>
+        </div></div>
+      </details>
+    </div>
+  </div>
+</section>
+
+<!-- ══════════════ 04 LOOP ══════════════ -->
+<section class="sec sec--ink" id="loop" aria-labelledby="h-loop">
+  <div class="wrap">
+    <div class="sec__hd"><span class="num">04</span><h2 id="h-loop">The loop that improves itself, on one box, offline.</h2><span class="rule" aria-hidden="true"></span></div>
+    <p class="sec__lede">Six steps, three OS-native schedules — <span class="mono" style="color:#DCE6F2">launchd</span> or <span class="mono" style="color:#DCE6F2">systemd</span> timers, no resident daemon, trivially auditable, crash-resumable. Two-tier promotion: memories clear a fast smoke suite and activate the same day; skills and subagent specs wait for the nightly full gate. Near-real-time where it is safe, gated where it is not.</p>
+
+    <div class="loop rv" data-anim="loop">
+      <article class="step"><span class="n">STEP 01</span><h3>Capture</h3><p>Every agent session appends events to SQLite: user corrections, retries, tool failures, outcome signals. Append-only, single file, one per node.</p><p class="cad">Continuous</p></article>
+      <article class="step"><span class="n">STEP 02</span><h3>Curate</h3><p>A local-model judge triages signal from noise, flags PII before it can reach knowledge prose, and extracts skill candidates: “this failed again because…”.</p><p class="cad">Every 3 hours</p></article>
+      <article class="step"><span class="n">STEP 03</span><h3>Refine</h3><p>The smallest CRUD edit to the knowledge repo — add, amend, split or delete one artifact — committed to git with trigger and evidence provenance.</p><p class="cad">On candidate</p></article>
+      <article class="step"><span class="n">STEP 04</span><h3>Gate</h3><p>Fresh-sampled evals, old versus new, deterministic scoring. Regression → automatic revert and a signed certificate recording the failure.</p><p class="cad">Nightly</p></article>
+      <article class="step"><span class="n">STEP 05</span><h3>Graduate</h3><p>Saturation detector: ≥20 occurrences, ≥7-day spread, evidence a text skill was tried and the pattern still recurred. Only then an adapter recipe.</p><p class="cad">On saturation</p></article>
+      <article class="step"><span class="n">STEP 06</span><h3>Publish</h3><p>Passing artifacts — recipes and skills, never weights — optionally leave the node, signed, for audition somewhere else.</p><p class="cad">Opt-in</p></article>
+    </div>
+    <p class="loopnote"><span><b>Kill switch:</b> eval trend flat or declining across three consecutive gates → refine freezes and the audit is the work.</span><span><b>Immutable core:</b> the gate refuses edits to <span class="mono">system.md</span>.</span></p>
+  </div>
+</section>
+
+<!-- ══════════════ 05 PROOF ══════════════ -->
+<section class="sec" id="proof" aria-labelledby="h-proof">
+  <div class="wrap">
+    <div class="sec__hd"><span class="num">05</span><h2 id="h-proof">Proven on real hardware — including the part that says no.</h2><span class="rule" aria-hidden="true"></span></div>
+    <p class="sec__lede">Phase P0a ran the full loop end-to-end against a real model — OLMoE-1B-7B-A1B <code class="k">Q8_0</code> on llama.cpp — with three logical nodes and a coordinator as separate OS processes. Deliberate rule: <b>no distributed-compute claim goes out publicly until the local simulation passes.</b> It passed, twice in a row. P4 changes topology, not logic.</p>
+
+    <div class="two mt-l">
+      <div class="term rv" role="figure" aria-label="End-to-end acceptance transcript">
+        <div class="term__hd"><span>acceptance · test/e2e.test.ts</span><span>2026-08-24</span></div>
+<div class="term__cmd"><span class="c"># real model, 3 simulated nodes + coordinator</span>
+<span class="b">$</span> cd sin-harness &amp;&amp; bun test test/e2e.test.ts</div>
+<ul class="tlog">
+<li><span class="g">✓</span><span class="t"><span class="w">refine</span> writes skill w/ provenance commit</span><span class="y">git log verified</span></li>
+<li><span class="g">✓</span><span class="t"><span class="w">gate</span> accepts genuine lift</span><span class="y">0.67 → 0.71</span></li>
+<li><span class="g">✓</span><span class="t"><span class="w">gate</span> auto-reverts injected regression</span><span class="y">0.75 → 0.00 · signed cert</span></li>
+<li><span class="g">✓</span><span class="t"><span class="w">audition</span> node A artifact on node B shard</span><span class="y">0.600 → 0.400 REJECT</span></li>
+<li><span class="g">✓</span><span class="t"><span class="w">certify</span> 24 instances × 3 nodes</span><span class="y">minCopies=3 · 0 disagreements</span></li>
+<li><span class="g">✓</span><span class="t"><span class="w">churn</span> SIGKILL node C mid-run</span><span class="y">requeued · failed=0</span></li>
+<li><span class="g">✓</span><span class="t"><span class="w">recipe</span> export: signed, weights excluded</span><span class="y">adapter only</span></li>
+<li><span class="g">✓</span><span class="t"><span class="w">graduate</span> gate: ≥20 hits, ≥7d spread</span><span class="y">tried-skill evidence</span></li>
+</ul>
+<div class="term__ft"><span class="w">8/8 green</span> · reproduced on two consecutive runs</div>
+      </div>
+
+      <div>
+        <h3 style="font-size:1.16rem">The audition rejected our own artifact. That is the point.</h3>
+        <p class="small mt-s">An adapter trained on node A's distribution was tried against node B's private shard and measured <b>0.600 → 0.400</b>. The system signed a REJECT certificate and kept the incumbent. A sharing economy for model improvements only works if the mechanism says no more often than it says yes — and if “no” is a measurement rather than an opinion.</p>
+        <div class="ev">
+          <div><div><b>Fresh instances, every version bump</b><p>Metamorphic transforms over ~200 templates: paraphrase, HR↔EN, field permutation, value scaling, format shift + property checks.</p></div><span class="v ok">~5k / run</span></div>
+          <div><div><b>Redundant-execution certification</b><p>5% of instances executed on three independent nodes and cross-checked; disagreement fails the certification, not the node.</p></div><span class="v ok">minCopies 3</span></div>
+          <div><div><b>Churn tolerance</b><p><code class="k">SIGKILL</code> a node mid-certification. The in-flight instance is requeued to a survivor; the run completes.</p></div><span class="v ok">failed = 0</span></div>
+          <div><div><b>Weights never leave the node</b><p>Shared artifact is a signed recipe: data spec + training config + anti-collapse policy. Weights stay personal and regenerable.</p></div><span class="v ok">ed25519</span></div>
+          <div><div><b>Reproducibility discipline</b><p>temperature 0, pinned seeds, stable JSON serialisation, deterministic scoring — same engine as serving.</p></div><span class="v ok">temp 0</span></div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ══════════════ 06 BENCHMARKS ══════════════ -->
+<section class="sec sec--paper2" id="bench" aria-labelledby="h-bench">
+  <div class="wrap">
+    <div class="sec__hd"><span class="num">06</span><h2 id="h-bench">Topology benchmarks, published with the losses in.</h2><span class="rule" aria-hidden="true"></span></div>
+    <p class="sec__lede">One model, one context, one prompt, one output length, median of three runs, reproducible with a single script. Mixed-quant tables are how bad design decisions get made, so every row below is the same quant of the same file. Read the last row first: it is the reason we route <em>whole requests</em> across regions instead of expert activations.</p>
+
+    <p class="scrollhint" aria-hidden="true">Table scrolls sideways</p>
+    <div class="tablewrap rv" role="region" aria-label="Topology benchmark table" tabindex="0">
+      <table>
+        <caption>OLMoE-1B-7B-0125-Instruct · Q4_K_M · ctx 2048 · 1681 prompt + 341 output tokens · temp 0 · M5 Max · Docker VM 28 GB / 6 vCPU · median of 3</caption>
+        <thead>
+          <tr><th scope="col">Topology</th><th scope="col">Added network</th><th scope="col">Prefill tok/s</th><th scope="col">Decode tok/s</th><th scope="col">ms / out token</th><th scope="col">E2E acceptance</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>Local Metal · one GPU sidecar</td><td>none</td><td class="hi">8445.6</td><td class="hi">306.6</td><td class="hi">3.3</td><td>—</td></tr>
+          <tr><td>Sovereign CPU site (2-core cap)</td><td>local only</td><td>84.5</td><td>24.2</td><td>41.3</td><td>8/8</td></tr>
+          <tr><td>RPC layer split</td><td>Docker LAN</td><td>57.6</td><td>28.0</td><td>35.7</td><td>8/8</td></tr>
+          <tr><td>RPC expert split</td><td>Docker LAN</td><td>78.2</td><td>33.1</td><td>30.3</td><td>8/8</td></tr>
+          <tr><td>RPC layer split</td><td>simulated pan-EU latency (netem) 6/11/8 ms</td><td>45.0</td><td>12.0</td><td>83.2</td><td>8/8</td></tr>
+          <tr><td>RPC expert split</td><td>simulated pan-EU latency (netem) 6/11/8 ms</td><td class="lo">37.5</td><td class="lo">4.6</td><td class="lo">216.5</td><td>8/8</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <figure class="chart rv" data-anim="chart">
+      <h3>Milliseconds per output token — lower is better</h3>
+      <p class="sub">Same prompt, same weights, different placement. Expert split wins on the simulated LAN and loses by 2.6× under simulated pan-EU netem latency: sequential network crossings per token, not FLOPs, decide the topology.</p>
+      <div class="bars">
+        <div class="bar best" style="--w:1.5%"><span>local Metal</span><span class="track"><i></i></span><em>3.3 ms</em></div>
+        <div class="bar" style="--w:19.1%"><span>expert · LAN</span><span class="track"><i></i></span><em>30.3 ms</em></div>
+        <div class="bar" style="--w:22.5%"><span>layer · LAN</span><span class="track"><i></i></span><em>35.7 ms</em></div>
+        <div class="bar" style="--w:26.0%"><span>sovereign CPU</span><span class="track"><i></i></span><em>41.3 ms</em></div>
+        <div class="bar" style="--w:52.4%"><span>layer · simulated pan-EU</span><span class="track"><i></i></span><em>83.2 ms</em></div>
+        <div class="bar bad" style="--w:100%"><span>expert · simulated pan-EU</span><span class="track"><i></i></span><em>216.5 ms</em></div>
+      </div>
+      <p class="note">Reproduce: <code class="k">sin-harness/scripts/bench-ctx2k.sh</code> · GPU-site certification 2.8 s, sovereign CPU-site certification 16.6 s. GPU-site simulation shares one physical M5 GPU across three logical sites: that is a <b>performance</b> simulation. The CPU sovereign topology in <code class="k">compose.sovereign.yaml</code> proves self-contained process/container isolation on one host, not geographic independence.</p>
+    </figure>
+  </div>
+</section>
+
+<!-- ══════════════ 07 MESH ══════════════ -->
+<section class="sec" id="mesh" aria-labelledby="h-mesh">
+  <div class="wrap">
+    <div class="sec__hd"><span class="num">07</span><h2 id="h-mesh">A mesh of sovereign sites, not a distributed monolith.</h2><span class="rule" aria-hidden="true"></span></div>
+    <div class="two rv">
+      <figure class="diagram" style="margin:0">
+        <svg viewBox="0 0 620 348" role="img" aria-label="Architecture diagram: a global request router sends whole requests to complete regional cells. Each cell contains a backbone group holding attention, KV cache and router, connected by a sub-millisecond fabric to 16-gigabyte expert workers holding disjoint layer-expert shards.">
+          <defs><style>
+            .ln{fill:none;stroke:#0A0F16;stroke-width:1.2}
+            .dash{stroke:#1232CE;stroke-width:1.4;stroke-dasharray:4 3}
+            .bx{fill:#fff;stroke:#0A0F16;stroke-width:1.2}
+            .bx2{fill:#F1F4F8;stroke:#0A0F16;stroke-width:1}
+            .dk{fill:#0A0F16}
+            .t{font:600 11.5px ui-monospace,SFMono-Regular,Menlo,monospace;fill:#0A0F16;letter-spacing:.01em}
+            .ts{font:500 9.5px ui-monospace,SFMono-Regular,Menlo,monospace;fill:#4E5A6B}
+            .tl{font:600 9.5px ui-monospace,SFMono-Regular,Menlo,monospace;fill:#1232CE}
+            .ac{fill:#1232CE}
+          </style></defs>
+          <rect class="dk" x="225" y="12" width="170" height="30"/>
+          <text class="t" x="310" y="31.5" text-anchor="middle" style="fill:#fff">GLOBAL REQUEST ROUTER</text>
+          <path class="ln dash" d="M310 42 V64"/>
+          <path class="ln dash" d="M76 64 H544"/>
+          <path class="ln dash" d="M76 64 V92"/>
+          <path class="ln dash" d="M544 64 V92"/>
+          <text class="tl" x="318" y="58">whole requests only</text>
+          <rect class="bx2" x="6" y="92" width="140" height="44"/><text class="ts" x="76" y="112" text-anchor="middle">cell · Vienna</text><text class="ts" x="76" y="126" text-anchor="middle">complete, independent</text>
+          <rect class="bx2" x="474" y="92" width="140" height="44"/><text class="ts" x="544" y="112" text-anchor="middle">cell · Munich</text><text class="ts" x="544" y="126" text-anchor="middle">complete, independent</text>
+          <rect class="bx" x="158" y="88" width="304" height="228"/>
+          <text class="t" x="310" y="110" text-anchor="middle">REGIONAL CELL · sub-ms fabric</text>
+          <rect class="bx2" x="172" y="124" width="112" height="80"/>
+          <text class="t" x="228" y="143" text-anchor="middle" style="font-size:10px">BACKBONE GROUP</text>
+          <text class="ts" x="228" y="161" text-anchor="middle">attention</text><text class="ts" x="228" y="174" text-anchor="middle">MLA / KDA · KV cache</text><text class="ts" x="228" y="187" text-anchor="middle">router · shared experts</text>
+          <rect class="bx2" x="340" y="124" width="112" height="80"/>
+          <text class="t" x="396" y="143" text-anchor="middle" style="font-size:10px">EXPERT FABRIC</text>
+          <text class="ts" x="396" y="161" text-anchor="middle">16 GB workers</text><text class="ts" x="396" y="174" text-anchor="middle">disjoint shards</text><text class="ts" x="396" y="187" text-anchor="middle">top-k packed batch</text>
+          <text class="tl" x="312" y="147" text-anchor="middle">latent</text>
+          <path class="ln dash" d="M290 156 H334"/><path d="M330 152.5 L337 156 L330 159.5 Z" class="ac"/>
+          <text class="tl" x="312" y="181" text-anchor="middle">partials</text>
+          <path class="ln dash" d="M334 190 H290"/><path d="M294 186.5 L287 190 L294 193.5 Z" class="ac"/>
+          <g>
+            <rect class="dk" x="217" y="222" width="26" height="22"/><rect class="dk" x="249" y="222" width="26" height="22"/>
+            <rect class="ac" x="281" y="222" width="26" height="22"/><rect class="ac" x="313" y="222" width="26" height="22"/>
+            <rect class="dk" x="345" y="222" width="26" height="22"/><rect class="dk" x="377" y="222" width="26" height="22"/>
+          </g>
+          <text class="ts" x="310" y="262" text-anchor="middle">16 GB workers · cobalt = selected this token</text>
+          <path d="M172 278 H448" stroke="rgba(10,15,22,.14)" stroke-width="1"/>
+          <text class="ts" x="310" y="298" text-anchor="middle">churn-tolerant: killed worker requeues · failed = 0</text>
+        </svg>
+        <figcaption>Decision from the Kimi K3 study: true expert ownership is viable only inside a low-latency regional cell. A Europe-wide service routes <b>whole requests</b> among complete cells — it does not route each layer's expert activations across Europe. 2.78T total / 104.2B active parameters, 93 layers, 896 routed experts, 16 selected per token.</figcaption>
+      </figure>
+      <div>
+        <h3 style="font-size:1.3rem">What is proved, and what is not.</h3>
+        <ul class="facts mt-s">
+          <li><b>Proved in one-host simulation:</b> three self-contained CPU site containers with independent code, keys, SQLite state and private eval shards — 8/8 acceptance, 16.6 s certification.</li>
+          <li><b>Proved in one-host simulation:</b> three dedicated native Metal sidecars, one per logical European Docker node, each with its own model mapping, KV cache, port and lifecycle.</li>
+          <li><b>Proved:</b> per-expert ownership — each isolated worker process owns specific expert IDs, rejects foreign IDs and returns deterministic partials for coordinator-side reduction.</li>
+          <li><b>Measured, not claimed:</b> Docker Desktop's WebGPU bridge returned a correct 1024×1024 integer matmul in 42.5 ms on this machine — real host GPU forwarding. The pinned llama.cpp WebGPU backend is ABI-incompatible with the injected Dawn 2024 client, so we do <b>not</b> describe those containers as having direct GPU access.</li>
+          <li><b>Not downloaded, not loaded:</b> the Kimi K3 frontier checkpoint. That study is architecture research against published facts, labelled as such.</li>
+        </ul>
+        <div class="sw">
+          <span class="tag tag--live">8/8 e2e · CPU sim</span><span class="tag tag--live">8/8 e2e · GPU sim</span>
+          <span class="tag tag--live">8/8 e2e · RPC</span><span class="tag tag--warn">WebGPU bridge: ABI blocked</span>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ══════════════ 08 HONESTY ══════════════ -->
+<section class="sec sec--ink" id="honest" aria-labelledby="h-honest">
+  <div class="wrap">
+    <div class="sec__hd"><span class="num">08</span><h2 id="h-honest">Claims, calibrated. Including the ones that lose us the sale.</h2><span class="rule" aria-hidden="true"></span></div>
+    <p class="sec__lede">A 27B will not match a 2.4T model on arbitrary tasks. Anyone claiming otherwise is selling you something; the ~100× compute gap is not closable by harness work. The product wins by making that comparison irrelevant for most real usage, and by routing the remainder honestly.</p>
+
+    <div class="claims mt-l">
+      <article class="claim"><h3>Frontier-level on general benchmarks, single node</h3><span class="verdict v-no">No — ever, this hardware class</span><p>Not closable by architecture. We refuse the claim instead of softening it.</p></article>
+      <article class="claim"><h3>Frontier-level on your own recurring, verifiable workflows</h3><span class="verdict v-yes">Yes — ~2–3 months of loop runtime</span><p>Specialist depth beats generalist breadth on a narrow distribution. Verification plus best-of-n is worth 10–20 points on checkable tasks; the ramp precedent shows a small RL model beating frontier on one team's workflow.</p></article>
+      <article class="claim"><h3>Frontier-level aggregate coverage across the network</h3><span class="verdict v-mid">Plausible — years</span><p>The shared skill and eval layer compounds monotonically, and every base-model swap imports that generation's gains for free. Economically valuable work is concentrated in repeated, verifiable workflows.</p></article>
+      <article class="claim"><h3>Open-ended novel reasoning</h3><span class="verdict v-mid">Routed out — shrinking</span><p>Where no verification can be defined, the router escalates to a frontier API instead of pretending. The dependency shrinks every generation and the architecture absorbs the shrinkage without redesign.</p></article>
+    </div>
+
+    <h3 class="mt-l" style="font-size:1.16rem">What this architecture refuses to pretend</h3>
+    <ul class="refuse mt-s">
+      <li><span>01</span><div><b>Adapter composition is unsolved.</b> Merging LoRAs is weight arithmetic, not a decision problem. We sidestep it with one active adapter per request — we do not claim to have solved it.</div></li>
+      <li><span>02</span><div><b>Poisoning risk asymptotes, it never reaches zero.</b> Audition plus behavioral-diff certificates plus signed provenance reduce it to software-supply-chain levels. Same as every dependency you already ship.</div></li>
+      <li><span>03</span><div><b>The gate never learns.</b> Anything that changes weights or executes irreversibly is decided by the expensive dumb thing — the one component whose failure modes do not move with the attacker. A refinement loop optimises whatever it can reach; we have seen what that produces when it finds an exploit.</div></li>
+      <li><span>04</span><div><b>Network effects are not conjured by a roadmap.</b> The mesh is sequenced last and gated on revenue. The commons delivers “free AI for the masses” <em>before</em> the mesh exists, as artifacts you can run on your own machine today.</div></li>
+      <li><span>05</span><div><b>The last 1% is execution.</b> No document de-risks it, including this one.</div></li>
+    </ul>
+  </div>
+</section>
+
+<!-- ══════════════ 09 ROADMAP ══════════════ -->
+<section class="sec" id="roadmap" aria-labelledby="h-road">
+  <div class="wrap">
+    <div class="sec__hd"><span class="num">09</span><h2 id="h-road">Phasing — every phase independently valuable.</h2><span class="rule" aria-hidden="true"></span></div>
+    <p class="sec__lede">No phase is a prerequisite for the value of the one before it. Each has an exit criterion written as an executable test, not a milestone slide.</p>
+    <div class="road rv">
+      <article class="phase" data-done><span class="when">P0a · accepted</span><div><h3>Loop + simulated mesh, ≤12B MoE</h3><p>OLMoE-1B-7B-A1B, three logical nodes plus coordinator as separate processes. Exit criterion: 8/8 e2e green before any external distributed claim. Landed <code class="k">graduate.ts</code> (saturation detector) and <code class="k">recipe.ts</code> (signed recipe export, weights excluded).</p></div><span class="tag tag--live st">Done 2026-08-24</span></article>
+      <article class="phase"><span class="when">P0 · one box</span><div><h3>L0 + L1 + loop at production size</h3><p>llama.cpp with a 27B class Q8 model, git knowledge repo, <code class="k">refine.ts</code> and <code class="k">gate.ts</code> on three cron schedules. Baseline the suite <em>before</em> the next model generation ships, so swap day yields a clean self-measured generational comparison — worth more than any launch benchmark.</p></div><span class="tag tag--cobalt st">In progress</span></article>
+      <article class="phase"><span class="when">P1 · weeks 2–6</span><div><h3>Eval generator + first private shard</h3><p>Customer zero is the builder's own agency: MCP delivery, proposals, Croatian legal research become the first specialist. The private shard is built from that real work.</p></div><span class="tag st">Next</span></article>
+      <article class="phase"><span class="when">P2 · months 2–4</span><div><h3>First three sovereign deployments</h3><p>Install on customer hardware, private shard from their workflows in week one, monthly invoice ships with the score trend. The playbook is written en route — and the playbook <em>is</em> the licence product.</p></div><span class="tag st">Planned</span></article>
+      <article class="phase"><span class="when">P3 · months 4–9</span><div><h3>Supported build + expanded community packs</h3><p>The alpha harness source is public now. P3 adds the supported deployment build, licence pilot and anonymised skill/eval packs extracted from real deployments.</p></div><span class="tag st">Planned</span></article>
+      <article class="phase"><span class="when">P4 · month 9+</span><div><h3>Mesh: certification first, thin clients second</h3><p>Distributed eval certification is the best-fit workload — no latency SLA, perfect parallelism, churn-tolerant. Thin-client serving second. Explicit gate: revenue justifies this phase, not architecture elegance.</p></div><span class="tag st">Gated on revenue</span></article>
+    </div>
+  </div>
+</section>
+
+<!-- ══════════════ 10 COMMONS ══════════════ -->
+<section class="sec sec--paper2" id="commons" aria-labelledby="h-commons">
+  <div class="wrap">
+    <div class="sec__hd"><span class="num">10</span><h2 id="h-commons">Free is load-bearing here, not a trial.</h2><span class="rule" aria-hidden="true"></span></div>
+    <p class="sec__lede">Source available, with a small-business commercial grant. The base model rides the industry's depreciation curve toward free; text artifacts cost nothing to replicate once created; what stays scarce is human attention for deployment and trust certification. Larger commercial users fund that work while individuals and qualifying Corporate Groups can inspect, modify and run the source under the licence.</p>
+    <div class="tiers mt-l rv">
+      <div class="tier tier--key"><h3>Community source</h3><p>Harness, loop, eval generator, skill packs and adapter recipes. Free for personal and noncommercial use, and Commercial Use while the Corporate Group's Worldwide Gross Annual Revenue is not more than EUR 1,000,000, as defined in the licence.</p><span class="price">€0<small>within the community licence</small></span></div>
+      <div class="tier"><h3>Sovereign deployment</h3><p>Turnkey install on your hardware. Week one: private eval shard built from your real workflows. Every monthly invoice ships with your score trend.</p><span class="price">€5–15k + €300–500/mo<small>setup + monthly</small></span></div>
+      <div class="tier"><h3>Harness licence</h3><p>The deployment playbook and a supported build, for agencies who own the customer relationships we do not. Distributed sales — not distributed compute.</p><span class="price">Per deployment<small>supported build</small></span></div>
+      <div class="tier"><h3>Certification</h3><p>Mesh-run eval certification for commons artifacts, with transferability scores nobody can game because nobody knows the shard contents.</p><span class="price">Usage-based<small>per certified run</small></span></div>
+      <div class="tier"><h3>Escalation routing</h3><p>Managed EU-resident frontier fallback for the genuinely unverifiable tier, behind the same L0 interface. One bill.</p><span class="price">Passthrough margin<small>metered</small></span></div>
+    </div>
+    <p class="pull mt-l">The sales artifact is the eval shard. “Self-improving” is unfalsifiable at sale time, so we make it contractual: you watch your own private benchmark number move every month. Proof, retention and upsell in one artifact.</p>
+  </div>
+</section>
+
+<!-- ══════════════ 11 FAQ ══════════════ -->
+<section class="sec" id="faq" aria-labelledby="h-faq">
+  <div class="wrap">
+    <div class="sec__hd"><span class="num">11</span><h2 id="h-faq">Objections, answered where they land.</h2><span class="rule" aria-hidden="true"></span></div>
+    <div class="faq">
+      <details class="qa"><summary>Why not just call a frontier API?</summary><div class="qa__b"><p>Because nothing accumulates on your side. The endpoint can reprice, deprecate or geo-block, and your workflows are the training signal for someone else's moat. If your work is genuinely one-off and open-ended, call the API — Swarmlet routes that tier out honestly rather than pretending. If 20–30 of your processes repeat weekly and have a checkable definition of done, a specialist on your own hardware with your own verification wins on those tasks and the asset stays with you.</p></div></details>
+      <details class="qa"><summary>Why is a 7B model enough to prove the architecture?</summary><div class="qa__b"><p>A 27B proves nothing about harness quality that a 7B-A1B cannot prove cheaper and faster. If refinement plus verification plus routing measurably lifts a tiny sparse model on narrow recurring workflows, the same machinery lifts every larger generation — for free, on swap day. The MoE choice additionally stress-tests the L0 contract on a non-dense architecture, and the planned swap to a different vendor's tiny MoE doubles as the first live rehearsal of the base-swap procedure.</p></div></details>
+      <details class="qa"><summary>Won't self-improvement collapse into its own echo?</summary><div class="qa__b"><p>It will, if the loop feeds itself. Three structural stops: training data is distilled and corrected samples — a stronger model's rewrite of a lesson, never raw self-output; the deterministic gate sits <em>outside</em> the loop and never learns; and a kill criterion freezes refinement after three consecutive flat-or-declining gates. A refinement loop optimises whatever it can reach — the published cautionary tale is an agent that built highly efficient cheating skills once it found an exploit. We treat that as a design input, not a curiosity.</p></div></details>
+      <details class="qa"><summary>How is my data handled?</summary><div class="qa__b"><p>Private eval inputs stay on the machine by default and curation flags PII before anything can reach knowledge prose. Aggregate pass-rate statistics or anonymised artifacts leave only when you opt in. If you deliberately enable managed frontier fallback, the escalated prompt leaves the machine for that configured provider; the router must make that boundary visible. The knowledge layer is a git repo of markdown, so a data-access request is <code>git show</code> rather than forensic archaeology.</p></div></details>
+      <details class="qa"><summary>What stops a shared adapter from poisoning my node?</summary><div class="qa__b"><p>Three layers, and one refusal: weights are never shared — only recipes, which your node executes locally. Foreign candidates face a local overnight audition against your private shard and activate only if they beat the incumbent on <em>your</em> distribution. Behavioral-diff certificates probe broadly outside the claimed domain, because a trigger's existence perturbs the function somewhere. Residual risk sits at software-supply-chain level, same as any dependency you already ship — not zero, and we will not claim otherwise.</p></div></details>
+      <details class="qa"><summary>What hardware do I actually need?</summary><div class="qa__b"><p>For the owner-operator tier: an Apple Silicon box with ~64 GB unified memory or a 24 GB+ CUDA card runs the harness and a Q8 quant of a 27B class model, with headroom for overnight QLoRA. Sovereign CPU sites run too — measurably slower (41.3 ms per output token on a 2-core Docker cap versus 3.3 ms on the local GPU) but fully independent of any host GPU. The thin-client mesh tier exists for people with no capable hardware at all.</p></div></details>
+      <details class="qa"><summary>Is the mesh live today?</summary><div class="qa__b"><p>No. Three logical nodes plus a coordinator run as separate OS processes on one machine, over simulated pan-EU latency, with churn drills and redundant-execution certification — that is the accepted P0a simulation. Public rule: no distributed-compute claim before that simulation passes, and P4 changes the topology, not the logic. Deployment of real multi-site mesh is gated on revenue, not on our enthusiasm.</p></div></details>
+      <details class="qa"><summary>What is the stack?</summary><div class="qa__b"><p>llama.cpp <code>llama-server</code> for inference (OpenAI-compatible, Metal, speculative decode), TypeScript on Bun with zero runtime npm dependencies for the harness, a plain git repo of markdown as the knowledge store, SQLite in WAL mode per node, ed25519 signatures on every artifact and gate certificate, MLX-LM and Unsloth for LoRA, launchd or systemd timers as the scheduler. Docker Compose topologies for sovereign CPU sites and GPU-site simulation.</p></div></details>
+    </div>
+  </div>
+</section>
+
+<!-- ══════════════ 12 ACCESS ══════════════ -->
+<section class="sec sec--ink" id="access" aria-labelledby="h-access">
+  <canvas data-shader="cta" aria-hidden="true"></canvas>
+  <div class="wrap">
+    <div class="sec__hd"><span class="num">12</span><h2 id="h-access">Three sovereign deployments for P2.</h2><span class="rule" aria-hidden="true"></span></div>
+    <div class="access-grid">
+      <div>
+        <p class="sec__lede">P2 is three customers who need their data to stay home and whose work is repetitive enough to become a specialist. Week one you get a private eval shard built from your own workflows; after that, your benchmark number is the report. If your work has no checkable definition of done, we will tell you on the first call and route you to an API.</p>
+        <ul class="access-list">
+          <li><span><b>Week one:</b> L0 contract wired to your hardware, knowledge repo initialised, first private shard from your real workflows.</span></li>
+          <li><span><b>Month one:</b> baseline score, first refinements through the gate, a signed certificate trail you can hand to an auditor.</span></li>
+          <li><span><b>Quarterly:</b> base-model swap rehearsal — one config line, re-baseline, re-audition. Each generation lands as a free upgrade.</span></li>
+          <li><span><b>Right to leave:</b> the asset is a git repo of markdown plus an OpenAI-compatible endpoint. There is no lock-in to sell.</span></li>
+        </ul>
+      </div>
+
+      <div>
+        <form id="access-form" data-endpoint="" action="mailto:hello@swarmlet.ai" method="post" enctype="text/plain">
+          <div class="fields">
+            <div class="field two">
+              <div class="field"><label for="f-name">Name</label><input id="f-name" name="name" type="text" autocomplete="name" required placeholder="Ivana Novak"><span class="err" id="e-name" aria-live="polite"></span></div>
+              <div class="field"><label for="f-org">Organisation</label><input id="f-org" name="org" type="text" autocomplete="organization" required placeholder="Company or agency"><span class="err" id="e-org" aria-live="polite"></span></div>
+            </div>
+            <div class="field"><label for="f-email">Work email</label><input id="f-email" name="email" type="email" inputmode="email" autocomplete="email" required placeholder="you@company.hr"><span class="err" id="e-email" aria-live="polite"></span></div>
+            <div class="field"><label for="f-hw">Hardware you already own</label>
+              <select id="f-hw" name="hardware" required>
+                <option value="">Select the closest match</option>
+                <option>Apple Silicon, 64 GB+ unified memory</option>
+                <option>NVIDIA 24 GB+ (CUDA)</option>
+                <option>CPU-only servers / EU datacentre</option>
+                <option>Mostly cloud today, want to leave</option>
+                <option>No capable hardware — thin-client tier</option>
+              </select><span class="err" id="e-hardware" aria-live="polite"></span>
+            </div>
+            <div class="field"><label for="f-work">The 3 workflows you repeat most</label><input id="f-work" name="workflows" type="text" required placeholder="e.g. proposals, contract review, MCP delivery"><span class="err" id="e-workflows" aria-live="polite"></span></div>
+            <button class="btn btn--pri" type="submit">Request a deployment<svg viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M2 8h11M9 4l4 4-4 4" stroke="currentColor" stroke-width="1.6"/></svg></button>
+            <p class="privacy">No analytics, no cookies, no third-party scripts on this page. Submitting stores your note locally in this browser and opens a pre-filled email — nothing is transmitted without you pressing send.</p>
+          </div>
+          <div class="ok" id="ok" role="status" tabindex="-1">
+            <h3>Saved locally.</h3>
+            <p>We wired this page with zero trackers, so the form keeps its word: your note is stored in this browser, and a <a id="ok-mail" href="mailto:hello@swarmlet.ai?subject=Deployment%20request">pre-filled message to hello@swarmlet.ai</a> is ready. Send it and you hear back within two working days.</p>
+          </div>
+        </form>
+      </div>
+    </div>
+  </div>
+</section>
+</main>
+
+<footer>
+  <div class="wrap">
+    <div class="f-grid">
+      <div>
+        <div class="f-brand"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 2 22 12 12 22 2 12Z" stroke="#7EA0FF" stroke-width="1.6"/><path d="M12 6.6 17.4 12 12 17.4 6.6 12Z" stroke="#fff" stroke-width="1.4"/><circle cx="12" cy="12" r="1.9" fill="#7EA0FF"/></svg> swarmlet.ai</div>
+        <p style="max-width:44ch">Sovereign intelligence mesh. Source-available harness, private verification, disposable weights. Built in Europe on <span class="mono">llama.cpp + Bun</span>, under the Swarmlet Community License.</p>
+        <p class="mt-s mono" style="font-size:11.5px;color:#7C8CA3">P0a accepted · 8/8 e2e · OLMoE-1B-7B-A1B</p>
+      </div>
+      <div><h3>Product</h3><ul><li><a href="#architecture">Five layers</a></li><li><a href="#loop">The loop</a></li><li><a href="#proof">Evidence</a></li><li><a href="#bench">Benchmarks</a></li><li><a href="#roadmap">Roadmap</a></li></ul></div>
+      <div><h3>Engineering</h3><ul><li><a href="#mesh">Mesh topology</a></li><li><a href="#honest">Calibrated claims</a></li><li><a href="#commons">Commons &amp; licence</a></li><li><a href="#faq">Objections</a></li><li><a href="https://github.com/lotar/swarmlet">Source and documentation</a></li><li><a href="https://github.com/lotar/swarmlet/blob/main/LICENSE">Licence text</a></li></ul></div>
+      <div><h3>Contact</h3><ul><li><a href="mailto:hello@swarmlet.ai">hello@swarmlet.ai</a></li><li><a href="#access">Request a deployment</a></li><li><a href="#top">Back to top</a></li></ul></div>
+    </div>
+    <div class="f-bot">
+      <span>© 2026 Swarmlet · <a href="https://github.com/lotar/swarmlet/blob/main/LICENSE">source available under the Swarmlet Community License</a> · benchmarks reproduced with <span class="mono">sin-harness/scripts/bench-ctx2k.sh</span></span>
+      <span>No analytics · no cookies · no third-party scripts · <a href="#access">opt in to being contacted</a></span>
+    </div>
+  </div>
+</footer>
+
+<noscript><div class="wrap" style="padding-top:16px;padding-bottom:16px"><p class="ns">Everything here reads and works without JavaScript: the WebGL field, the counters and the bar animation are the only things that switch off, and the request form falls back to a plain email.</p></div></noscript>
+<script src="app.js" defer></script>
+</body>
+</html>

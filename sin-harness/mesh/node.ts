@@ -106,7 +106,7 @@ class EventStore {
       // construction) but flagged so they NEVER reach the shard or any prose
       // artifact — same contract as loop/events.ts.
       const changes = stmt
-        .run([
+        .run(
           rec.id,
           rec.ts,
           rec.session,
@@ -114,11 +114,17 @@ class EventStore {
           rec.payload,
           rec.piiFlagged ? 1 : 0,
           rec.processed ? 1 : 0,
-        ])
+        )
         .changes;
       if (changes > 0) added++;
     }
     return added;
+  }
+
+  markProcessed(ids: readonly string[]): void {
+    if (ids.length === 0) return;
+    const stmt = this.db.query(`UPDATE events SET processed = 1 WHERE id = ?`);
+    this.db.transaction(() => { for (const id of ids) stmt.run(id); })();
   }
 
   /** Non-PII events, stable order — the shard's raw material ("own real data"). */

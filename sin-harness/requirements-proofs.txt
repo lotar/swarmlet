@@ -1,0 +1,2 @@
+# Optional Python research/proof tools. Runtime TypeScript harness has no Python dependency.
+numpy==2.5.2

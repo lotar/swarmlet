@@ -2,7 +2,7 @@
 """Fail-fast DFlash target/draft GGUF compatibility gate (metadata only)."""
 import argparse,json,os,sys
 from pathlib import Path
-LLAMA=Path(os.environ.get('LLAMA_CPP','/Users/lotar/projects/local-llm/llama.cpp-pr27739'));sys.path.insert(0,str(LLAMA/'gguf-py'))
+HERE=Path(__file__).resolve().parent;REPO=HERE.parents[2];LLAMA=Path(os.environ.get('LLAMA_CPP',REPO/'vendor/llama.cpp'));sys.path.insert(0,str(LLAMA/'gguf-py'))
 from gguf import GGUFReader
 
 def value(r,key):
@@ -15,7 +15,7 @@ def value(r,key):
   out.append(x)
  return out[0] if len(out)==1 else out
 def vocab(r):return len(r.fields.get('tokenizer.ggml.tokens').data) if r.fields.get('tokenizer.ggml.tokens') else None
-ap=argparse.ArgumentParser();ap.add_argument('--target',default='/Users/lotar/projects/local-llm/models/qwen3.8-flash-next/UD-Q4_K_XL/Qwen3.8-Flash-Next-UD-Q4_K_XL-00001-of-00005.gguf');ap.add_argument('--draft',default='/Users/lotar/projects/local-llm/models/qwen3.8-27b-aeon/dflash2-Q8_0.gguf');ap.add_argument('--expect-incompatible',action='store_true');a=ap.parse_args();t=GGUFReader(a.target,'r');d=GGUFReader(a.draft,'r')
+ap=argparse.ArgumentParser();ap.add_argument('--target',default=os.environ.get('QWEN_TARGET',str(REPO/'models/qwen3.8-flash-next/UD-Q4_K_XL/Qwen3.8-Flash-Next-UD-Q4_K_XL-00001-of-00005.gguf')));ap.add_argument('--draft',default=os.environ.get('DFLASH_DRAFT',str(REPO/'models/dflash2-Q8_0.gguf')));ap.add_argument('--expect-incompatible',action='store_true');a=ap.parse_args();t=GGUFReader(a.target,'r');d=GGUFReader(a.draft,'r')
 target={'arch':value(t,'general.architecture'),'layers':int(value(t,'qwen4exp.block_count')),'hidden':int(value(t,'qwen4exp.embedding_length')),'vocab':vocab(t)}
 draft={'arch':value(d,'general.architecture'),'layers':int(value(d,'dflash.block_count')),'hidden':int(value(d,'dflash.embedding_length')),'targetLayers':list(map(int,value(d,'dflash.target_layers'))),'blockSize':int(value(d,'dflash.block_size')),'vocab':vocab(d)}
 reasons=[]

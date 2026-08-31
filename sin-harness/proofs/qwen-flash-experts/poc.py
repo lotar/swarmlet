@@ -1,35 +1,32 @@
 #!/usr/bin/env python3
 """Validate/benchmark the loopback Qwen expert-cell service."""
 from __future__ import annotations
-import json,os,re,socket,subprocess,sys,threading,time,urllib.error,urllib.request
+import json,os,secrets,socket,subprocess,sys,tempfile,threading,time,urllib.error,urllib.request
 from pathlib import Path
 os.environ.setdefault('OMP_NUM_THREADS','1');os.environ.setdefault('OPENBLAS_NUM_THREADS','1');os.environ.setdefault('VECLIB_MAXIMUM_THREADS','1')
-LLAMA=Path(os.environ.get('LLAMA_CPP','/Users/lotar/projects/local-llm/llama.cpp-rpc'));sys.path.insert(0,str(LLAMA/'gguf-py'))
+HERE=Path(__file__).resolve().parent;REPO=HERE.parents[2];LLAMA=Path(os.environ.get('LLAMA_CPP',REPO/'vendor/llama.cpp'));sys.path.insert(0,str(LLAMA/'gguf-py'))
 import numpy as np
 from cell import QwenExpertCell,deterministic_activation,softmax_top10,streamed_reference
 from binary_protocol import encode_service_request,decode_service_response
-from signing import verify_manifest
-SHARD=Path(os.environ.get('QWEN_SHARD','/Users/lotar/projects/local-llm/models/qwen3.8-flash-next/UD-Q4_K_XL/Qwen3.8-Flash-Next-UD-Q4_K_XL-00002-of-00005.gguf'));HERE=Path(__file__).parent;SERVICE_PORT=9590;BACKEND=os.environ.get('QWEN_EXPERT_BACKEND','mlx');PARITY_ABS=1e-3 if BACKEND=='mlx' else 2e-5
+from signing import ensure_keys,fingerprint,verify_manifest
+from system_metrics import rss_kib,swap_used_mib
+SHARD=Path(os.environ.get('QWEN_SHARD',REPO/'models/qwen3.8-flash-next/UD-Q4_K_XL/Qwen3.8-Flash-Next-UD-Q4_K_XL-00002-of-00005.gguf'));SERVICE_PORT=9590;ADMIN_TOKEN=None;BACKEND=os.environ.get('QWEN_EXPERT_BACKEND','mlx');PARITY_ABS=1e-3 if BACKEND=='mlx' else 2e-5
 
-def rss_kb(pid):
- out=subprocess.check_output(['ps','-o','rss=','-p',str(pid)],text=True).strip()
- if not out:raise RuntimeError(f'RSS unavailable for live pid {pid}')
- return int(out)
+def rss_kb(pid):return rss_kib(pid)
 def proof_children_rss():
  s=subprocess.check_output(['ps','-axo','rss=,command='],text=True);total=0
  for l in s.splitlines():
   if 'qwen-flash-experts/' in l and ('server.py' in l or 'worker.py' in l):total+=int(l.strip().split()[0])
  return total
-def swap_mb():
- s=subprocess.check_output(['sysctl','vm.swapusage'],text=True);m=re.search(r'used = ([\d.]+)M',s)
- if not m:raise RuntimeError('swap telemetry unavailable')
- return float(m.group(1))
-def request_url(url,obj=None,timeout=180):
- if obj is None:r=urllib.request.urlopen(url,timeout=timeout)
+def swap_mb():return swap_used_mib()
+def request_url(url,obj=None,timeout=180,admin=False):
+ headers={}
+ if admin:headers['authorization']=f'Bearer {ADMIN_TOKEN}'
+ if obj is None:r=urllib.request.urlopen(urllib.request.Request(url,headers=headers),timeout=timeout)
  else:
-  raw=json.dumps(obj,separators=(',',':')).encode();r=urllib.request.urlopen(urllib.request.Request(url,data=raw,headers={'content-type':'application/json'}),timeout=timeout)
+  raw=json.dumps(obj,separators=(',',':')).encode();headers['content-type']='application/json';r=urllib.request.urlopen(urllib.request.Request(url,data=raw,headers=headers),timeout=timeout)
  with r:return json.load(r)
-def req(path,obj=None,timeout=180):return request_url(f'http://127.0.0.1:{SERVICE_PORT}{path}',obj,timeout)
+def req(path,obj=None,timeout=180,admin=False):return request_url(f'http://127.0.0.1:{SERVICE_PORT}{path}',obj,timeout,admin)
 def port_free(p):
  s=socket.socket()
  try:s.bind(('127.0.0.1',p));return True
@@ -37,6 +34,7 @@ def port_free(p):
  finally:s.close()
 
 def main():
+ global ADMIN_TOKEN
  if not SHARD.exists():raise SystemExit(f'missing {SHARD}')
  for p in [9581,9582,9583,9584,9590]:
   if not port_free(p):raise SystemExit(f'safety: port {p} occupied')
@@ -47,15 +45,16 @@ def main():
    except Exception as e:sample_error.append(str(e));return
  sampler=threading.Thread(target=sample,daemon=True);sampler.start()
  refcell=QwenExpertCell(SHARD,HERE/'worker.py',backend=BACKEND);X=deterministic_activation()[None,:];ids,w=softmax_top10(X,refcell.router);reference=streamed_reference(refcell.T,X,ids,w)
- env=os.environ.copy();env['PYTHONPATH']=os.pathsep.join([str(HERE),str(LLAMA/'gguf-py')]);env.update({'OMP_NUM_THREADS':'1','OPENBLAS_NUM_THREADS':'1','VECLIB_MAXIMUM_THREADS':'1'})
- server=subprocess.Popen([sys.executable,str(HERE/'server.py'),'--port',str(SERVICE_PORT),'--shard',str(SHARD),'--backend',BACKEND],env=env,stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True)
+ env=os.environ.copy();signing_dir=Path(os.environ.get('QWEN_SIGNING_DIR',HERE.parents[1]/'data/qwen-expert-service'));_,trusted_pub=ensure_keys(signing_dir);trusted_fingerprint=os.environ.get('QWEN_TRUSTED_FINGERPRINT',fingerprint(trusted_pub.read_text()));env['QWEN_SIGNING_DIR']=str(signing_dir);env['PYTHONPATH']=os.pathsep.join([str(HERE),str(LLAMA/'gguf-py')]);env.update({'OMP_NUM_THREADS':'1','OPENBLAS_NUM_THREADS':'1','VECLIB_MAXIMUM_THREADS':'1'})
+ ADMIN_TOKEN=secrets.token_hex(32);fd,admin_path=tempfile.mkstemp(prefix='qwen-admin-',text=True);os.write(fd,(ADMIN_TOKEN+'\n').encode());os.close(fd);os.chmod(admin_path,0o600)
+ server=subprocess.Popen([sys.executable,str(HERE/'server.py'),'--port',str(SERVICE_PORT),'--shard',str(SHARD),'--backend',BACKEND,'--admin-token-file',admin_path],env=env,stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True)
  try:
   for _ in range(600):
    if server.poll() is not None:raise RuntimeError(server.stderr.read())
    try:req('/health');break
    except:time.sleep(.02)
   else:raise RuntimeError('service startup timeout')
-  manifest=req('/manifest');epoch=manifest['placementEpoch'];assert manifest['selectedExperts']==refcell.selected and manifest['placement']==refcell.placement and manifest['replicas']=={'n2':'n4'} and manifest['backend']==BACKEND;assert len(epoch)==64 and manifest['epochSigned'] is True and verify_manifest(manifest);assert all(len(x)==64 for x in manifest['nodeContentDigests'].values())
+  manifest=req('/manifest');epoch=manifest['placementEpoch'];assert manifest['selectedExperts']==refcell.selected and manifest['placement']==refcell.placement and manifest['replicas']=={'n2':'n4'} and manifest['backend']==BACKEND;assert len(epoch)==64 and manifest['epochSigned'] is True and verify_manifest(manifest,trusted_fingerprint);assert all(len(x)==64 for x in manifest['nodeContentDigests'].values())
   print('[qwen-service] epoch',epoch[:16],'placement',manifest['placement'],flush=True)
   def forward_json(Xb,profile,ep=epoch):
    t=time.perf_counter();r=req('/v1/ffn',{'placementEpoch':ep,'activations':Xb.tolist(),'profile':profile});return np.asarray(r['output'],dtype=np.float32),(time.perf_counter()-t)*1000,float(r['durationMs'])
@@ -110,22 +109,22 @@ def main():
   assert benches['eu_b1']['apiMedianMs']-benches['lan_b1']['apiMedianMs']>=15
 
   # Warm exact replica: primary loss still produces the same FP16 result.
-  req('/admin/stop-owner',{'nodeId':'n2','placementEpoch':epoch});replica_out,replica_ms=forward_bin(X,'lan');assert float(np.max(np.abs(replica_out-binary)))<1e-6
+  req('/admin/stop-owner',{'nodeId':'n2','placementEpoch':epoch},admin=True);replica_out,replica_ms=forward_bin(X,'lan');assert float(np.max(np.abs(replica_out-binary)))<1e-6
   # Primary + replica loss fails closed.
-  req('/admin/stop-owner',{'nodeId':'n4','placementEpoch':epoch});failed=False
+  req('/admin/stop-owner',{'nodeId':'n4','placementEpoch':epoch},admin=True);failed=False
   try:forward_bin(X,'lan')
   except urllib.error.HTTPError as e:failed=e.code==503
   assert failed
-  req('/admin/start-owner',{'nodeId':'n2','placementEpoch':epoch});req('/admin/start-owner',{'nodeId':'n4','placementEpoch':epoch});retry,_,_=forward_json(X,'lan');assert float(np.max(np.abs(retry-reference)))<PARITY_ABS
+  req('/admin/start-owner',{'nodeId':'n2','placementEpoch':epoch},admin=True);req('/admin/start-owner',{'nodeId':'n4','placementEpoch':epoch},admin=True);retry,_,_=forward_json(X,'lan');assert float(np.max(np.abs(retry-reference)))<PARITY_ABS
 
   proof_rss=rss_kb(os.getpid())+proof_children_rss()-base_rss;peak[0]=max(peak[0],proof_rss);swap=max(0,swap_mb()-base_swap);assert not sample_error,sample_error;assert peak[0]<900*1024,peak[0]/1024;assert swap<512,swap
   eu=benches['eu_b1']['apiMedianMs'];summary={**manifest,'manifestSignatureVerified':True,'fullFfnParityMaxAbs':max_abs,'fullFfnParityMaxRel':max_rel,'batch4ParityMaxAbs':batch4_abs,'binaryFp16ParityMaxAbs':binary_abs,'binaryBenchmarks':benches,'jsonBatch1ApiMs':json_bench,'replicaFailoverMs':replica_ms,'projected48LayerEuMsPerToken':eu*48,'projected48LayerEuTokPerSec':1000/(eu*48),'proofFinalIncrementalRssMiB':proof_rss/1024,'peakAggregateRssDeltaMiB':peak[0]/1024,'swapDeltaMiB':swap,'staleEpochFailClosed':True,'nonresidentRouteFailClosed':True,'exactReplicaFailover':True,'primaryAndReplicaLossFailClosed':True,'restartParity':True,'scope':'complete layer-0 FFN (routed + shared), excluding attention/SSM/residual/KV/logits'}
   print('RESULT_JSON='+json.dumps(summary,separators=(',',':')),flush=True)
  finally:
-  try:req('/shutdown',{},5)
+  try:req('/shutdown',{},5,admin=True)
   except:pass
   try:server.wait(timeout=20)
   except:server.kill();server.wait()
-  done.set();sampler.join(timeout=2)
+  done.set();sampler.join(timeout=2);Path(admin_path).unlink(missing_ok=True)
 
 if __name__=='__main__':main()

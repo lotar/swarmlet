@@ -333,7 +333,7 @@ export async function runCertification(
         if (!item) return;
         // Extra copies should prefer nodes that don't hold a copy yet.
         const exclude = item.extraCopy
-          ? [...(multiResults.get(item.inst.id)?.keys() ?? [])]
+          ? (multiResults.get(item.inst.id) ?? []).map((x) => x.nodeId)
           : [];
         const n = pickNode(exclude);
         if (!n) {

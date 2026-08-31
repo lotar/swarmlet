@@ -1,5 +1,6 @@
 # --- heavy/regenerable runtime artifacts: never committed ---
 models/
+dist/
 sin-harness/data/
 sin-harness/*.log
 sin-harness/*.pid
@@ -7,7 +8,9 @@ sin-harness/*.pid
 # signing keys NEVER leave the machine (even into local git history)
 **/keys/
 
-# Python/runtime noise
+# Dependency/runtime noise
+**/node_modules/
+**/.venv/
 __pycache__/
 *.py[cod]
 
@@ -19,3 +22,4 @@ sin-harness/knowledge/
 
 # dockerized-node runtime artifacts (per-node sqlite/knowledge clones)
 sin-harness/data-docker/
+.gstack/

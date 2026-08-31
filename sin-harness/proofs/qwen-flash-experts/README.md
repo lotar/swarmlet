@@ -32,9 +32,10 @@ QWEN_EXPERT_BACKEND=mlx bun run test:qwen-experts
 Standalone server:
 
 ```bash
-PYTHONPATH=/Users/lotar/projects/local-llm/llama.cpp-rpc/gguf-py \
-python3 proofs/qwen-flash-experts/server.py --backend mlx \
-  --shard /Users/lotar/projects/local-llm/models/qwen3.8-flash-next/UD-Q4_K_XL/Qwen3.8-Flash-Next-UD-Q4_K_XL-00002-of-00005.gguf
+export LLAMA_CPP=/path/to/pinned/llama.cpp
+export QWEN_SHARD=/path/to/Qwen3.8-Flash-Next-UD-Q4_K_XL-00002-of-00005.gguf
+PYTHONPATH="$LLAMA_CPP/gguf-py" \
+python3 proofs/qwen-flash-experts/server.py --backend mlx --shard "$QWEN_SHARD"
 ```
 
 ## API
@@ -82,6 +83,22 @@ Validation:
 The cold replica is intentional for this loaded-host test: it verifies hashes at
 startup but dequantizes only after primary loss, preserving the fixed memory
 cap. A physical multi-node deployment can keep replicas warm on separate cards.
+
+## Portable Linux owner bundles
+
+Export only the selected layer-0 experts rather than copying a complete GGUF shard:
+
+```bash
+python3 proofs/qwen-flash-experts/export_bundles.py \
+  --shard "$QWEN_SHARD" --gguf-py "$LLAMA_CPP/gguf-py" \
+  --out data/qwen-layer0-bundles
+```
+
+Each NPZ is pickle-free FP16 with plan epoch, raw tensor provenance, array hashes,
+and exact node ownership. Start `worker.py` with `--bundle n1.npz`; the worker
+recomputes the bundle digest before serving. `external_poc.py` connects through
+loopback endpoints (normally SSH forwards) and compares routed plus shared FFN
+output against the independent GGUF reference. This path is NumPy/CPU, not CUDA.
 
 ## Scope
 

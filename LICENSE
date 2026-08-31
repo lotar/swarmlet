@@ -1,0 +1,161 @@
+Swarmlet Community License 1.0
+
+Copyright (c) 2026 Swarmlet
+
+This license is a source-available license. It is not an Open Source license and
+has not been approved by the Open Source Initiative.
+
+1. DEFINITIONS
+
+"Software" means the source code, object code, documentation, and other files
+made available with this license, including modifications and derivative works.
+It excludes third-party components and model weights governed by other terms.
+
+"Licensor" means the copyright owner offering the Software under this license.
+
+"You" means the individual or legal entity exercising rights under this
+license. If You act for an organization, "You" includes that organization and
+its Corporate Group.
+
+"Corporate Group" means You and every entity that directly or indirectly
+controls, is controlled by, or is under common control with You. "Control"
+means ownership of more than fifty percent of voting interests or the direct or
+indirect power to direct management or policies, whether through ownership,
+agreement, or otherwise.
+
+"Personal Use" means use by an individual solely on their own behalf for
+learning, private experimentation, hobbies, or private entertainment, and not
+for compensation or for the benefit of an organization.
+
+"Noncommercial Use" means use that is not intended for commercial advantage,
+monetary compensation, internal business operations, a paid product or service,
+consulting, hosted service, or the benefit of a commercial customer.
+
+"Commercial Use" means any use other than Personal Use or Noncommercial Use,
+including internal business use, production use, consulting, offering a hosted
+or managed service, or including the Software in a paid product or service.
+
+"Worldwide Gross Annual Revenue" means the Corporate Group's consolidated
+worldwide revenue from all sources during its most recently completed fiscal
+year, before costs or deductions. Intercompany revenue is counted only once.
+VAT, sales taxes collected for a government, refunds, and customer pass-through
+funds are excluded. Revenue in another currency is converted to euros using the
+European Central Bank annual average reference rate for that fiscal year. A
+Corporate Group without a completed fiscal year must use a good-faith annualized
+estimate based on all available operating results and signed contracts.
+
+"Eligible Small Business" means a Corporate Group whose Worldwide Gross Annual
+Revenue is not more than EUR 1,000,000.
+
+2. LICENSE GRANTS
+
+Subject to this license, Licensor grants You a worldwide, royalty-free,
+non-exclusive, non-transferable license to use, reproduce, modify, create
+derivative works of, display, perform, and distribute the Software:
+
+(a) for Personal Use;
+(b) for Noncommercial Use; and
+(c) for Commercial Use only while You are an Eligible Small Business.
+
+You may allow employees and contractors to exercise these rights solely on Your
+behalf and subject to this license. If You use the Software for a customer's or
+another entity's benefit, both You and that beneficiary must be an Eligible
+Small Business or hold a separate commercial license from Licensor.
+
+No right is granted for Commercial Use by a Corporate Group with Worldwide
+Gross Annual Revenue greater than EUR 1,000,000 unless Licensor separately
+agrees in writing.
+
+3. REDISTRIBUTION AND MODIFICATIONS
+
+You may distribute source or object forms of the Software only if You:
+
+(a) include this license and all copyright, attribution, and patent notices;
+(b) clearly identify files You materially changed and the date of change;
+(c) do not state or imply that Licensor endorses Your changes; and
+(d) inform recipients that their rights depend on their own compliance and,
+    for Commercial Use, their own Corporate Group revenue.
+
+This license does not prevent recipients from obtaining different terms
+directly from Licensor.
+
+4. LOSS OF SMALL-BUSINESS ELIGIBILITY
+
+If Your Corporate Group ceases to be an Eligible Small Business because of
+revenue, merger, acquisition, reorganization, or change of control, You may
+continue the previously permitted Commercial Use for ninety days after the
+later of the eligibility change or the date it can reasonably be determined.
+Before that period ends, You must obtain a separate written commercial license
+or stop all Commercial Use. Licensor is not obligated to offer any particular
+price or commercial terms.
+
+5. COMPLIANCE
+
+You must keep records reasonably sufficient to determine eligibility for three
+years. On reasonable written request no more than once per year, You will
+provide a signed statement confirming whether You remain eligible. Licensor
+must keep non-public financial information confidential and use it only for
+license compliance or legal enforcement.
+
+6. PATENT LICENSE
+
+Each Licensor contributor grants You a patent license, subject to the same use
+and revenue conditions, to make, use, sell, offer for sale, import, and otherwise
+run the contributor's contribution as part of the Software. This covers only
+patent claims the contributor can license that are necessarily infringed by the
+contribution alone or together with the Software. If You initiate patent
+litigation alleging that the Software or a contribution infringes a patent,
+all patent licenses granted to You under this section terminate immediately.
+
+7. CONTRIBUTIONS
+
+Unless a separate written agreement says otherwise, by intentionally submitting
+a contribution for inclusion in the Software, You grant Licensor a perpetual,
+worldwide, royalty-free, irrevocable copyright and patent license to use,
+reproduce, modify, distribute, sublicense, and relicense that contribution.
+Recipients receive rights to the contribution only under this license or a
+separate license from Licensor. You represent that You have authority to grant
+those rights.
+
+8. TRADEMARKS AND OTHER RIGHTS
+
+This license grants no trademark, service mark, branding, publicity, or trade
+secret rights. It does not limit rights provided by law without a license, such
+as fair use. All rights not expressly granted are reserved.
+
+9. TERMINATION AND REINSTATEMENT
+
+Your rights terminate automatically when You violate this license. If the
+violation is curable and You cure it within thirty days after receiving written
+notice, Your rights are reinstated from the date of cure. Intentional
+misrepresentation of revenue, continued Commercial Use after the transition
+period, or repeated violation is not automatically curable. Sections that by
+their nature should survive termination remain effective.
+
+10. NO SUPPORT OR WARRANTY
+
+THE SOFTWARE IS PROVIDED "AS IS" AND "AS AVAILABLE", WITHOUT WARRANTIES OR
+CONDITIONS OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING WARRANTIES OF TITLE,
+NON-INFRINGEMENT, MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE, ACCURACY,
+SECURITY, OR QUIET ENJOYMENT. LICENSOR HAS NO OBLIGATION TO PROVIDE SUPPORT,
+MAINTENANCE, UPDATES, SECURITY FIXES, SERVICE LEVELS, OR INDEMNITY.
+
+11. LIMITATION OF LIABILITY
+
+TO THE MAXIMUM EXTENT PERMITTED BY LAW, LICENSOR AND CONTRIBUTORS WILL NOT BE
+LIABLE FOR ANY INDIRECT, INCIDENTAL, SPECIAL, CONSEQUENTIAL, EXEMPLARY, OR
+PUNITIVE DAMAGES, OR FOR LOST PROFITS, REVENUE, DATA, GOODWILL, OR BUSINESS
+INTERRUPTION, ARISING FROM OR RELATED TO THE SOFTWARE OR THIS LICENSE, UNDER ANY
+LEGAL THEORY, EVEN IF ADVISED OF THE POSSIBILITY. THEIR TOTAL LIABILITY FOR ALL
+CLAIMS WILL NOT EXCEED EUR 100. NOTHING IN THIS LICENSE EXCLUDES LIABILITY THAT
+APPLICABLE LAW DOES NOT ALLOW TO BE EXCLUDED.
+
+12. GENERAL
+
+If any provision is unenforceable, it will be modified only as much as necessary
+and the remaining provisions will continue. Failure to enforce a provision is
+not a waiver. A separate signed agreement between You and Licensor controls over
+this license where they conflict. Headings do not affect interpretation.
+
+For Commercial Use outside the community grant, contact:
+hello@swarmlet.ai

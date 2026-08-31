@@ -2,15 +2,16 @@
 # Builds sin/sovereign-node:latest — a fully self-contained mesh node.
 #
 # Staged build context (nothing bind-mounted at RUNTIME; everything baked in):
-#   llama.cpp/    <- pinned source tree (/Users/lotar/projects/local-llm/llama.cpp-rpc)
+#   llama.cpp/    <- pinned source tree supplied through LLAMA_RPC_SRC
 #   sin-harness/  <- this repo's harness code (pruned of runtime artifacts)
 #   model.gguf    <- OLMoE Q4_K_M weights (~4.2 GB)
 set -euo pipefail
 
 HERE="$(cd "$(dirname "$0")/.." && pwd)"
-SRC="${LLAMA_RPC_SRC:-/Users/lotar/projects/local-llm/llama.cpp-rpc}"
+SRC="${LLAMA_RPC_SRC:-}"
 MODEL="${MODEL:-$HERE/../models/OLMoE-1B-7B-0125-Instruct-Q4_K_M.gguf}"
 
+[ -n "$SRC" ] || { echo "set LLAMA_RPC_SRC to a pinned llama.cpp checkout"; exit 1; }
 test -d "$SRC/.git" || { echo "missing llama.cpp source at $SRC"; exit 1; }
 test -f "$MODEL"     || { echo "missing model at $MODEL"; exit 1; }
 

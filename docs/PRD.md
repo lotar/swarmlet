@@ -16,7 +16,7 @@ This PRD takes the dream seriously instead of hedging it. Where physics or econo
 ### Why "free" is not naive
 - Base models: open-weight frontier-adjacent models (Qwen3.8-27B class) already run on ~17 GB consumer hardware. Each generation imports frontier gains at zero cost to us. The industry pays the training bill; we absorb the output.
 - Compute: the marginal cost of inference on hardware someone already owns (gaming PC, MacBook) is electricity. "Free" means "no new money changes hands," which is achievable for the owner-operator tier.
-- Knowledge & verification: text artifacts (skills, eval templates) cost nothing to replicate. Once created, they are free forever. This is the layer where a commons genuinely works — same economics as open source software.
+- Knowledge & verification: text artifacts (skills, eval templates) cost nothing to replicate. The community license keeps personal/noncommercial use and Commercial Use while the Corporate Group's Worldwide Gross Annual Revenue is not more than EUR 1,000,000 free; larger commercial users fund continued work.
 - What is NOT free and never will be: novel frontier reasoning (residual API dependency, shrinking each generation), human attention for curation/deployment (monetized), and trust certification at scale (monetized). The business model funds the free tier from the non-free residue — the Red Hat / Linux structure, applied to intelligence.
 
 ---
@@ -37,7 +37,7 @@ A five-layer system. Each layer is a product surface; layers ship independently;
 
 **Proof-of-concept constraint:** the entire loop is first implemented against a **small MoE model ≤ 12B total parameters** (OLMoE-1B-7B-Instruct: 6.9B stored / ~1.3B active, Apache 2.0, fully open incl. training data; fallback/swap-target: IBM Granite-4.0-H-Tiny, 7B A1B). Rationale: a 27B proves nothing about architecture that a 7B-A1B can't prove cheaper and faster — if the harness (L1 refinement + L2 verification + routing) lifts a tiny sparse model measurably on narrow recurring workflows, the same machinery lifts every larger generation. The MoE choice additionally stress-tests the L0 contract on a non-dense architecture. The swap from OLMoE → Granite-4.0-H-Tiny (different vendor, different attention hybrid) doubles as the first live rehearsal of the base-swap procedure.
 
-### L0 — Model Contract *(permanent, free, open spec)*
+### L0 — Model Contract *(permanent, published source-available spec)*
 - OpenAI-compatible endpoint + capability manifest (context length, tool-calling, modalities, quantization).
 - Base model is a config line. Qwen3.6-27B today, Qwen3.8-27B on release, anything in 2027+.
 - Swap procedure is a first-class, automated flow: re-baseline evals → re-audition adapters → done.
@@ -68,7 +68,7 @@ Three components, each answering a specific attack discovered in design review:
 - **Reasoning:** adapters are cache, not state. This dissolves the depreciation problem: base models improving is no longer a threat to accumulated value — it's a free upgrade absorbed on swap day. Also dissolves the training-data-scarcity problem: one node's daily signal (~50–200k useful tokens) is too thin for nightly weight training anyway; saturation-triggered weekly-at-most training matches the actual data supply. Training data is distilled/corrected samples (stronger-model rewrite of lessons), never raw self-outputs — the anti-collapse measure.
 
 ### L4 — Mesh & Commons *(the "for the masses" layer, phased)*
-- **Commons (free forever):** skill packs, eval templates, adapter *recipes* (not weights — recipes: data specs + training configs that each node executes locally). Text artifacts, auditable, replicable at zero cost. Licensed permissively. This is the layer where "AI for the masses for free" is literally true and economically sound — open-source economics, proven for 30 years.
+- **Community source:** skill packs, eval templates, adapter *recipes* (not weights — recipes: data specs + training configs that each node executes locally). Text artifacts are auditable and replicable at zero cost. Personal/noncommercial use and Commercial Use while the Corporate Group's Worldwide Gross Annual Revenue is not more than EUR 1,000,000 are free under the Swarmlet Community License.
 - **Mesh compute:** nodes contribute idle GPU cycles for (a) serving the common base to thin clients (phones, old laptops — the masses who own *no* capable hardware), (b) distributed eval certification — embarrassingly parallel, churn-tolerant, verified by redundant execution (5% of tasks triple-run and cross-checked). Directly reuses the skeleton/expert churn-immune architecture from the GPU-mesh work; eval traffic is an even better mesh workload than inference (no latency SLA, perfect parallelism).
 - **Aggregated audition telemetry:** only pass-rate statistics leave nodes, never data. Produces honest transferability scores nobody — including authors — can game, because no one knows the shard contents.
 - **Reasoning:** distribution "to the world" fails as weights (incompatible LoRAs pile) and succeeds as knowledge + verification. The durable shared asset is the skill/eval layer; weights stay personal and regenerable. Cold-start is solved by sequencing (see §5): the mesh is *last*, funded and seeded by earlier phases, never a prerequisite.
@@ -97,11 +97,11 @@ Reliability mechanics on consumer hardware (M5 Max 128 GB reference node): Q8 qu
 
 ## 4. Monetization — Funding "Free" Honestly
 
-The free tier is real and load-bearing, not a trial. Revenue comes from the layers where human attention and trust certification are irreducibly scarce. Structure: open core (Red Hat model).
+The community tier is real and load-bearing, not a trial. Revenue comes from larger commercial users and the layers where human attention and trust certification are irreducibly scarce. Structure: source available with a small-business commercial grant.
 
 | Tier | What | Who pays | Price anchor |
 |---|---|---|---|
-| **Commons** | Harness, loop, eval generator, skill packs, recipes — open source | Nobody. This IS "AI for the masses for free" | €0 |
+| **Community source** | Harness, loop, eval generator, skill packs, recipes — source available | Individuals, noncommercial users, and Corporate Groups with Worldwide Gross Annual Revenue ≤EUR 1,000,000 | €0 within licence |
 | **Sovereign Deployment** | Turnkey install on customer hardware; week-one private eval shard built from their real workflows; monthly invoice ships the score trend | EU SMEs (data can't leave; ownership resonates) | €5–15k setup + €300–500/mo |
 | **Harness License** | Deployment playbook + supported build for other agencies to deliver | EU agencies (distributed *sales*, not distributed compute — they own customer relationships we lack) | per-deployment fee |
 | **Certification** | Mesh-run eval certification for commons artifacts; transferability scores | Artifact publishers, enterprises consuming commons | usage-based |
@@ -129,7 +129,7 @@ The free tier is real and load-bearing, not a trial. Revenue comes from the laye
 | Adapter poisoning at commons scale | Audition + behavioral-diff + signed provenance; weights never shared, only recipes | Confirmed exploit passing audition → recipes-only mode |
 | Frontier price collapse erodes "local" pitch | Ownership/residency lead the pitch, not cost | Cost was never the argument |
 | Key-person bottleneck (first deployments) | Playbook-as-you-go = the license product | >5 deployments still requiring founder → license path failed, stay boutique |
-| No one wants it | P2 is 3 customers from a warm list of 140 in 90 days | Can't close 3 → the market said no; commons continues as OSS, business pivots |
+| No one wants it | P2 is 3 customers from a warm list of 140 in 90 days | Can't close 3 → the market said no; source-available community project continues, business pivots |
 | Signal scarcity (one node's data too thin) | Saturation-triggered training; weekly-at-most cadence; L1 does the fast learning | — (designed around) |
 | Mesh code untested at scale until P4 | Local multi-process simulation is a P0a exit criterion; P4 swaps topology only | Simulation can't pass e2e → mesh stays design-only |
 

@@ -13,7 +13,7 @@
     "allowImportingTsExtensions": true,
     "noEmit": true,
     "skipLibCheck": true,
-    "types": []
+    "types": ["bun"]
   },
   "include": ["**/*.ts"],
   "exclude": ["node_modules"]

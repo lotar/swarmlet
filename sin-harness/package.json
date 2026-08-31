@@ -1,17 +1,29 @@
 {
   "name": "sin-harness",
-  "version": "0.0.1-poc",
+  "version": "1.0.0-alpha.1",
   "private": true,
   "type": "module",
-  "description": "Sovereign Intelligence Network harness — P0a PoC (MoE loop + locally-simulated mesh)",
-  "license": "Apache-2.0",
+  "description": "Swarmlet source-available sovereign AI mesh research harness",
+  "license": "SEE LICENSE IN ../LICENSE",
+  "engines": {
+    "bun": "1.3.14"
+  },
   "scripts": {
     "model": "./scripts/start-model.sh",
-    "test": "bun test test/",
+    "test": "bun run typecheck && bun run test:unit && bun run test:proofs-portable",
+    "typecheck": "tsc --noEmit",
+    "test:unit": "bun test test/l0.test.ts test/loop.test.ts test/graduate.test.ts test/mesh.test.ts test/tiny-moe-distributed.test.ts test/tiny-moe-physical.test.ts test/evals.test.ts",
+    "test:integration": "bun test test/e2e.test.ts",
+    "test:docker": "bun test test/e2e-docker.test.ts",
+    "test:e2e-docker": "bun run test:docker",
+    "test:model": "bun test test/e2e.test.ts",
+    "test:hardware": "./scripts/two-node-proof.sh",
     "test:l0": "bun test test/l0.test.ts",
-    "test:e2e": "bun test test/e2e.test.ts",
+    "test:e2e": "bun run test:integration",
     "test:tiny-moe": "bun test test/tiny-moe-distributed.test.ts",
     "test:qwen-experts": "python3 proofs/qwen-flash-experts/poc.py",
+    "export:qwen-expert-bundles": "python3 proofs/qwen-flash-experts/export_bundles.py",
+    "test:qwen-external": "python3 proofs/qwen-flash-experts/external_poc.py",
     "test:dflash-pipeline": "python3 proofs/dflash-pipeline/simulator.py",
     "test:dflash-compat": "python3 proofs/dflash-pipeline/check_compat.py --expect-incompatible",
     "inspect:flashnext-mtp": "python3 proofs/dflash-pipeline/inspect_flashnext_mtp.py",
@@ -19,6 +31,14 @@
     "test:qwen-disk-experts": "python3 proofs/qwen-disk-experts/stream_experts.py --cache-mib 512 --layers 48 --passes 2",
     "bench:qwen-disk-experts": "python3 proofs/qwen-disk-experts/stream_experts.py --cache-mib 8192 --rss-limit-mib 15360 --layers 48 --passes 2 --policy pinned",
     "test:no-ram-goal": "python3 proofs/no-ram-goal/e2e.py",
+    "test:proofs-portable": "python3 proofs/no-ram-goal/portable_e2e.py",
+    "proof:tiny-physical": "bun proofs/tiny-moe/physical.ts",
+    "release:check": "./scripts/release-check.sh",
+    "release:package": "./scripts/package-release.sh",
     "report:results-grid": "python3 proofs/no-ram-goal/compare_results.py --out ../docs/RESULTS_GRID.md"
+  },
+  "devDependencies": {
+    "@types/bun": "1.3.14",
+    "typescript": "5.9.2"
   }
 }

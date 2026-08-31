@@ -1,0 +1,57 @@
+name: ci
+on:
+  push:
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  portable:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.14
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Install deterministic development dependencies
+        working-directory: sin-harness
+        run: |
+          bun install --frozen-lockfile
+          python -m pip install --requirement requirements-proofs.txt
+      - name: Portable release gates
+        working-directory: sin-harness
+        run: bun run test
+      - name: Shell syntax
+        run: bash -n sin-harness/scripts/*.sh sin-harness/docker/*.sh tools/site/*.sh
+      - name: Python syntax
+        run: python -m compileall -q sin-harness/proofs
+      - name: Generated results grid is current
+        working-directory: sin-harness
+        run: |
+          bun run report:results-grid
+          git diff --exit-code -- ../docs/RESULTS_GRID.md
+      - name: Static site smoke test
+        run: |
+          node site/server.mjs >/tmp/swarmlet-site.log 2>&1 & server=$!
+          trap 'kill "$server" 2>/dev/null || true' EXIT
+          for _ in $(seq 1 50); do curl -fsS http://127.0.0.1:8123/ >/dev/null 2>&1 && break; sleep .1; done
+          curl -fsS http://127.0.0.1:8123/ >/dev/null
+          curl -fsS http://127.0.0.1:8123/app.js >/dev/null
+          curl -fsS http://127.0.0.1:8123/og.png >/dev/null
+      - name: Release files present
+        run: test -f README.md -a -f LICENSE -a -f SECURITY.md -a -f CONTRIBUTING.md -a -f CHANGELOG.md -a -f THIRD_PARTY.md
+  secrets:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

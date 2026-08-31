@@ -125,7 +125,9 @@ Implementation: `sin-harness/proofs/tiny-moe/` and
 | Exact owner restart | parity restored |
 | Tests | 6/6 pass, 552 assertions |
 
-| Tiny benchmark | Median | Throughput |
+These are synthetic protocol timings with imposed application delays, no model, and no GPU. They are simulations, not hardware/model throughput.
+
+| Simulated tiny benchmark | Median | Throughput |
 |---|---:|---:|
 | Batch 1 | 9.24 ms | 108 tok/s |
 | Batch 8 | 12.21 ms | 655 tok/s |
@@ -133,7 +135,7 @@ Implementation: `sin-harness/proofs/tiny-moe/` and
 | Batch 64 | 12.78 ms | 5,007 tok/s |
 | 92 serial layers, batch 1 | 824.8 ms/token | **1.212 tok/s** |
 
-The 92-layer result validates the WAN barrier model: batching raises aggregate
+The simulated 92-layer result exercises the WAN barrier model: batching raises aggregate
 throughput, but serial decode latency remains dominated by layer barriers.
 
 ### Safety result

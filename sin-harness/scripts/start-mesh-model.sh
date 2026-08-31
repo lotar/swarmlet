@@ -25,20 +25,25 @@
 set -euo pipefail
 
 HERE="$(cd "$(dirname "$0")/.." && pwd)"
-LLAMA_SERVER="${LLAMA_RPC_BUILD:-/Users/lotar/projects/local-llm/llama.cpp-rpc/build-host/bin/llama-server}"
-MODEL="${MODEL:-/Users/lotar/projects/ai-mesh/models/OLMoE-1B-7B-0125-Instruct-Q8_0.gguf}"
+LLAMA_SERVER="${LLAMA_RPC_BUILD:-$(command -v llama-server || true)}"
+MODEL="${MODEL:-$HERE/../models/OLMoE-1B-7B-0125-Instruct-Q8_0.gguf}"
 PORT=8081
 NGL="${NGL:-99}"
 TSPLIT="${TSPLIT:-1,1,1,0}"
 CTX="${CTX:-4096}"
 EXPERT_SPLIT="${EXPERT_SPLIT:-0}"
 
-test -x "$LLAMA_SERVER" || { echo "missing $LLAMA_SERVER — build first (GGML_RPC=ON)"; exit 1; }
+test -n "$LLAMA_SERVER" && test -x "$LLAMA_SERVER" || { echo "missing llama-server — set LLAMA_RPC_BUILD to a GGML_RPC=ON binary"; exit 1; }
 test -f "$MODEL" || { echo "missing model $MODEL"; exit 1; }
 
 # Kernel-panic guard: this topology is sized for <=20GB models inside a
 # 28GB/6cpu Docker VM. Refuse anything bigger BEFORE touching docker.
-MODEL_GB=$(($(stat -f%z "$MODEL") / 1024 / 1024 / 1024))
+if stat -c%s "$MODEL" >/dev/null 2>&1; then
+  MODEL_BYTES=$(stat -c%s "$MODEL") # GNU/Linux
+else
+  MODEL_BYTES=$(stat -f%z "$MODEL") # macOS/BSD
+fi
+MODEL_GB=$((MODEL_BYTES / 1024 / 1024 / 1024))
 [ "$MODEL_GB" -le 20 ] || { echo "refusing: model ${MODEL_GB}GB > 20GB safety envelope"; exit 1; }
 
 for port in 51052 51053 51054; do

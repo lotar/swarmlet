@@ -48,7 +48,7 @@ const CERT_PORTS_B = [9501, 9502, 9503];
 interface NodeProc {
   id: string;
   port: number;
-  proc: Bun.Subprocess<"ignore", "pipe", "inherit">;
+  proc: Bun.Subprocess<"ignore", "inherit", "inherit">;
 }
 
 const phaseNodes: NodeProc[] = [];
@@ -553,7 +553,7 @@ describe("P0a end-to-end acceptance (real OLMoE MoE @ 127.0.0.1:8081)", () => {
   test("step 8: acceptance ledger complete — every step produced hard evidence", () => {
     // Step rows are labelled strings like "4 gate + auto-revert (A)" — parse
     // the leading integer instead of Number(), which NaNs on labels.
-    const steps = summary.map((r) => parseInt(r.step, 10));
+    const steps = summary.map((r) => parseInt(String(r.step ?? ""), 10));
     for (const required of [1, 2, 3, 4, 5, 6, 7]) {
       expect(steps.includes(required), `step ${required} evidence missing`).toBe(true);
     }
@@ -588,8 +588,8 @@ async function lastCertJson(): Promise<{
   // runs; disambiguate the top two with fs nanosecond timestamps.
   const top = entries[0]!;
   if (entries.length > 1 && entries[1]!.m === top.m) {
-    const a = statSync(top.f).ctimeNs;
-    const b = statSync(entries[1]!.f).ctimeNs;
+    const a = statSync(top.f, { bigint: true }).ctimeNs;
+    const b = statSync(entries[1]!.f, { bigint: true }).ctimeNs;
     if (b > a) top.f = entries[1]!.f;
   }
   return (await Bun.file(top.f).json()) as never;

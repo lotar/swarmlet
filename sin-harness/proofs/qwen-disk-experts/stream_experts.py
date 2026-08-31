@@ -4,13 +4,13 @@ from __future__ import annotations
 import argparse,collections,fcntl,json,math,os,resource,subprocess,sys,threading,time
 from pathlib import Path
 os.environ.setdefault('OMP_NUM_THREADS','1');os.environ.setdefault('OPENBLAS_NUM_THREADS','1');os.environ.setdefault('VECLIB_MAXIMUM_THREADS','1')
-LLAMA=Path(os.environ.get('LLAMA_CPP','/Users/lotar/projects/local-llm/llama.cpp-rpc'));sys.path.insert(0,str(LLAMA/'gguf-py'))
+HERE=Path(__file__).resolve().parent;REPO=HERE.parents[2];LLAMA=Path(os.environ.get('LLAMA_CPP',REPO/'vendor/llama.cpp'));sys.path[:0]=[str(LLAMA/'gguf-py'),str(HERE.parent/'qwen-flash-experts')]
 import numpy as np
 from gguf import GGUFReader
 from gguf.quants import dequantize
-MODEL=Path('/Users/lotar/projects/local-llm/models/qwen3.8-flash-next/UD-Q4_K_XL')
+from system_metrics import memory_available_percent,swap_used_mib
 NAMES=['ffn_gate_exps','ffn_up_exps','ffn_down_exps'];SHARED=['ffn_gate_shexp','ffn_up_shexp','ffn_down_shexp']
-ap=argparse.ArgumentParser();ap.add_argument('--cache-mib',type=int,default=512);ap.add_argument('--rss-limit-mib',type=int,default=15360);ap.add_argument('--layers',type=int,default=48);ap.add_argument('--compute-layers',type=int,default=4);ap.add_argument('--passes',type=int,default=2);ap.add_argument('--route-churn',action='store_true');ap.add_argument('--policy',choices=['lru','pinned'],default='lru');ap.add_argument('--cached-io',action='store_true');a=ap.parse_args()
+ap=argparse.ArgumentParser();ap.add_argument('--model',default=os.environ.get('QWEN_MODEL_DIR',str(REPO/'models/qwen3.8-flash-next/UD-Q4_K_XL')));ap.add_argument('--cache-mib',type=int,default=512);ap.add_argument('--rss-limit-mib',type=int,default=15360);ap.add_argument('--layers',type=int,default=48);ap.add_argument('--compute-layers',type=int,default=4);ap.add_argument('--passes',type=int,default=2);ap.add_argument('--route-churn',action='store_true');ap.add_argument('--policy',choices=['lru','pinned'],default='lru');ap.add_argument('--cached-io',action='store_true');a=ap.parse_args();MODEL=Path(a.model)
 
 def rss_kb():
  out=subprocess.check_output(['ps','-o','rss=','-p',str(os.getpid())],text=True).strip()
@@ -18,11 +18,11 @@ def rss_kb():
  return int(out)
 class Store:
  def __init__(self,root,cap):
-  self.cap=cap;self.bytes=0;self.peak=0;self.cache=collections.OrderedDict();self.frozen=False;self.hits=0;self.misses=0;self.evictions=0;self.transient=0;self.read_bytes=0;self.read_ms=0
+  self.cap=cap;self.cache_bypass_applied=False;self.bytes=0;self.peak=0;self.cache=collections.OrderedDict();self.frozen=False;self.hits=0;self.misses=0;self.evictions=0;self.transient=0;self.read_bytes=0;self.read_ms=0
   self.readers=[];self.fd={};self.tensor={}
   for p in sorted(root.glob('*.gguf')):
    r=GGUFReader(str(p),'r');self.readers.append(r);fd=os.open(p,os.O_RDONLY);self.fd[str(p)]=fd
-   if not a.cached_io:fcntl.fcntl(fd,fcntl.F_NOCACHE,1)
+   if not a.cached_io and hasattr(fcntl,'F_NOCACHE'):fcntl.fcntl(fd,fcntl.F_NOCACHE,1);self.cache_bypass_applied=True
    for t in r.tensors:self.tensor[t.name]=(t,fd)
  def close(self):
   for fd in self.fd.values():os.close(fd)
@@ -57,12 +57,12 @@ class Store:
   t,_=self.tensor[f'blk.{layer}.ffn_gate_inp_shexp.weight'];v=float(np.asarray(t.data,dtype=np.float32).reshape(-1)@x);return 1/(1+math.exp(-max(-30,min(30,v))))
 def ffn(x,g,u,d):
  gate=g@x;up=u@x;h=gate/(1+np.exp(-np.clip(gate,-30,30),dtype=np.float32))*up;return d@h
-base=rss_kb();base_swap=float(subprocess.check_output(['sysctl','vm.swapusage'],text=True).split('used = ')[1].split('M')[0]);peak=[0];err=[];done=threading.Event()
+base=rss_kb();base_swap=swap_used_mib();peak=[0];err=[];done=threading.Event()
 def sample():
  while not done.wait(.05):
   try:
    r=rss_kb()-base;peak[0]=max(peak[0],r)
-   free=int(subprocess.check_output(['memory_pressure','-Q'],text=True).split('free percentage: ')[1].split('%')[0]);swap=float(subprocess.check_output(['sysctl','vm.swapusage'],text=True).split('used = ')[1].split('M')[0])
+   free=memory_available_percent();swap=swap_used_mib()
    if r>a.rss_limit_mib*1024 or free<8 or swap-base_swap>1024:
     msg=f'safety rss={r/1024:.1f}MiB free={free}% swapDelta={swap-base_swap:.1f}MiB';err.append(msg);print('SAFETY_ABORT '+msg,file=sys.stderr,flush=True);os._exit(70)
   except Exception as e:err.append(str(e));return
@@ -90,7 +90,7 @@ try:
  if err:raise RuntimeError(err)
  first=pass_rows[0];kimi_token=92*16*17547264;kimi_io_tps=(first['effectiveReadyGiBPerSec']*2**30/kimi_token) if first['effectiveReadyGiBPerSec'] else 0
  maxrss=resource.getrusage(resource.RUSAGE_SELF).ru_maxrss/(1024*1024 if sys.platform=='darwin' else 1024)
- result={'cacheCapMiB':a.cache_mib,'rssLimitMiB':a.rss_limit_mib,'directIO':not a.cached_io,'routeChurn':a.route_churn,'policy':a.policy,'coldLayer0':cold,'warmLayer0':warm,'warmDelta':warm_delta,'layers':len(all_layers),'computedLayers':min(a.compute_layers,len(all_layers)),'passes':pass_rows,'cachePeakMiB':store.peak/2**20,'cacheFinalMiB':store.bytes/2**20,'hits':store.hits,'misses':store.misses,'evictions':store.evictions,'transientLoads':store.transient,'peakRssDeltaMiB':peak[0]/1024,'processMaxRssMiB':maxrss,'swapDeltaMiB':float(subprocess.check_output(['sysctl','vm.swapusage'],text=True).split('used = ')[1].split('M')[0])-base_swap,'kimiColdBytesPerToken':kimi_token,'kimiColdReadyFloorTokPerSec':kimi_io_tps,'sampleLayerNorms':[x['norm'] for x in all_layers[:a.compute_layers]]}
+ result={'cacheCapMiB':a.cache_mib,'rssLimitMiB':a.rss_limit_mib,'cacheBypassRequested':not a.cached_io,'cacheBypassApplied':store.cache_bypass_applied,'routeChurn':a.route_churn,'policy':a.policy,'coldLayer0':cold,'warmLayer0':warm,'warmDelta':warm_delta,'layers':len(all_layers),'computedLayers':min(a.compute_layers,len(all_layers)),'passes':pass_rows,'cachePeakMiB':store.peak/2**20,'cacheFinalMiB':store.bytes/2**20,'hits':store.hits,'misses':store.misses,'evictions':store.evictions,'transientLoads':store.transient,'peakRssDeltaMiB':peak[0]/1024,'processMaxRssMiB':maxrss,'swapDeltaMiB':swap_used_mib()-base_swap,'kimiColdBytesPerToken':kimi_token,'kimiColdReadyFloorTokPerSec':kimi_io_tps,'sampleLayerNorms':[x['norm'] for x in all_layers[:a.compute_layers]]}
  print('RESULT_JSON='+json.dumps(result,separators=(',',':')))
 finally:
  done.set();store.close()

@@ -16,7 +16,7 @@ Companion to [PRD.md](./PRD.md). Covers stack, architecture, build sequence per 
 | Fine-tuning (L3) | **MLX-LM LoRA** on Apple Silicon; **Unsloth QLoRA** on CUDA nodes | Both target consumer unified-memory / gaming GPUs; overnight job budget 40–60 GB; adapters exported back to GGUF for llama-server |
 | Scheduler | **launchd** (macOS) / **systemd timers** (Linux) — not a resident scheduler process | Three schedules in P0 (3h curate, nightly gate, weekly train); OS-native = survives reboots, no orphan daemons, trivially auditable |
 | Signing | **minisign / ed25519** via a thin TS wrapper | Artifact provenance signatures; dead-simple key story for customers |
-| Packaging | Single OSS repo (`sin-harness`), pnpm workspace: `core/`, `evals/`, `loop/`, `cli/` | Commons-first licensing (Apache-2.0) matches the monetization table |
+| Packaging | Single source-available repo (`sin-harness`), Bun workspace: `core/`, `evals/`, `loop/`, `cli/` | Swarmlet Community License keeps personal/noncommercial and Commercial Use free while the Corporate Group's Worldwide Gross Annual Revenue is not more than EUR 1,000,000 while reserving larger commercial use |
 | Escalation tier | Thin OpenAI/Anthropic client behind the same L0 interface, EU-resident proxy only | Frontier fallback is a config line, never an architectural dependency |
 
 ### Repo layout
@@ -86,7 +86,7 @@ Goal: the loop runs end-to-end offline on the M5 Max reference node, and a basel
 ### P3 — months 4–9 (hardening + license pilot + commons)
 
 - Multi-node soak: crash-only design (any cron job can be killed mid-run; idempotent, resumable), atomic writes everywhere.
-- Public commons repo: anonymized skill packs + eval templates, Apache-2.0, signed releases.
+- Public community repo: anonymized skill packs + eval templates, Swarmlet Community License, signed releases.
 - License pilot kit: playbook + supported build.
 
 ### P4 — month 9+ (mesh, revenue-gated)

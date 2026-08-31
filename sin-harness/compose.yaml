@@ -15,8 +15,10 @@ name: sin-mesh
 
 x-rpc-common: &rpc-common
   build:
-    context: /Users/lotar/projects/local-llm/llama.cpp-rpc
-    dockerfile: Dockerfile.rpc-sin
+    context: .
+    dockerfile: docker/Dockerfile.rpc
+    additional_contexts:
+      llama: ${LLAMA_RPC_SRC:-../vendor/llama.cpp}
   image: sin/rpc-server:latest
   restart: unless-stopped
   cap_add: [NET_ADMIN]

@@ -7,7 +7,7 @@
 >
 > **P0a completion items landed:** `loop/graduate.ts` (saturation detector enforcing ALL PRD conditions: ≥20 occurrences, ≥7-day spread, provenance-scanned evidence that an L1 text skill was tried and the pattern still recurs) and `loop/recipe.ts` (signed adapter-recipe export — recipes, never weights; distilled-corrections-only anti-collapse policy and audition requirements baked into the artifact). Harness repo itself now under git (L1 discipline applied to our own code); OLMoE server stopped post-acceptance.
 
-Implementation contract for phase **P0a** (see PRD §5). All work happens in `/Users/lotar/projects/ai-mesh/sin-harness/`.
+Implementation contract for phase **P0a** (see PRD §5). Commands run from the repository's `sin-harness/` directory.
 
 ## Goal statement
 

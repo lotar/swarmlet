@@ -7,12 +7,12 @@
 # GPUs share the physical M5 Max. The CPU sovereign topology remains available.
 set -euo pipefail
 HERE="$(cd "$(dirname "$0")/.." && pwd)"
-SERVER="${LLAMA_SERVER:-/Users/lotar/projects/local-llm/llama.cpp-rpc/build-host/bin/llama-server}"
+SERVER="${LLAMA_SERVER:-$(command -v llama-server || true)}"
 MODEL="${MODEL:-$HERE/../models/OLMoE-1B-7B-0125-Instruct-Q4_K_M.gguf}"
 TARGET="${1:-all}"
 mkdir -p "$HERE/data/gpu-sites"
 
-test -x "$SERVER" || { echo "missing $SERVER"; exit 1; }
+test -n "$SERVER" && test -x "$SERVER" || { echo "missing llama-server; set LLAMA_SERVER"; exit 1; }
 test -f "$MODEL"  || { echo "missing $MODEL"; exit 1; }
 
 start_one() {
@@ -27,7 +27,7 @@ start_one() {
   fi
   nohup "$SERVER" \
     -m "$MODEL" --alias "OLMoE-GPU-${id}" \
-    --host 0.0.0.0 --port "$port" \
+    --host "${LLAMA_HOST:-127.0.0.1}" --port "$port" \
     --ctx-size 2048 --parallel 1 --cache-reuse 256 \
     --n-gpu-layers 99 -fa on --jinja \
     --chat-template-kwargs '{"enable_thinking": false}' \

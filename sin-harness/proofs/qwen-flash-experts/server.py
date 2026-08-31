@@ -6,8 +6,16 @@ from pathlib import Path
 import numpy as np
 from cell import QwenExpertCell,ALL_NODES
 from binary_protocol import decode_service_request,encode_service_response
+from admin_auth import admin_status
 from signing import sign_manifest
-ap=argparse.ArgumentParser();ap.add_argument('--port',type=int,default=9590);ap.add_argument('--shard',required=True);ap.add_argument('--backend',choices=['numpy','mlx'],default='numpy');a=ap.parse_args();cell=QwenExpertCell(a.shard,Path(__file__).with_name('worker.py'),backend=a.backend)
+ap=argparse.ArgumentParser();ap.add_argument('--port',type=int,default=9590);ap.add_argument('--shard',required=True);ap.add_argument('--backend',choices=['numpy','mlx'],default='numpy');ap.add_argument('--admin-token-file');a=ap.parse_args()
+ADMIN_TOKEN=None
+if a.admin_token_file:
+ p=Path(a.admin_token_file);mode=p.stat().st_mode
+ if mode&0o077:raise SystemExit('admin token file must not be group/world accessible')
+ ADMIN_TOKEN=p.read_text().strip()
+ if len(ADMIN_TOKEN)<24:raise SystemExit('admin token must contain at least 24 characters')
+cell=QwenExpertCell(a.shard,Path(__file__).with_name('worker.py'),backend=a.backend)
 base_manifest=cell.manifest();base_manifest['epochSigned']=True;signed_manifest=sign_manifest(base_manifest,os.environ.get('QWEN_SIGNING_DIR',str(Path(__file__).resolve().parents[2]/'data/qwen-expert-service')))
 class H(BaseHTTPRequestHandler):
  def log_message(self,*_):pass
@@ -21,6 +29,9 @@ class H(BaseHTTPRequestHandler):
   return self.sendj(404,{'error':'NOT_FOUND'})
  def do_POST(self):
   try:
+   auth=admin_status(self.path,ADMIN_TOKEN,self.headers.get('authorization'))
+   if auth==404:return self.sendj(404,{'error':'NOT_FOUND'})
+   if auth==401:return self.sendj(401,{'error':'UNAUTHORIZED'})
    n=int(self.headers.get('content-length','0'))
    if n<=0 or n>4*1024*1024:return self.sendj(413,{'error':'BODY_TOO_LARGE'})
    raw=self.rfile.read(n)

@@ -4,9 +4,10 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-MODEL="$ROOT/../models/OLMoE-1B-7B-0125-Instruct-Q8_0.gguf"
-HOST="127.0.0.1"
-PORT="8081"
+MODEL="${MODEL:-$ROOT/../models/OLMoE-1B-7B-0125-Instruct-Q8_0.gguf}"
+LLAMA_SERVER="${LLAMA_SERVER:-$(command -v llama-server || true)}"
+HOST="${HOST:-127.0.0.1}"
+PORT="${PORT:-8081}"
 LOG="$ROOT/data/llama-server.log"
 PIDFILE="$ROOT/data/llama-server.pid"
 
@@ -26,8 +27,9 @@ if [ ! -f "$MODEL" ]; then
   exit 1
 fi
 
+test -n "$LLAMA_SERVER" && test -x "$LLAMA_SERVER" || { echo "[start-model] ERROR: llama-server missing; set LLAMA_SERVER" >&2; exit 1; }
 echo "[start-model] launching llama-server (OLMoE-1B-7B Q8_0) on $HOST:$PORT ..."
-nohup llama-server \
+nohup "$LLAMA_SERVER" \
   -m "$MODEL" \
   --host "$HOST" \
   --port "$PORT" \

@@ -1,13 +1,14 @@
 #!/usr/bin/env python3
 """Reusable real-weight Qwen layer-0 expert cell."""
 from __future__ import annotations
-import concurrent.futures as cf, gc, hashlib, json, os, subprocess, sys, threading, time, urllib.error, urllib.request
+import concurrent.futures as cf, gc, hashlib, json, os, subprocess, sys, threading, time, urllib.error, urllib.parse, urllib.request
 from pathlib import Path
 os.environ.setdefault('OMP_NUM_THREADS','1');os.environ.setdefault('OPENBLAS_NUM_THREADS','1');os.environ.setdefault('VECLIB_MAXIMUM_THREADS','1')
 import numpy as np
 from gguf import GGUFReader
 from gguf.quants import dequantize
 from binary_protocol import encode_worker_request,decode_worker_response
+from response_validation import validate_binary_partial,validate_json_response
 NAMES=['blk.0.ffn_gate_exps.weight','blk.0.ffn_up_exps.weight','blk.0.ffn_down_exps.weight']
 SHARED=['blk.0.ffn_gate_shexp.weight','blk.0.ffn_up_shexp.weight','blk.0.ffn_down_shexp.weight']
 ROUTER='blk.0.ffn_gate_inp.weight';SHARED_GATE='blk.0.ffn_gate_inp_shexp.weight'
@@ -48,9 +49,14 @@ def streamed_reference(T,X,route_ids,route_weights):
  out+=ffn(X,sg,su,sd)*sigmoid(X@gv)[:,None];return out
 
 class QwenExpertCell:
- def __init__(self,shard,worker_script,ports=DEFAULT_PORTS,python=sys.executable,gguf_py=None,backend='numpy'):
+ def __init__(self,shard,worker_script,ports=DEFAULT_PORTS,python=sys.executable,gguf_py=None,backend='numpy',external_endpoints=None):
   if backend not in ('numpy','mlx'):raise ValueError('backend must be numpy|mlx')
-  self.shard=Path(shard);self.worker_script=Path(worker_script);self.ports=list(ports);self.python=python;self.backend=backend;self.gguf_py=Path(gguf_py or os.environ.get('GGUF_PY','/Users/lotar/projects/local-llm/llama.cpp-rpc/gguf-py'));self.lock=threading.RLock();self.procs={};self.closed=False
+  self.shard=Path(shard);self.worker_script=Path(worker_script);self.ports=list(ports);self.python=python;self.backend=backend;self.external_endpoints=dict(external_endpoints or {})
+  if set(self.external_endpoints)-set(ALL_NODES):raise ValueError('unknown external endpoint node')
+  for node,url in self.external_endpoints.items():
+   p=urllib.parse.urlparse(url)
+   if p.scheme!='http' or p.hostname not in ('127.0.0.1','::1') or p.username or p.password or p.path not in ('','/') or p.query or p.fragment:raise ValueError(f'unsafe external endpoint {node}')
+  self.gguf_py=Path(gguf_py or os.environ.get('GGUF_PY',self.worker_script.resolve().parents[3]/'vendor/llama.cpp/gguf-py'));self.lock=threading.RLock();self.procs={};self.closed=False
   self.reader=GGUFReader(str(self.shard),'r');self.T={t.name:t for t in self.reader.tensors}
   for n in NAMES+SHARED+[ROUTER,SHARED_GATE]:
    if n not in self.T:raise RuntimeError(f'missing {n}')
@@ -59,9 +65,14 @@ class QwenExpertCell:
   self.expert_digests={str(e):expert_content_digest(self.T,e) for e in self.selected};self.node_digests={n:hashlib.sha256(json.dumps({str(e):self.expert_digests[str(e)] for e in sorted(es)},sort_keys=True,separators=(',',':')).encode()).hexdigest() for n,es in self.worker_experts.items()}
   content={'model':'Qwen3.8-Flash-Next-UD-Q4_K_XL','shardBytes':self.shard.stat().st_size,'layer':0,'placement':self.placement,'replicas':self.replicas,'expertDigests':self.expert_digests,'routerDigest':_hash_tensors([(ROUTER,self.T[ROUTER],self.T[ROUTER].data,None)]),'sharedDigest':_hash_tensors([(n,self.T[n],self.T[n].data,None) for n in SHARED]+[(SHARED_GATE,self.T[SHARED_GATE],self.T[SHARED_GATE].data,None)])};self.epoch=hashlib.sha256(json.dumps(content,sort_keys=True,separators=(',',':')).encode()).hexdigest()
  def manifest(self):return {'model':'Qwen3.8-Flash-Next-UD-Q4_K_XL','layer':0,'expertsTotal':512,'topK':10,'selectedExperts':self.selected,'placement':self.placement,'replicas':self.replicas,'placementEpoch':self.epoch,'epochSigned':False,'nodeContentDigests':self.node_digests,'backend':self.backend,'profiles':{'lan':LAN,'eu':EU}}
+ def _validate_owner_manifest(self,node,m):
+  expected_backend='numpy-bundle' if node in self.external_endpoints else self.backend
+  if m['nodeId']!=node or m['expertIds']!=sorted(self.worker_experts[node]) or m['placementEpoch']!=self.epoch or m['ownedContentDigest']!=self.node_digests[node] or m['backend']!=expected_backend or bool(m['lazyReplica'])!=(node=='n4'):raise RuntimeError(f'{node} manifest mismatch')
  def start_owner(self,node):
   with self.lock:
    if self.closed:raise RuntimeError('CELL_CLOSED')
+   if node in self.external_endpoints:
+    self._validate_owner_manifest(node,get(self._url(node,'/manifest')));return
    if node in self.procs and self.procs[node].poll() is None:return
    i=ALL_NODES.index(node);env=os.environ.copy();env.update({'PYTHONPATH':os.pathsep.join([str(self.worker_script.parent),str(self.gguf_py)]),'OMP_NUM_THREADS':'1','OPENBLAS_NUM_THREADS':'1','VECLIB_MAXIMUM_THREADS':'1'});cmd=[self.python,str(self.worker_script),'--id',node,'--port',str(self.ports[i]),'--shard',str(self.shard),'--experts',','.join(map(str,self.worker_experts[node])),'--epoch',self.epoch,'--backend',self.backend]
    if node=='n4':cmd.append('--lazy')
@@ -71,8 +82,7 @@ class QwenExpertCell:
      if p.poll() is not None:raise RuntimeError(f'{node} died: {p.stderr.read()}')
      try:
       m=get(f'http://127.0.0.1:{self.ports[i]}/manifest')
-      if m['nodeId']!=node or m['expertIds']!=sorted(self.worker_experts[node]) or m['placementEpoch']!=self.epoch or m['ownedContentDigest']!=self.node_digests[node] or m['backend']!=self.backend or bool(m['lazyReplica'])!=(node=='n4'):raise RuntimeError(f'{node} manifest mismatch')
-      return
+      self._validate_owner_manifest(node,m);return
      except urllib.error.URLError:time.sleep(.02)
     raise RuntimeError(f'{node} startup timeout')
    except Exception:
@@ -87,6 +97,7 @@ class QwenExpertCell:
    raise
  def stop_owner(self,node):
   with self.lock:
+   if node in self.external_endpoints:raise RuntimeError('EXTERNAL_OWNER_LIFECYCLE')
    p=self.procs.pop(node,None)
    if p and p.poll() is None:p.kill();p.wait(timeout=10)
  def close(self):
@@ -111,7 +122,7 @@ class QwenExpertCell:
   for eid in self.selected:
    ranks=[int(np.where(idx[b]==eid)[0][0]) for b in range(len(X))];groups[self.owner[eid]].append({'expertId':eid,'weights':[float(w[b,ranks[b]]) for b in range(len(X))]})
   return X,delays,groups
- def _url(self,node,path):return f'http://127.0.0.1:{self.ports[ALL_NODES.index(node)]}{path}'
+ def _url(self,node,path):return self.external_endpoints.get(node,f'http://127.0.0.1:{self.ports[ALL_NODES.index(node)]}')+path
  def _with_replica(self,primary,call):
   try:return call(primary)
   except Exception as first:
@@ -122,7 +133,11 @@ class QwenExpertCell:
  def forward(self,X,profile,expected_epoch):
   X,delays,groups=self._prepare(X,profile,expected_epoch)
   def call(primary):
-   return self._with_replica(primary,lambda node:post(self._url(node,'/execute'),{'placementEpoch':self.epoch,'activations':X.tolist(),'assignments':groups[primary],'delayMs':delays[primary]}))
+   expected=sorted(int(x['expertId']) for x in groups[primary])
+   def one(node):
+    r=post(self._url(node,'/execute'),{'placementEpoch':self.epoch,'activations':X.tolist(),'assignments':groups[primary],'delayMs':delays[primary]})
+    validate_json_response(r,node,self.epoch,expected,X.shape);return r
+   return self._with_replica(primary,one)
   t=time.perf_counter()
   try:
    with cf.ThreadPoolExecutor(max_workers=3) as ex:responses=list(ex.map(call,NODE_IDS))
@@ -139,7 +154,7 @@ class QwenExpertCell:
    def one(node):
     data=post_binary(self._url(node,'/execute-bin'),raw);partial,ep=decode_worker_response(data)
     if ep!=self.epoch:raise RuntimeError('STALE_WORKER_RESPONSE')
-    return partial
+    return validate_binary_partial(partial,X.shape,node)
    return self._with_replica(primary,one)
   t=time.perf_counter()
   try:

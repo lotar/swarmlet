@@ -19,18 +19,18 @@ Every row uses the exact same model, context, prompt and output:
 | Sovereign CPU site (2-core cap) | local only | 84.5 | 24.2 | 41.3 |
 | RPC layer split | Docker LAN | 57.6 | 28.0 | 35.7 |
 | RPC expert split | Docker LAN | 78.2 | 33.1 | 30.3 |
-| RPC layer split | pan-EU fiber (6/11/8 ms) | 45.0 | 12.0 | 83.2 |
-| RPC expert split | pan-EU fiber (6/11/8 ms) | 37.5 | 4.6 | 216.5 |
+| RPC layer split | simulated pan-EU latency, netem (6/11/8 ms) | 45.0 | 12.0 | 83.2 |
+| RPC expert split | simulated pan-EU latency, netem (6/11/8 ms) | 37.5 | 4.6 | 216.5 |
 
 ### Interpretation
 
 - On LAN, expert split wins for Q4 because Metal keeps attention/router/KV and
   the remote CPUs execute only expert FFNs. This is the inverse of the older Q8
   result and is why mixed-quant tables must not be used for design decisions.
-- Across Europe, layer split wins decode by 2.6x because it has far fewer
+- Under simulated pan-EU netem latency, layer split wins decode by 2.6x because it has far fewer
   sequential network crossings per token. Expert split's host-to-shard
   round-trips dominate despite better local compute placement.
-- Sovereign CPU is host-independent and slightly slower than LAN RPC expert
+- Sovereign CPU is independent of a host model process and slightly slower than LAN RPC expert
   split, but much faster than expert split over WAN because all token-level
   computation stays inside the site.
 - The GPU-site result measures the native Metal model process directly. Docker

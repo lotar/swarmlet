@@ -7,7 +7,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       git cmake build-essential libcurl4-openssl-dev ca-certificates && \
     rm -rf /var/lib/apt/lists/*
 WORKDIR /src
-COPY . .
+# Pinned external source arrives as a named context; the normal build context
+# is this repository so Dockerfiles and entrypoints stay clone-contained.
+COPY --from=llama . .
 RUN cmake -B build -DGGML_RPC=ON -DLLAMA_CURL=OFF -DBUILD_SHARED_LIBS=OFF \
       -DGGML_NATIVE=ON -DLLAMA_BUILD_TESTS=OFF -DLLAMA_BUILD_EXAMPLES=OFF \
       -DLLAMA_BUILD_SERVER=OFF \
@@ -19,9 +21,9 @@ FROM ubuntu:24.04
 RUN apt-get update && apt-get install -y --no-install-recommends \
       iproute2 netcat-openbsd ca-certificates libgomp1 && rm -rf /var/lib/apt/lists/*
 COPY --from=build /src/build/bin/ggml-rpc-server /usr/local/bin/rpc-server
-# NOTE: build-rpc-image.sh stages this file at the CONTEXT ROOT (the pinned
-# llama.cpp source tree), hence the flat path.
-COPY rpc-entrypoint.sh /entrypoint.sh
+# The normal build context is this repository; llama.cpp arrives only through
+# the named `llama` context, so the external checkout is never modified.
+COPY docker/rpc-entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
 # hard cap: this image must stay "small hardware"
 ENV RPC_PORT=50052

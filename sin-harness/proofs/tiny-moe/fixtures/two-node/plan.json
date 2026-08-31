@@ -1,0 +1,24 @@
+{
+  "schemaVersion": 1,
+  "protocolVersion": 2,
+  "modelId": "tiny-moe-v1",
+  "owners": [
+    {
+      "nodeId": "n1",
+      "expertIds": [
+        0,
+        3
+      ],
+      "fixtureSha256": "84150a84475369eb4dc77617180b26085d9d9ebfef4ac0887c8fd7861f7baa95"
+    },
+    {
+      "nodeId": "n2",
+      "expertIds": [
+        1,
+        2
+      ],
+      "fixtureSha256": "c652221fc1383130b798d765e14784c87e8916ce39b05b232a0e00414a0b6a60"
+    }
+  ],
+  "placementEpoch": "3824869874033c60c84bc95409f79507771501d92b1f752566c073f4f20cc75f"
+}

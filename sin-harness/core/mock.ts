@@ -119,7 +119,7 @@ export function startMockServer(
   });
   return {
     url: `http://127.0.0.1:${server.port}`,
-    port: server.port,
+    port: server.port!,
     stop: () => server.stop(true),
     requestCount: () => count,
   };

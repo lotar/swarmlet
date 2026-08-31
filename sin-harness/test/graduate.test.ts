@@ -10,7 +10,8 @@ import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ensureKeys, verifyObject } from "../core/sign.ts";
-import type { CaptureInput, EventRecord } from "../core/types.ts";
+import type { EventRecord } from "../core/types.ts";
+import type { CaptureInput } from "../loop/events.ts";
 import {
   detectSaturatedPatterns,
   patternKeyOf,
@@ -123,7 +124,7 @@ describe("detectSaturatedPatterns", () => {
         session: `s-${i}`,
         kind: "observation" as const,
         payload: FLAKY_PAYLOAD,
-        ts: iso(30, i),
+        ts: iso(Math.max(0, 30 - i)),
       })),
     );
     expect(detectSaturatedPatterns(store.all(), {})).toHaveLength(0);

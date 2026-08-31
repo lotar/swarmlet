@@ -2,9 +2,9 @@
 """Contiguous Qwen layer partition planner using actual GGUF tensor bytes."""
 import json,math,os,re,sys
 from pathlib import Path
-LLAMA=Path(os.environ.get('LLAMA_CPP','/Users/lotar/projects/local-llm/llama.cpp-rpc'));sys.path.insert(0,str(LLAMA/'gguf-py'))
+HERE=Path(__file__).resolve().parent;REPO=HERE.parents[2];LLAMA=Path(os.environ.get('LLAMA_CPP',REPO/'vendor/llama.cpp'));sys.path.insert(0,str(LLAMA/'gguf-py'))
 from gguf import GGUFReader
-MODEL=Path('/Users/lotar/projects/local-llm/models/qwen3.8-flash-next/UD-Q4_K_XL')
+MODEL=Path(os.environ.get('QWEN_MODEL_DIR',REPO/'models/qwen3.8-flash-next/UD-Q4_K_XL'))
 def inventory():
  layer=[0]*48;ple=0;token=0;output=0;other=0
  for p in sorted(MODEL.glob('*.gguf')):

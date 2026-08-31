@@ -1,22 +1,28 @@
 // TRUE per-expert distributed MoE proof — no model, Docker, GPU or dependency.
 // Three Bun processes own disjoint expert matrices; coordinator owns router only.
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { TinyMoECoordinator, type OwnerEndpoint } from "../proofs/tiny-moe/coordinator.ts";
 import { makeCorpus, referenceForward, type ExpertWeights } from "../proofs/tiny-moe/math.ts";
 import type { ExpertFixture, ExpertManifest } from "../proofs/tiny-moe/protocol.ts";
 import { ExpertUnavailable } from "../proofs/tiny-moe/protocol.ts";
+import { loadPlacementPlan } from "../proofs/tiny-moe/placement.ts";
 
 const ROOT = resolve(import.meta.dir, "..");
 const SCRIPT = resolve(ROOT, "proofs/tiny-moe/node.ts");
 const FIXTURES = resolve(ROOT, "proofs/tiny-moe/fixtures");
+const PLAN = resolve(FIXTURES, "three-node.plan.json");
 const PORTS = { n1: 9571, n2: 9572, n3: 9573 } as const;
 const DELAYS = { n1: 6, n2: 8, n3: 11 } as const; // application-level one-way fiber proxy
 const OWNERS: OwnerEndpoint[] = Object.entries(PORTS).map(([nodeId, port]) => ({ nodeId, url: `http://127.0.0.1:${port}` }));
 const procs = new Map<string, Bun.Subprocess>();
-const tempDirs = new Map<string, string>();
+const tempDirs = new Set<string>();
+const adminDir = mkdtempSync(join(tmpdir(), "sin-tiny-admin-"));
+const adminTokenPath = join(adminDir, "token");
+const adminToken = new Bun.CryptoHasher("sha256").update(String(Math.random())).digest("hex");
+writeFileSync(adminTokenPath, adminToken, { mode: 0o600 });
 let coordinator: TinyMoECoordinator;
 let experts: Map<number, ExpertWeights>;
 let baselineTestRssKb = 0;
@@ -34,9 +40,19 @@ function dockerVmRssKb(): number {
     .reduce((sum, l) => sum + (Number(l.trim().split(/\s+/)[0]) || 0), 0);
 }
 function swapUsedMb(): number {
-  const r = Bun.spawnSync(["sysctl", "vm.swapusage"], { stdout: "pipe" });
-  const m = new TextDecoder().decode(r.stdout).match(/used = ([\d.]+)M/);
-  return Number(m?.[1] ?? 0);
+  if (process.platform === "linux") {
+    const values = new Map(readFileSync("/proc/meminfo", "utf8").split("\n").map((line) => {
+      const [key, value = ""] = line.split(":"); return [key, Number(value.match(/\d+/)?.[0] ?? NaN)];
+    }));
+    const total = values.get("SwapTotal"), free = values.get("SwapFree");
+    if (!Number.isFinite(total) || !Number.isFinite(free)) throw new Error("Linux swap telemetry unavailable");
+    return (total! - free!) / 1024;
+  }
+  if (process.platform === "darwin") {
+    const r = Bun.spawnSync(["sysctl", "vm.swapusage"], { stdout: "pipe" });
+    const m = new TextDecoder().decode(r.stdout).match(/used = ([\d.]+)M/); if (!m) throw new Error("macOS swap telemetry unavailable"); return Number(m[1]);
+  }
+  throw new Error(`swap telemetry unsupported on ${process.platform}`);
 }
 async function waitHealthy(nodeId: string): Promise<void> {
   const port = PORTS[nodeId as keyof typeof PORTS];
@@ -48,10 +64,11 @@ async function waitHealthy(nodeId: string): Promise<void> {
 }
 async function startNode(nodeId: "n1" | "n2" | "n3"): Promise<void> {
   const cwd = mkdtempSync(join(tmpdir(), `sin-tiny-${nodeId}-`));
-  tempDirs.set(nodeId, cwd);
+  tempDirs.add(cwd);
   const p = Bun.spawn([
     process.execPath, SCRIPT, "--id", nodeId, "--port", String(PORTS[nodeId]),
-    "--fixture", resolve(FIXTURES, `${nodeId}.json`), "--delay-ms", String(DELAYS[nodeId]),
+    "--fixture", resolve(FIXTURES, `${nodeId}.json`), "--placement-plan", PLAN,
+    "--admin-token-file", adminTokenPath, "--delay-ms", String(DELAYS[nodeId]),
   ], {
     cwd, stdin: "ignore", stdout: "ignore", stderr: "inherit",
     env: { PATH: process.env.PATH ?? "", HOME: cwd, TMPDIR: cwd },
@@ -65,8 +82,11 @@ async function stopNode(nodeId: string): Promise<void> {
 }
 async function post(nodeId: string, path: string, body: unknown = {}): Promise<Response> {
   return fetch(`http://127.0.0.1:${PORTS[nodeId as keyof typeof PORTS]}${path}`, {
-    method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body),
+    method: "POST", headers: { "content-type": "application/json", authorization: `Bearer ${adminToken}` }, body: JSON.stringify(body),
   });
+}
+async function adminGet(nodeId: string, path: string): Promise<Response> {
+  return fetch(`http://127.0.0.1:${PORTS[nodeId as keyof typeof PORTS]}${path}`, { headers: { authorization: `Bearer ${adminToken}` } });
 }
 function assertClose(actual: readonly number[][], expected: readonly number[][], tol = 1e-12): void {
   expect(actual.length).toBe(expected.length);
@@ -90,7 +110,7 @@ beforeAll(async () => {
     }
   }
   await startNode("n1"); await startNode("n2"); await startNode("n3");
-  coordinator = new TinyMoECoordinator(OWNERS, 2000);
+  coordinator = new TinyMoECoordinator(OWNERS, loadPlacementPlan(PLAN), 2000);
   await coordinator.initialize();
   experts = new Map();
   for (const nodeId of ["n1", "n2", "n3"]) {
@@ -101,7 +121,8 @@ beforeAll(async () => {
 
 afterAll(async () => {
   await Promise.all([...procs.keys()].map(stopNode));
-  for (const dir of tempDirs.values()) rmSync(dir, { recursive: true, force: true });
+  for (const dir of tempDirs) rmSync(dir, { recursive: true, force: true });
+  rmSync(adminDir, { recursive: true, force: true });
 });
 
 describe("tiny true-expert distributed MoE", () => {
@@ -115,7 +136,9 @@ describe("tiny true-expert distributed MoE", () => {
     }
     expect([...seen].sort()).toEqual([0, 1, 2, 3]);
     const foreign = await post("n2", "/execute", {
-      requestId: "foreign", items: [{ tokenIndex: 0, expertId: 0, activation: Array(8).fill(0), gateWeight: 1 }],
+      protocolVersion: 2, placementEpoch: loadPlacementPlan(PLAN).placementEpoch,
+      requestId: "foreign", tokenCount: 1,
+      items: [{ tokenIndex: 0, expertId: 0, activation: Array(8).fill(0) }],
     });
     expect(foreign.status).toBe(409);
     expect((await foreign.json() as { error: string }).error).toBe("NOT_OWNER");
@@ -134,7 +157,7 @@ describe("tiny true-expert distributed MoE", () => {
     expect(distributed.routes.some((r) => coordinator.ownerOf(r[0]!.expertId)?.nodeId !== coordinator.ownerOf(r[1]!.expertId)?.nodeId)).toBe(true);
     for (const o of OWNERS) {
       const manifest = await (await fetch(`${o.url}/manifest`)).json() as ExpertManifest;
-      const logs = await (await fetch(`${o.url}/access-log`)).json() as Array<{ expertIds: number[] }>;
+      const logs = await (await adminGet(o.nodeId, "/admin/access-log")).json() as Array<{ expertIds: number[] }>;
       expect(logs.flatMap((x) => x.expertIds).every((id) => manifest.expertIds.includes(id))).toBe(true);
     }
     console.log(`[tiny-moe] parity hash=${hash(distributed.outputs).slice(0, 16)} rpc=${distributed.telemetry.rpcCount} bytes=${distributed.telemetry.bytesOut + distributed.telemetry.bytesIn}`);
@@ -173,7 +196,7 @@ describe("tiny true-expert distributed MoE", () => {
   test("owner loss fails closed; exact restart restores parity", async () => {
     const token = makeCorpus(1)[0]!; // routes to experts 0(n1)+1(n2)
     const ref = referenceForward([token], experts)[0]!.output;
-    expect((await post("n2", "/arm-crash")).ok).toBe(true);
+    expect((await post("n2", "/admin/crash-next")).ok).toBe(true);
     let produced = false;
     try { await coordinator.forwardBatch([token]); produced = true; }
     catch (e) { expect(e).toBeInstanceOf(ExpertUnavailable); }

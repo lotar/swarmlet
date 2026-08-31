@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="630" viewBox="0 0 1200 630">
+  <rect width="1200" height="630" fill="#0A0F16"/>
+  <g fill="none" stroke="#3658FF" stroke-width="2" opacity=".45">
+    <path d="M930 80l170 170-170 170-170-170z"/><path d="M930 135l115 115-115 115-115-115z"/>
+    <path d="M0 520L210 310l140 140 120-120" opacity=".25"/>
+  </g>
+  <g fill="#7EA0FF"><circle cx="930" cy="80" r="7"/><circle cx="1100" cy="250" r="7"/><circle cx="930" cy="420" r="7"/><circle cx="760" cy="250" r="7"/><circle cx="930" cy="250" r="10"/></g>
+  <text x="90" y="130" fill="#7EA0FF" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="28" letter-spacing="4">SWARMLET</text>
+  <text x="90" y="245" fill="#FFFFFF" font-family="system-ui, -apple-system, sans-serif" font-size="70" font-weight="700">Own the knowledge.</text>
+  <text x="90" y="330" fill="#FFFFFF" font-family="system-ui, -apple-system, sans-serif" font-size="70" font-weight="700">Rent the intelligence.</text>
+  <text x="90" y="410" fill="#7EA0FF" font-family="system-ui, -apple-system, sans-serif" font-size="48" font-weight="600">Keep the receipts.</text>
+  <text x="90" y="520" fill="#AAB3C2" font-family="system-ui, -apple-system, sans-serif" font-size="25">Sovereign AI mesh · signed evidence · source available</text>
+  <text x="90" y="568" fill="#667085" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="20">swarmlet.ai</text>
+</svg>
