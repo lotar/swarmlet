@@ -36,6 +36,8 @@ jobs:
         run: |
           bun run report:results-grid
           git diff --exit-code -- ../docs/RESULTS_GRID.md
+      - name: Wishlist API tests
+        run: node --test api/wishlist.test.mjs
       - name: Static site smoke test
         run: |
           node site/server.mjs >/tmp/swarmlet-site.log 2>&1 & server=$!

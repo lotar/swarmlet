@@ -1,0 +1,82 @@
+name: swarmlet
+
+services:
+  api:
+    build:
+      context: .
+      dockerfile: deploy/api/Dockerfile
+      args:
+        SWARMLET_REVISION: ${SWARMLET_REVISION:?SWARMLET_REVISION is required}
+    image: swarmlet-api:${SWARMLET_REVISION:?SWARMLET_REVISION is required}
+    container_name: swarmlet-api
+    restart: unless-stopped
+    user: node
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    mem_limit: 96m
+    cpus: 0.25
+    pids_limit: 64
+    tmpfs:
+      - /tmp:size=8m,mode=1777
+    volumes:
+      - wishlist-data:/data
+    networks:
+      - traefik-public
+    labels:
+      - traefik.enable=true
+      - traefik.docker.network=traefik-public
+      - traefik.http.routers.swarmlet-wishlist.entrypoints=websecure
+      - traefik.http.routers.swarmlet-wishlist.rule=Host(`swarmlet.ai`) && Path(`/api/wishlist`)
+      - traefik.http.routers.swarmlet-wishlist.priority=100
+      - traefik.http.routers.swarmlet-wishlist.service=swarmlet-wishlist
+      - traefik.http.routers.swarmlet-wishlist.middlewares=cf-only@file,swarmlet-wishlist-ratelimit
+      - traefik.http.routers.swarmlet-wishlist.tls=true
+      - traefik.http.routers.swarmlet-wishlist.tls.certresolver=letsencrypt
+      - traefik.http.middlewares.swarmlet-wishlist-ratelimit.ratelimit.average=5
+      - traefik.http.middlewares.swarmlet-wishlist-ratelimit.ratelimit.period=1m
+      - traefik.http.middlewares.swarmlet-wishlist-ratelimit.ratelimit.burst=10
+      - traefik.http.middlewares.swarmlet-wishlist-ratelimit.ratelimit.sourcecriterion.requestheadername=CF-Connecting-IP
+      - traefik.http.services.swarmlet-wishlist.loadbalancer.server.port=3000
+
+  web:
+    build:
+      context: .
+      dockerfile: deploy/site/Dockerfile
+      args:
+        SWARMLET_REVISION: ${SWARMLET_REVISION:?SWARMLET_REVISION is required}
+    image: swarmlet-web:${SWARMLET_REVISION:?SWARMLET_REVISION is required}
+    container_name: swarmlet-web
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    mem_limit: 64m
+    cpus: 0.25
+    networks:
+      - traefik-public
+    labels:
+      - traefik.enable=true
+      - traefik.docker.network=traefik-public
+      - traefik.http.routers.swarmlet-http.entrypoints=web
+      - traefik.http.routers.swarmlet-http.rule=Host(`swarmlet.ai`)
+      - traefik.http.routers.swarmlet-http.service=swarmlet
+      - traefik.http.routers.swarmlet-http.middlewares=swarmlet-https-redirect
+      - traefik.http.middlewares.swarmlet-https-redirect.redirectscheme.scheme=https
+      - traefik.http.middlewares.swarmlet-https-redirect.redirectscheme.permanent=true
+      - traefik.http.routers.swarmlet.entrypoints=websecure
+      - traefik.http.routers.swarmlet.rule=Host(`swarmlet.ai`)
+      - traefik.http.routers.swarmlet.service=swarmlet
+      - traefik.http.routers.swarmlet.middlewares=cf-only@file
+      - traefik.http.routers.swarmlet.tls=true
+      - traefik.http.routers.swarmlet.tls.certresolver=letsencrypt
+      - traefik.http.services.swarmlet.loadbalancer.server.port=80
+
+networks:
+  traefik-public:
+    external: true
+
+volumes:
+  wishlist-data:
+    name: swarmlet-wishlist-data

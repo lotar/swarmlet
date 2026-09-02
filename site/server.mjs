@@ -8,6 +8,7 @@ import { brotliCompressSync, gzipSync, constants as z } from 'node:zlib';
 
 const ROOT = new URL('.', import.meta.url).pathname;
 const PORT = Number(process.env.PORT || 8123);
+const HOST = process.env.HOST || '127.0.0.1';
 
 const TYPES = {
   '.html': 'text/html; charset=utf-8',
@@ -75,4 +76,4 @@ createServer(async (req, res) => {
     vary: 'Accept-Encoding',
   });
   res.end(body);
-}).listen(PORT, '127.0.0.1', () => console.log(`swarmlet teaser → http://localhost:${PORT}  (root ${ROOT})`));
+}).listen(PORT, HOST, () => console.log(`swarmlet site → http://${HOST}:${PORT}  (root ${ROOT})`));
