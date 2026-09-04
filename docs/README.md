@@ -22,6 +22,7 @@
 
 - [Product requirements](PRD.md): problem, product layers, sequencing, and business boundaries.
 - [Implementation architecture](IMPLEMENTATION.md): modules, phases, and technical contracts.
+- [Node apps and control plane design](NODE_APPS_CONTROL_PLANE_20260904.md): node agent, resource offers, transport, planner, router, milestones.
 - [Kimi distributed MoE study](KIMI_K3_DISTRIBUTED_MOE.md): why regional contiguous stages beat per-layer WAN routing.
 - [DFlash2 on eight 16 GB nodes](DFLASH2_8X16GB.md): speculative pipeline assumptions and gates.
 - [WebGPU findings](WEBGPU.md): bridge evidence and ABI limitation.
