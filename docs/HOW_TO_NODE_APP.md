@@ -17,7 +17,9 @@ To let Legions on the LAN reach it, bind the LAN address and tell enrollment whe
 SWARMLET_CONTROL_HOST=0.0.0.0 SWARMLET_CONTROL_URL=http://192.168.1.10:47900 bun run control
 ```
 
-Open the web UI, paste the admin token, create a join code (Nodes tab).
+Open the web UI, paste the admin token, create a join code (Nodes tab). For a control plane on your own
+laptop, `SWARMLET_ADMIN_TRUST_LOOPBACK=1` lets browsers on 127.0.0.1 in without the token (dev only;
+the LAN address still requires it).
 
 ## 2. Node agent
 

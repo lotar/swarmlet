@@ -13,8 +13,10 @@ export interface ControlConfig {
   adminToken: string;
   /** URL agents should use to reach this control plane (what /enroll hands out). */
   publicUrl: string;
-  /** Path prefix served to browsers; keep "/" unless behind a sub-path proxy. */
   logLevel: "debug" | "info" | "warn";
+  /** Dev convenience: treat requests arriving from 127.0.0.1 as admin (no token). Off unless
+   *  SWARMLET_ADMIN_TRUST_LOOPBACK=1; never enable on a host others can reach through a local proxy. */
+  adminTrustLoopback: boolean;
 }
 
 const DEFAULT_PORT = 47900;
@@ -42,6 +44,7 @@ export function loadControlConfig(overrides: Partial<ControlConfig> = {}): Contr
     adminToken: overrides.adminToken ?? process.env.SWARMLET_ADMIN_TOKEN ?? stored.adminToken ?? randomToken(),
     publicUrl: overrides.publicUrl ?? process.env.SWARMLET_CONTROL_URL ?? stored.publicUrl ?? `http://${host}:${port}`,
     logLevel: overrides.logLevel ?? (process.env.SWARMLET_LOG as ControlConfig["logLevel"] | undefined) ?? stored.logLevel ?? "info",
+    adminTrustLoopback: overrides.adminTrustLoopback ?? process.env.SWARMLET_ADMIN_TRUST_LOOPBACK === "1",
   };
   if (!existsSync(file) || stored.adminToken !== cfg.adminToken || stored.port !== cfg.port || stored.publicUrl !== cfg.publicUrl) {
     writeFileSync(file, JSON.stringify({ host: cfg.host, port: cfg.port, adminToken: cfg.adminToken, publicUrl: cfg.publicUrl, logLevel: cfg.logLevel }, null, 2) + "\n", { mode: 0o600 });

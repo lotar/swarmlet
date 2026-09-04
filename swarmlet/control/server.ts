@@ -39,8 +39,9 @@ function bearer(req: Request): string | null {
   return h.startsWith("Bearer ") ? h.slice(7).trim() : null;
 }
 
-function adminOk(req: Request, cfg: ControlConfig): boolean {
+function adminOk(req: Request, cfg: ControlConfig, remoteIp?: string | null): boolean {
   if (bearer(req) === cfg.adminToken) return true;
+  if (cfg.adminTrustLoopback && (remoteIp === "127.0.0.1" || remoteIp === "::1" || remoteIp === "::ffff:127.0.0.1")) return true;
   const cookie = req.headers.get("cookie") ?? "";
   return cookie.split(/;\s*/).some((c) => c === `swarmlet_admin=${cfg.adminToken}`);
 }
@@ -118,12 +119,12 @@ export function createControlServer(deps: ControlDeps): Server<ConnData> {
         if (path.startsWith("/v1/")) {
           const key = bearer(req);
           if (!key || !reg.hasApiKey(key)) {
-            if (!adminOk(req, cfg)) return json({ error: { message: "invalid api key", type: "auth" } }, 401);
+            if (!adminOk(req, cfg, srv.requestIP(req)?.address)) return json({ error: { message: "invalid api key", type: "auth" } }, 401);
           }
           return deps.router(req, path);
         }
         if (path.startsWith("/api/")) {
-          if (!adminOk(req, cfg)) return json({ error: "admin token required" }, 401);
+          if (!adminOk(req, cfg, srv.requestIP(req)?.address)) return json({ error: "admin token required" }, 401);
           return api(req, path);
         }
         if (path === "/login" && req.method === "POST") {
