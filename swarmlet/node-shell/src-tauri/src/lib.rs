@@ -33,7 +33,9 @@ use tauri::{
     tray::TrayIconBuilder,
     AppHandle, Manager, RunEvent, Url, WebviewUrl, WebviewWindow, WebviewWindowBuilder, WindowEvent, Wry,
 };
-use tauri_plugin_autostart::{MacosLauncher, ManagerExt as _};
+#[cfg(target_os = "macos")]
+use tauri_plugin_autostart::MacosLauncher;
+use tauri_plugin_autostart::ManagerExt as _;
 use tauri_plugin_shell::{
     process::{CommandChild, CommandEvent},
     ShellExt,
@@ -128,12 +130,12 @@ pub fn run() {
 
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
-        .plugin(
-            tauri_plugin_autostart::Builder::new()
-                .args(["--minimized"])
-                .macos_launcher(MacosLauncher::LaunchAgent)
-                .build(),
-        )
+        .plugin({
+            let autostart = tauri_plugin_autostart::Builder::new().args(["--minimized"]);
+            #[cfg(target_os = "macos")]
+            let autostart = autostart.macos_launcher(MacosLauncher::LaunchAgent);
+            autostart.build()
+        })
         .manage(ShellState::default())
         .setup(move |app| {
             let handle = app.handle().clone();
