@@ -3,11 +3,24 @@
 This is the packaged form of the mesh described in [NODE_APPS_CONTROL_PLANE_20260904.md](NODE_APPS_CONTROL_PLANE_20260904.md).
 Everything lives under `swarmlet/`.
 
+## 0. What is installed on the rig right now (2026-09-04)
+
+| Machine | What runs | How |
+|---|---|---|
+| M5 | control plane `http://192.168.1.53:47900` | LaunchAgent `ai.swarmlet.control` (`swarmlet/control/install-launchd.sh`) |
+| M5 | node agent (coordinator + replica roles, local UI `http://127.0.0.1:47800`) | LaunchAgent `ai.swarmlet.node` (`dist/agent/darwin/swarmlet-node install`) |
+| M5 | `Swarmlet Node.app` (window + tray) | attaches to the service; starts a sidecar only when no service answers |
+| Legion 1, Legion 2 | node agent (worker role) | systemd user service `swarmlet-node` (`e2e/rig-setup.sh`), UI via `ssh -L 47800:127.0.0.1:47800` |
+| Legion 2 | `swarmlet-node-shell` (Linux GUI) | installed from the `.deb`; appears in the applications menu |
+
+Admin token: `~/.swarmlet/control/control.json` on the M5. Production (`:8099`) is registered as the external
+deployment `flashnext-prod` and is routed under model `qwen3.8-flash-next`.
+
 ## 1. Control plane (one machine, the M5 today)
 
 ```bash
 cd swarmlet && bun install
-bun run control                      # http://127.0.0.1:47900
+bun run control                      # http://127.0.0.1:47900, foreground
 cat ~/.swarmlet/control/control.json # adminToken
 ```
 
@@ -17,11 +30,22 @@ To let Legions on the LAN reach it, bind the LAN address and tell enrollment whe
 SWARMLET_CONTROL_HOST=0.0.0.0 SWARMLET_CONTROL_URL=http://192.168.1.10:47900 bun run control
 ```
 
+As a service on macOS: `swarmlet/control/install-launchd.sh` (uninstall with `--uninstall`). Logs in
+`~/.swarmlet/control/control.err.log`.
+
 Open the web UI, paste the admin token, create a join code (Nodes tab). For a control plane on your own
 laptop, `SWARMLET_ADMIN_TRUST_LOOPBACK=1` lets browsers on 127.0.0.1 in without the token (dev only;
 the LAN address still requires it).
 
 ## 2. Node agent
+
+Service on macOS from the compiled binary (`bun run node-agent/build.ts darwin` puts it in
+`dist/agent/darwin/` with the engine beside it):
+
+```bash
+dist/agent/darwin/swarmlet-node install     # LaunchAgent ai.swarmlet.node; uninstall: ... uninstall
+dist/agent/darwin/swarmlet-node status      # JSON from the running daemon
+```
 
 From source on any machine with Bun:
 
@@ -49,6 +73,19 @@ machine has are rejected with the reason. What each control enforces:
 | RAM | cgroup `MemoryMax`, `MemorySwapMax=0` | soft cap: RSS watchdog kills at +10 % |
 | CPU | cgroup `CPUQuota` + `-t` | `-t` |
 | disk | models dir cap | same |
+
+## 3b. Day-to-day
+
+1. Open `http://192.168.1.53:47900`, paste the admin token once (cookie).
+2. Nodes tab: everything online with its offer and measured RTT/bandwidth. New node: **New join code**, then on that
+   machine `swarmlet-node join http://192.168.1.53:47900 <CODE>` (or the Connection tab of its local UI).
+3. Deployments tab: **New**, choose profile/kind/nodes, **Preview plan**, **Create** (starts it). Wait for `ready`.
+4. Keys tab: create an API key. Routing tab shows the base URL and a curl example.
+5. Stop a deployment from its row when done; workers and the coordinator are torn down and production is restored
+   if the deployment had stopped it.
+
+Uninstall everything on the M5: `launchctl bootout gui/$(id -u)/ai.swarmlet.control ai.swarmlet.node` (or the two
+`--uninstall`/`uninstall` commands above); on a Legion: `swarmlet-node uninstall`.
 
 ## 4. Deployments and routing
 
