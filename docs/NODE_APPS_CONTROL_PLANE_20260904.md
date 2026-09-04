@@ -1,7 +1,7 @@
 # Design: Swarmlet node apps (macOS + Linux, GUI) and the control plane (routing)
 
 **Date:** 2026-09-04
-**Status:** approved design, implementation in progress (branch `feat/node-apps-control-plane`)
+**Status:** implemented on branch `feat/node-apps-control-plane`; M0–M3 accepted on the rig, M4 blocked by external clients (§13), M5 macOS bundle built / Linux in progress, M6 gate green
 **Scope:** roadmap item 04 "Product alpha" on swarmlet.ai minus model distribution; gap-audit §5 steps 1–3 (`docs/GAP_AUDIT_INTERNET_MOE_20260902.md`)
 **Rig for acceptance:** M5 (macOS 26.5, 128 GB, production Flash-Next on :8099), Legion 1 (Ubuntu 24.04, GTX 1650 Ti 4 GB), Legion 2 (Ubuntu 24.04, GTX 1650 4 GB)
 
@@ -167,3 +167,23 @@ Never a second copy of the 104 GB model beside production; production only via `
 ## 12. Out of scope (v2)
 
 Model distribution with digests; NAT hole punching / WireGuard; bandwidth shaping; schedules/idle detection; multi-tenant users and public enrollment; code signing/notarization; KV-affinity routing; profile discovery by dry-run.
+
+## 13. Results (2026-09-04)
+
+| Milestone | Outcome | Evidence |
+|---|---|---|
+| M0 engine | patch + `build.sh` on M5 (Metal) and Legion 1 (CUDA), `--mem-cap-mib` probe passes on all three nodes | `swarmlet/engine/`, `engine/test/memcap_probe.py` |
+| M1 core | 78 unit/integration tests (protocol, control, agent transport); e2e with a fake engine: split, replica, external, worker-crash cleanup | `cd swarmlet && bun test protocol control node-agent && bun test e2e` |
+| M2 agent | both Legions enrolled as systemd user services with worker offers (cuda:0 3600 MiB, 8192 MiB RAM, 10 cores); cgroup `MemoryMax=8192M MemorySwapMax=0 CPUQuota=1000%` observed on the real workers | `sin-harness/data/legion-goal/app-rig-2b-20260904T113351Z` |
+| M3 deployments | Qwen3.5-2B split 3/3/18 planned and started from the control plane, request routed through `/v1/chat/completions`; direct pinned-TLS path **11.87 tok/s** c1 (ready in 12 s), relay through control **10.37 tok/s** c1 | same directory (`plan-*.json`, `deployment-*.json`, `*-c1/summary.json`) |
+| M4 Flash-Next window | production registered as an external deployment and routed (answered through the control plane); plan = split 1,1,46, chain 4, batched GETs, wire off, exactly the measured configuration; the maintenance script refused to stop production for 20 min because two other sessions held idle keep-alive connections to :8099 (PIDs logged); production never stopped, everything cleaned up | `app-rig-flashnext-20260904T115553Z` |
+| M5 shell | macOS `Swarmlet Node.app` (97 MB) with the compiled agent as sidecar and the Metal engine as resources; Linux deb/AppImage build on Legion 1 in progress | `swarmlet/node-shell/` |
+| M6 gate | `sin-harness/scripts/release-check.sh` runs the swarmlet typecheck + tests: `RELEASE_CHECK_OK` | — |
+
+Reference for M3: the earlier ring-bench run of the same model on the same LAN (split 2/2/20, `ssh -L` forwards,
+`lan-2b-ring-20260904T070303Z`) measured 17.5 tok/s with push forwarding and 11.8 without. The app's number is
+llama-server (not ring-bench) at `--parallel 1` with three layers per worker and the dialer/listener hops in the
+path; a like-for-like ring-bench through the app's ports is the next measurement, not a regression claim.
+
+To finish M4, rerun `swarmlet/e2e/rig-flashnext.sh` when `lsof -nP -iTCP:8099 | grep ESTABLISHED` shows no
+foreign clients; the agent retries the stop every 20 s for 20 minutes and restores production afterwards.
