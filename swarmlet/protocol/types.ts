@@ -38,6 +38,8 @@ export interface Capabilities {
   diskFreeMiB: number;
   privateIps: string[];
   publicIp?: string;
+  /** Port of this node's TLS data listener (default AGENT_DATA_PORT); peers dial privateIps/publicIp at this port. */
+  dataPort?: number;
   /** Linux: which cgroup controllers the user slice delegates (hard enforcement possible). */
   cgroup?: { memory: boolean; cpu: boolean };
   engine?: { proto: string; sha256: Record<string, string> };
@@ -102,6 +104,8 @@ export interface WorkerAssignment {
   /** Cert fingerprints allowed to connect to this node's data listener for this assignment. */
   allow: string[];
   enforce?: { ramMiB?: number; cpuCores?: number };
+  /** Keep the engine's local tensor cache (-c). Default true: repeated loads of the same slab are instant. */
+  cache?: boolean;
 }
 
 export interface CoordinatorAssignment {
@@ -118,7 +122,11 @@ export interface CoordinatorAssignment {
   env: Record<string, string>;
   extraArgs: string[];
   port: number;
-  /** Id of an external deployment on this node that must be stopped (via its maintenance script) to fit. */
+  /** Served model name (--alias); what the router matches requests against. */
+  modelName?: string;
+  /** Free+reclaimable RAM the agent must see before launching (darwin fit gate). */
+  fitMiB?: number;
+  /** Id of an external service registered in the agent's config that must be stopped (via its maintenance script) to fit. */
   stopExternal?: string;
   allow: string[];
   enforce?: { ramMiB?: number; cpuCores?: number };
@@ -132,6 +140,7 @@ export interface ReplicaAssignment {
   model?: { path: string; sha256?: string };
   /** Already-running server owned by something else (production llama-server): health only. */
   external?: { url: string; healthPath: string; maintenance?: string };
+  modelName?: string;
   ctx?: number;
   parallel?: number;
   extraArgs?: string[];

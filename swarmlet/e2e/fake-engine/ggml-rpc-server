@@ -1,0 +1,18 @@
+#!/usr/bin/env bun
+// Fake ggml-rpc-server for tests: parses the real flags, listens on -p PORT (127.0.0.1) and echoes
+// bytes back. With --peer-port it also listens there. Prints one line per accepted connection.
+import { createServer } from "node:net";
+const args = process.argv.slice(2);
+const get = (flag: string) => { const i = args.indexOf(flag); return i >= 0 ? args[i + 1] : undefined; };
+const port = Number(get("-p") ?? 50052);
+const peerPort = Number(get("--peer-port") ?? 0);
+const host = get("-H") ?? "127.0.0.1";
+const peers = args.map((a, i) => (a === "--peer" ? args[i + 1] : null)).filter(Boolean);
+console.log(`fake rpc-server device=${get("-d")} threads=${get("-t")} cap=${get("--mem-cap-mib") ?? "off"} peers=${peers.join(",")}`);
+function serve(p: number, label: string) {
+  const s = createServer((sock) => { console.log(`${label}: connection from ${sock.remoteAddress}:${sock.remotePort}`); sock.on("data", (d) => sock.write(d)); sock.on("error", () => undefined); });
+  s.listen(p, host, () => console.log(`${label} listening on ${host}:${p}`));
+}
+serve(port, "rpc");
+if (peerPort) serve(peerPort, "peer");
+process.on("SIGTERM", () => process.exit(0));

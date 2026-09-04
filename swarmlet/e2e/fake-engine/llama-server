@@ -1,0 +1,53 @@
+#!/usr/bin/env bun
+// Fake llama-server for tests. Understands --list-devices, --port, --rpc a,b, --alias, -m.
+// On start it opens every --rpc endpoint and round-trips one line (proves the dial path), then
+// serves /health, /metrics and /v1/chat/completions (echoes the last user message) after a short
+// "loading" delay so the coordinator state machine sees loading -> ready.
+import { connect } from "node:net";
+const args = process.argv.slice(2);
+const get = (flag: string) => { const i = args.indexOf(flag); return i >= 0 ? args[i + 1] : undefined; };
+if (args.includes("--list-devices")) {
+  console.log("Available devices:\n  CPU: fake cpu (0 MiB, 0 MiB free)");
+  process.exit(0);
+}
+const port = Number(get("--port") ?? 8080);
+const alias = get("--alias") ?? "fake";
+const rpc = (get("--rpc") ?? "").split(",").filter(Boolean);
+const rpcResults: Record<string, string> = {};
+for (const ep of rpc) {
+  const [h, p] = ep.split(":");
+  rpcResults[ep] = await new Promise<string>((resolve) => {
+    const s = connect({ host: h!, port: Number(p) });
+    const t = setTimeout(() => { s.destroy(); resolve("timeout"); }, 8000);
+    s.on("connect", () => s.write("ping\n"));
+    s.on("data", (d) => { clearTimeout(t); s.destroy(); resolve(d.toString().trim() === "ping" ? "ok" : `bad:${d.toString()}`); });
+    s.on("error", (e) => { clearTimeout(t); resolve(`error:${e.message}`); });
+  });
+}
+console.log(`fake llama-server model=${get("-m")} alias=${alias} rpc=${JSON.stringify(rpcResults)} split=${get("--tensor-split")} env FORWARD=${process.env.GGML_RPC_FORWARD} GET_PIPELINE=${process.env.GGML_RPC_GET_PIPELINE} WIRE=${process.env.GGML_RPC_WIRE}`);
+let ready = false;
+setTimeout(() => { ready = true; console.log("fake llama-server ready"); }, Number(process.env.FAKE_LOAD_MS ?? 1500));
+Bun.serve({
+  hostname: "127.0.0.1", port,
+  async fetch(req) {
+    const path = new URL(req.url).pathname;
+    if (path === "/health") return new Response(JSON.stringify({ status: ready ? "ok" : "loading" }), { status: ready ? 200 : 503, headers: { "content-type": "application/json" } });
+    if (path === "/metrics") return new Response("llamacpp:predicted_tokens_seconds 42.5\nllamacpp:requests_processing 0\n");
+    if (path === "/v1/chat/completions" && req.method === "POST") {
+      const body = (await req.json()) as { messages?: Array<{ role: string; content: string }>; model?: string; stream?: boolean };
+      const last = body.messages?.filter((m) => m.role === "user").pop()?.content ?? "";
+      const reply = `echo:${last} rpc=${Object.values(rpcResults).join("/") || "none"}`;
+      if (body.stream) {
+        const enc = new TextEncoder();
+        const stream = new ReadableStream({ async start(c) {
+          for (const piece of reply.split(" ")) { c.enqueue(enc.encode(`data: ${JSON.stringify({ choices: [{ delta: { content: piece + " " } }] })}\n\n`)); await Bun.sleep(20); }
+          c.enqueue(enc.encode("data: [DONE]\n\n")); c.close();
+        } });
+        return new Response(stream, { headers: { "content-type": "text/event-stream" } });
+      }
+      return new Response(JSON.stringify({ id: "fake", object: "chat.completion", model: alias, choices: [{ index: 0, message: { role: "assistant", content: reply }, finish_reason: "stop" }] }), { headers: { "content-type": "application/json" } });
+    }
+    return new Response("not found", { status: 404 });
+  },
+});
+process.on("SIGTERM", () => process.exit(0));

@@ -8,7 +8,7 @@ import { bootControl } from "./server.ts";
 const cfg = loadControlConfig();
 const { server, channel, log } = await bootControl(cfg);
 const sweeper = setInterval(() => channel.sweep(), 10_000);
-log.info(`admin token in ${cfg.dataDir}/control.json; enroll nodes with a join code from POST /api/join-codes`);
+log.info(`web UI http://${cfg.host}:${server.port}/  admin token in ${cfg.dataDir}/control.json  join codes: POST /api/join-codes`);
 
 const shutdown = () => {
   clearInterval(sweeper);
