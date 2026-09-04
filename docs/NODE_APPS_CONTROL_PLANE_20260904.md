@@ -189,3 +189,10 @@ path; a like-for-like ring-bench through the app's ports is the next measurement
 
 To finish M4, rerun `swarmlet/e2e/rig-flashnext.sh` when `lsof -nP -iTCP:8099 | grep ESTABLISHED` shows no
 foreign clients; the agent retries the stop every 20 s for 20 minutes and restores production afterwards.
+
+### 13.x Internet path with realtime node stats (2026-09-04, evidence `sin-harness/data/legion-goal/app-internet-20260904`)
+
+- Control fronted by a Cloudflare quick tunnel (`control/cloudflare-tunnel.sh`, LaunchAgent `ai.swarmlet.control-tunnel`, `--config /dev/null`); enrollment returns the tunnel `agentUrl`, so the Legions' channels are `wss://<tunnel>/agent` (edge `vie05`). `e2e/rig-internet.sh` pins the hostname in the Legions' `/etc/hosts` (the LAN resolver returns no A record for fresh trycloudflare names) and re-joins them.
+- Deployment `mesh-2b-internet` (2B split 18/3/3, `transport: "relay"`): ready in 11-14 s; three relay streams per reply (M5→L1, M5→L2 and the L1→L2 push-forwarding leg, all through the edge). Decode 4.9 tok/s on the first request, 6.9-9.2 tok/s warm; TTFT 3.5-3.8 s for a 30-token prompt; Legion RTT to control 44-56 ms via the edge (8 ms on the LAN).
+- Realtime: heartbeats every 2 s, `/api/stream` SSE snapshots every second (per-node `routedTokPerSec`, `relayInBps/OutBps` from control's relay byte buckets, `via` = host/proto/edge of the node's channel); Nodes tab and topology panel update while a reply streams (headless proof `e2e/gui/control-chat-live.js`, screenshot `nodes-live-midstream.png`).
+- Limitation found: control is in the data path in relay mode; a control restart drops the RPC streams and the coordinator aborts on its next request (SIGABRT). Redeploy after restarts; direct-TLS deployments are unaffected.

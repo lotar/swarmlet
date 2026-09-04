@@ -232,9 +232,12 @@
     ];
   }
 
-  function netSummary(net) {
-    if (!net) return el('span', { class: 'dim', text: 'not measured' });
-    return ['rtt ' + num(net.rttMs, 0) + ' ms', el('br'), 'up ' + num(net.upMbit, 0) + ' / down ' + num(net.downMbit, 0) + ' Mbit'];
+  function viaText(via) { return via ? (via.proto === 'https' ? 'wss://' : 'ws://') + via.host + (via.edge ? ' (Cloudflare edge)' : ' (direct)') : ''; }
+
+  function netSummary(net, via) {
+    var parts = net ? ['rtt ' + num(net.rttMs, 0) + ' ms', el('br'), 'up ' + num(net.upMbit, 0) + ' / down ' + num(net.downMbit, 0) + ' Mbit'] : [el('span', { class: 'dim', text: 'not measured' })];
+    if (via) parts.push(el('br'), el('span', { class: 'dim', text: 'via ' + viaText(via) }));
+    return parts;
   }
 
   function servedModels(nodeId) {
@@ -279,7 +282,7 @@
         td(shortId(n.id), 'mono', n.id),
         td([badge(n.online ? 'online' : 'offline'), n.online ? null : el('div', { class: 'dim small', text: n.lastSeen ? 'seen ' + ago(n.lastSeen) : 'never seen' })]),
         td(offerSummary(n.offer), 'small'),
-        td(netSummary(caps.net), 'mono small'),
+        td(netSummary(caps.net, n.via), 'mono small'),
         td(metricsSummary(n.metrics, n), 'mono small'),
         td(tpsCell(n.metrics, n.routedTokPerSec, servedModels(n.id)), 'num mono'),
         td(String((n.models || []).length), 'num'),
@@ -988,7 +991,8 @@
       var controlHost = (state.whoami && state.whoami.publicUrl) ? state.whoami.publicUrl.replace(/^https?:\/\//, '') : location.host;
       (plan.workers || []).forEach(function (w, i) {
         var raw = paths['rpc' + i];
-        var path = raw === 'relay' ? 'relay via control (' + controlHost + ')' : raw === 'direct' ? 'direct TLS' : (coordA ? 'path pending' : 'not started');
+        var wn = nodeById(w.nodeId);
+        var path = raw === 'relay' ? 'relay via control' + (wn && wn.via ? ' \u2192 ' + viaText(wn.via) : ' (' + controlHost + ')') : raw === 'direct' ? 'direct TLS' : (coordA ? 'path pending' : 'not started');
         var bytes = prof && isNum(prof.boundaryBytes) ? ' · ' + fmtBytes(prof.boundaryBytes) + '/token' : '';
         row.appendChild(topoEdge('RPC' + i + ' · ' + path + bytes));
         row.appendChild(topoNode('topo-worker' + (served === w.nodeId ? ' topo-node--served' : ''), [

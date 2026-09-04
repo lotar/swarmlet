@@ -11,7 +11,11 @@ import type { AgentToControl, Assignment, AssignmentState, ControlToAgent, Hello
 import type { Logger } from "./log.ts";
 import type { Registry } from "./registry.ts";
 
+/** How an agent's channel reached control: the host it connected to and whether a Cloudflare edge was in front. */
+export interface ConnVia { host: string; proto: string; edge: boolean }
+
 export interface ConnData {
+  via: ConnVia | null;
   nonce: string;
   nodeId: string | null;
   authed: boolean;
@@ -43,9 +47,12 @@ export class AgentChannel {
 
   constructor(private readonly reg: Registry, private readonly log: Logger, private readonly hooks: ChannelHooks = {}) {}
 
-  newConnData(): ConnData {
-    return { nonce: randomNonce(), nodeId: null, authed: false, mux: null, agentVersion: "", lastSeen: Date.now() };
+  newConnData(via: ConnVia | null = null): ConnData {
+    return { via, nonce: randomNonce(), nodeId: null, authed: false, mux: null, agentVersion: "", lastSeen: Date.now() };
   }
+
+  /** Path the node's live channel came in through (null when offline). */
+  via(nodeId: string): ConnVia | null { return this.conns.get(nodeId)?.data.via ?? null; }
 
   isOnline(nodeId: string): boolean { return this.conns.has(nodeId); }
   onlineNodeIds(): string[] { return [...this.conns.keys()]; }

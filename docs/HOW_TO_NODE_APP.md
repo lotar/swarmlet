@@ -94,9 +94,13 @@ All three rig machines share one public IP, so an internet path needs an externa
 puts a quick tunnel in front of control (LaunchAgent, new hostname on every start); `swarmlet/e2e/rig-internet.sh` pins that
 hostname on the Legions (the LAN router's resolver drops A records for fresh trycloudflare names) and re-enrolls them through it,
 so their agent channels run as `wss://<tunnel>/agent`. A deployment created with `transport: "relay"` then carries every RPC
-hop through control and the edge (Nodes tab: `relay ↓/↑` bytes per node, measured RTT to control ~70–85 ms instead of 8).
+hop through control and the edge (Nodes tab: `relay ↓/↑` bytes per node and `via wss://<tunnel> (Cloudflare edge)` under
+network; the chat topology labels each RPC edge with the worker's channel host; measured RTT to control 44–85 ms instead of 8).
 The M5 keeps its LAN channel because it hosts control. Stop with `cloudflare-tunnel.sh stop` and re-join the Legions on the
 LAN address to go back.
+Limitation: in relay mode control sits in the data path, so restarting control drops the RPC streams and the coordinator
+aborts on its next request (the deployment goes `failed`; measured 2026-09-04: `engine exited (code 134, SIGABRT)`).
+Redeploy after any control restart (the 2B split is back in ~15 s). Direct-TLS deployments are unaffected.
 
 ## 3b. Day-to-day
 

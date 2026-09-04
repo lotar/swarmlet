@@ -54,7 +54,7 @@ export function createControlServer(deps: ControlDeps): Server<ConnData> {
 
   const nodesSnapshot = () => {
     const live = deployments.liveTokPerSecByNode();
-    return reg.listNodes().map((n) => { const r = channel.relayRate(n.id); return { ...n, pubJwk: undefined, online: channel.isOnline(n.id), routedTokPerSec: live.get(n.id) ?? 0, relayInBps: r.inBps, relayOutBps: r.outBps }; });
+    return reg.listNodes().map((n) => { const r = channel.relayRate(n.id); return { ...n, pubJwk: undefined, online: channel.isOnline(n.id), via: channel.via(n.id), routedTokPerSec: live.get(n.id) ?? 0, relayInBps: r.inBps, relayOutBps: r.outBps }; });
   };
 
   const api = async (req: Request, path: string): Promise<Response> => {
@@ -133,7 +133,13 @@ export function createControlServer(deps: ControlDeps): Server<ConnData> {
           return json({ ok: true, nodeId: out.nodeId, controlPubJwk: await publicJwk(), agentUrl });
         }
         if (path === "/agent") {
-          if (srv.upgrade(req, { data: channel.newConnData() })) return undefined as unknown as Response;
+          // remember how this agent reached us: LAN address, or a tunnel hostname behind the Cloudflare edge
+          const via = {
+            host: req.headers.get("x-forwarded-host") ?? req.headers.get("host") ?? url.host,
+            proto: req.headers.get("x-forwarded-proto") ?? url.protocol.replace(":", ""),
+            edge: req.headers.has("cf-ray") || req.headers.has("cf-connecting-ip"),
+          };
+          if (srv.upgrade(req, { data: channel.newConnData(via) })) return undefined as unknown as Response;
           return new Response("expected websocket", { status: 426 });
         }
         if (path === "/probe/down") {
