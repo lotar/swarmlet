@@ -45,6 +45,7 @@ export interface AssignmentSnapshot { id: string; kind: Assignment["kind"]; depl
 
 const LOAD_TIMEOUT_MS = 60 * 60 * 1000; // Flash-Next loads for minutes over a relay
 const PORT_TIMEOUT_MS = 3 * 60 * 1000;
+const STOP_EXTERNAL_WAIT_MS = 20 * 60 * 1000;
 
 export class AssignmentRunner {
   private active = new Map<string, Active>();
@@ -214,9 +215,19 @@ export class AssignmentRunner {
     if (!a.stopExternal) throw new Error(`does not fit: ${Math.round(free)} MiB free, need ${a.fitMiB}; no external service to stop`);
     const ext = this.deps.cfg().externals.find((e) => e.id === a.stopExternal);
     if (!ext) throw new Error(`does not fit and external service '${a.stopExternal}' is not registered on this node`);
-    this.set(x, "starting", `stopping external ${ext.id} via maintenance script`);
-    const out = await this.maintenance(ext, "stop");
-    if (out.code !== 0) throw new Error(`maintenance stop refused (${out.code}): ${out.text.trim().split("\n").slice(-2).join(" | ")}`);
+    // The maintenance script refuses while clients are connected (exit 65). Like the operators, keep
+    // asking every 20 s for up to STOP_EXTERNAL_WAIT_MS instead of failing on the first refusal.
+    const stopDeadline = Date.now() + STOP_EXTERNAL_WAIT_MS;
+    for (;;) {
+      this.set(x, "starting", `stopping external ${ext.id} via maintenance script`);
+      const out = await this.maintenance(ext, "stop");
+      if (out.code === 0) break;
+      const why = out.text.trim().split("\n").slice(-2).join(" | ");
+      if (out.code !== 65 || Date.now() > stopDeadline) throw new Error(`maintenance stop refused (${out.code}): ${why}`);
+      this.set(x, "starting", `waiting for ${ext.id} clients to disconnect (${why}); retry in 20 s until ${new Date(stopDeadline).toISOString().slice(11, 19)}Z`);
+      await Bun.sleep(20_000);
+      if (x.stopping) throw new Error("stopped while waiting for the external service");
+    }
     x.stoppedExternal = ext;
     const deadline = Date.now() + 180_000;
     while (Date.now() < deadline) {

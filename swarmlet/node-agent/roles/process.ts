@@ -114,7 +114,9 @@ export async function waitForHealth(url: string, proc: SupervisedProcess | null,
   while (Date.now() < deadline) {
     if (proc && !proc.running) return false;
     try {
-      const r = await fetch(url, { signal: AbortSignal.timeout(3000) });
+      // Connection: close so our own health probes never hold a keep-alive socket open on a service
+      // whose maintenance script refuses to stop while clients are connected.
+      const r = await fetch(url, { signal: AbortSignal.timeout(3000), headers: { connection: "close" } });
       if (r.ok) return true;
     } catch { /* not yet */ }
     await Bun.sleep(1000);

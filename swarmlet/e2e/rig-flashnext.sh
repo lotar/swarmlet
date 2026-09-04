@@ -19,7 +19,7 @@ PIDS=""; DEP=""; EXT=""
 cleanup(){ set +e; log "cleanup"
   [ -n "$DEP" ] && api -X POST "$CONTROL_URL/api/deployments/$DEP/stop" >/dev/null && for _ in $(seq 1 120); do [ "$(api "$CONTROL_URL/api/deployments/$DEP" | python3 -c 'import json,sys;print(json.load(sys.stdin)["state"])')" = stopped ] && break; sleep 2; done
   for _ in $(seq 1 120); do curl -sf --max-time 3 http://127.0.0.1:8099/health >/dev/null 2>&1 && break; sleep 3; done
-  curl -sf --max-time 5 http://127.0.0.1:8099/health; echo; "$MAINT" check-only | head -1
+  curl -sf --max-time 5 http://127.0.0.1:8099/health; echo; ( "$MAINT" check-only 2>&1 || true ) | head -1
   for p in $PIDS; do kill $p 2>/dev/null; done; log "done -> $OUT"; }
 trap cleanup EXIT INT TERM
 
@@ -28,7 +28,7 @@ if ! curl -sf http://127.0.0.1:47800/api/status >/dev/null 2>&1; then
   log "M5 agent"; ( cd "$HERE" && SWARMLET_HOME=$HOME_AGENT SWARMLET_ENGINE=$HERE/engine/dist/darwin bun run node-agent/main.ts run > "$OUT/agent-m5.log" 2>&1 ) & PIDS="$PIDS $!"
   for _ in $(seq 1 60); do curl -sf http://127.0.0.1:47800/api/status >/dev/null 2>&1 && break; sleep 1; done
 fi
-curl -sf --max-time 5 http://127.0.0.1:8099/health > "$OUT/production-before.txt"; "$MAINT" check-only | head -1
+curl -sf --max-time 5 http://127.0.0.1:8099/health > "$OUT/production-before.txt"; ( "$MAINT" check-only 2>&1 || true ) | head -1
 api "$CONTROL_URL/api/nodes" > "$OUT/nodes.json"
 M5=$(python3 -c 'import json,sys;d=json.load(open(sys.argv[1]));print([n["id"] for n in d["nodes"] if n["online"] and n["hostname"].startswith("Lotars")][0])' "$OUT/nodes.json")
 L1=$(python3 -c 'import json,sys;d=json.load(open(sys.argv[1]));print([n["id"] for n in d["nodes"] if n["online"] and n["hostname"]=="lotar-legion"][0])' "$OUT/nodes.json")
