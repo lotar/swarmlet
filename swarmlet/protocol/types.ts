@@ -267,7 +267,7 @@ export interface HelloMsg {
   caps: Capabilities;
   offer: Offer;
   models: ModelFile[];
-  assignments: Array<{ id: string; state: AssignmentState }>;
+  assignments: Array<{ id: string; state: AssignmentState; detail?: string; ports?: Record<string, number> }>;
 }
 export interface HeartbeatMsg { t: "heartbeat"; ts: string; metrics: NodeMetrics; caps?: Partial<Capabilities> }
 export interface OfferMsg { t: "offer"; offer: Offer }

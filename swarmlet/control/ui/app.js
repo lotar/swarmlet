@@ -719,9 +719,16 @@
   /* ---------- chat: talks to the router, measures the reply ---------- */
   var chat = { messages: [], busy: false, abort: null, models: [], stats: { tokens: 0, seconds: 0, replies: 0 } };
 
+  function depLabel(c) {
+    var n = (c.nodes || [c.nodeId]).map(nodeName);
+    return c.name + ' \u00b7 ' + (c.kind || '?') + ' \u00b7 ' + n.length + (n.length === 1 ? ' node: ' : ' nodes: ') + n.join(' \u2192 ');
+  }
+
+  /** Models and their ready deployments; the deployment list defaults to the one spanning the most nodes. */
   function loadChatModels() {
-    return api('GET', '/v1/models').then(function (r) {
-      var list = (r.data || []).map(function (m) { return m.id; });
+    return api('GET', '/api/routing').then(function (r) {
+      chat.routing = r.models || [];
+      var list = chat.routing.map(function (m) { return m.modelName; });
       var sel = $('chat-model');
       var cur = sel.value;
       if (list.join('|') !== chat.models.join('|')) {
@@ -730,10 +737,29 @@
         if (list.indexOf(cur) >= 0) sel.value = cur;
         chat.models = list;
       }
+      fillChatDeployments();
       if (!list.length) note('chat-status', 'No ready deployment serves a model yet (Deployments tab).', 'error');
       else if (/No ready deployment/.test($('chat-status').textContent)) note('chat-status', '');
       if (list.length && !topo.lastDep && !chat.busy) return loadTopologyForModel();
     });
+  }
+
+  function chatCandidates() {
+    var entry = (chat.routing || []).filter(function (m) { return m.modelName === $('chat-model').value; })[0];
+    return entry ? entry.deployments.slice() : [];
+  }
+
+  function fillChatDeployments() {
+    var sel = $('chat-dep');
+    var cands = chatCandidates().sort(function (a, b) { return ((b.nodes || []).length - (a.nodes || []).length) || (a.inflight - b.inflight); });
+    var cur = sel.value;
+    var sig = cands.map(function (c) { return c.id + ':' + depLabel(c); }).join('|');
+    if (sig === chat.depSig) return;
+    chat.depSig = sig;
+    clear(sel);
+    cands.forEach(function (c) { sel.appendChild(el('option', { value: c.id, text: depLabel(c) })); });
+    if (cands.some(function (c) { return c.id === cur; })) sel.value = cur; // keep the user's pick; otherwise the most nodes
+    sel.disabled = cands.length < 2;
   }
 
   function chatBubble(role, text) {
@@ -837,7 +863,9 @@
       $('chat-input').focus();
     }
 
-    fetch('/v1/chat/completions', { method: 'POST', headers: { 'content-type': 'application/json' }, credentials: 'same-origin', body: JSON.stringify(body), signal: ctrl.signal }).then(function (res) {
+    var headers = { 'content-type': 'application/json' };
+    if ($('chat-dep').value) headers['x-swarmlet-deployment'] = $('chat-dep').value;
+    fetch('/v1/chat/completions', { method: 'POST', headers: headers, credentials: 'same-origin', body: JSON.stringify(body), signal: ctrl.signal }).then(function (res) {
       served = { node: res.headers.get('x-swarmlet-node'), dep: res.headers.get('x-swarmlet-deployment') };
       if (res.status === 401) { showLogin(); throw new Error('not logged in'); }
       if (!res.ok) return res.text().then(function (t) { throw new Error('HTTP ' + res.status + ': ' + t.slice(0, 200)); });
@@ -991,17 +1019,16 @@
   function loadTopologyForModel() {
     var model = $('chat-model').value;
     if (!model) { replace($('chat-topo-body'), el('p', { class: 'hint', text: 'No model selected.' })); return Promise.resolve(); }
-    return api('GET', '/api/routing').then(function (r) {
-      var entry = (r.models || []).filter(function (m) { return m.modelName === model; })[0];
-      var cands = entry ? entry.deployments : [];
-      if (!cands.length) { replace($('chat-topo-body'), el('p', { class: 'hint', text: 'No ready deployment serves ' + model + ' right now.' })); return; }
-      $('chat-topo-title').textContent = 'Topology · ' + model + (cands.length > 1 ? ' · ' + cands.length + ' candidates, showing the router’s current pick' : '');
-      var pick = cands.slice().sort(function (a, b) { return (a.inflight - b.inflight) || ((isNum(a.rttMs) ? a.rttMs : 1e9) - (isNum(b.rttMs) ? b.rttMs : 1e9)); })[0];
-      return loadTopology(pick.id, { note: cands.length > 1 ? cands.length + ' deployments serve this model; the router picks per request.' : null });
-    });
+    var cands = chatCandidates();
+    if (!cands.length) { replace($('chat-topo-body'), el('p', { class: 'hint', text: 'No ready deployment serves ' + model + ' right now.' })); return Promise.resolve(); }
+    var pickId = $('chat-dep').value || cands[0].id;
+    var pick = cands.filter(function (c) { return c.id === pickId; })[0] || cands[0];
+    $('chat-topo-title').textContent = 'Topology · ' + model + ' · ' + pick.name + (cands.length > 1 ? ' (' + cands.length + ' deployments serve this model)' : '');
+    return loadTopology(pick.id, { note: cands.length > 1 ? 'Replies go to the selected deployment; the router only chooses on its own when none is selected.' : null });
   }
 
-  $('chat-model').addEventListener('change', function () { loadTopologyForModel().catch(showError); });
+  $('chat-model').addEventListener('change', function () { fillChatDeployments(); loadTopologyForModel().catch(showError); });
+  $('chat-dep').addEventListener('change', function () { loadTopologyForModel().catch(showError); });
 
   /* ---------- polling ---------- */
   function tick() {

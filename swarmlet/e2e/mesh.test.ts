@@ -15,6 +15,7 @@ import { saveNodeConfig } from "../node-agent/config.ts";
 import type { Deployment, Offer } from "../protocol/types.ts";
 
 const FAKE = new URL("./fake-engine/", import.meta.url).pathname;
+process.env.SWARMLET_SERVER_PORT_BASE = "8300"; // stay clear of a live control plane's 8100+ on this machine
 let cfg: ControlConfig;
 let ctl: Awaited<ReturnType<typeof bootControl>>;
 let base: string;

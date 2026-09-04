@@ -11,7 +11,9 @@
   document.querySelector('[role=tab][data-tab="chat"]').click();
   for (let i = 0; i < 40 && ![...$("chat-model").options].some((o) => o.value === model); i++) await sleep(250);
   out.models = [...$("chat-model").options].map((o) => o.value);
-  $("chat-model").value = model;
+  $("chat-model").value = model; $("chat-model").dispatchEvent(new Event("change"));
+  await sleep(800);
+  out.depOptions = [...$("chat-dep").options].map((o) => (o.selected ? "*" : "") + o.textContent);
   $("chat-max").value = String(Number(q.get("max") || 160));
   $("chat-think").checked = q.get("think") === "1";
   $("chat-input").value = prompt;

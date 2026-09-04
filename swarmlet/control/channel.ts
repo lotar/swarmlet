@@ -101,7 +101,7 @@ export class AgentChannel {
         this.reg.setCaps(nodeId, m.caps);
         this.reg.setOffer(nodeId, m.offer);
         this.reg.setModels(nodeId, m.models);
-        for (const a of m.assignments) this.reg.setAssignmentState(a.id, a.state, "reported at hello");
+        for (const a of m.assignments) this.reg.setAssignmentState(a.id, a.state, a.detail); // undefined keeps the stored detail
         this.reg.event("online", `${m.caps.hostname} online (agent ${m.agentVersion})`, { nodeId });
         this.hooks.onHello?.(nodeId, m);
         break;

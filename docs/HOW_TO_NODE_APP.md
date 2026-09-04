@@ -77,7 +77,9 @@ machine has are rejected with the reason. What each control enforces:
 ## 3a. Chat and live throughput
 
 The **Chat** tab (`http://192.168.1.53:47900/#chat`) is a small chat client that goes through the router like any
-API client: pick a served model, type, Enter. Each reply shows the server's own timing (tok/s, prompt and completion
+API client: pick a served model and, when several deployments serve it, the deployment (the list defaults to the
+one spanning the most nodes, e.g. `mesh-2b · split · 3 nodes: M5 → legion → legion-2`); type, Enter. API clients
+can pin a deployment the same way with the header `x-swarmlet-deployment: <id or name>`. Each reply shows the server's own timing (tok/s, prompt and completion
 tokens, time to first token), which node and deployment served it, and a running session average. The **Topology**
 panel draws the path of the selected model (and, after each reply, of the deployment that served it): browser →
 control router → coordinator node (device, layers, ctx/parallel/chain) → each RPC worker (device, layers, memory

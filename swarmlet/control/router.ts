@@ -59,7 +59,11 @@ export function createRouter(deps: { deployments: DeploymentManager; tunnels: Tu
     try { model = (JSON.parse(bodyText) as { model?: string }).model; } catch { return json({ error: { message: "body is not JSON", type: "invalid_request_error" } }, 400); }
     const candidates = model ? table.find((m) => m.modelName === model)?.deployments ?? [] : (table.length === 1 ? table[0]!.deployments : []);
     if (!candidates.length) return json({ error: { message: model ? `no ready deployment serves model '${model}'` : "specify a model (see /v1/models)", type: "invalid_request_error", available: table.map((m) => m.modelName) } }, 404);
-    const pick = [...candidates].sort((a, b) => (a.inflight - b.inflight) || ((a.rttMs ?? 1e9) - (b.rttMs ?? 1e9)))[0]!;
+    // a client may pin a deployment (header x-swarmlet-deployment, id or name); otherwise least in-flight, then lowest rtt
+    const pinned = req.headers.get("x-swarmlet-deployment");
+    let pick = pinned ? candidates.find((c) => c.id === pinned || c.name === pinned) : undefined;
+    if (pinned && !pick) return json({ error: { message: `deployment '${pinned}' is not ready for model '${model}'`, type: "invalid_request_error", candidates: candidates.map((c) => c.id) } }, 409);
+    if (!pick) pick = [...candidates].sort((a, b) => (a.inflight - b.inflight) || ((a.rttMs ?? 1e9) - (b.rttMs ?? 1e9)))[0]!;
     const local = await deps.tunnels.localPort(pick.nodeId, pick.port);
     const headers = new Headers();
     for (const [k, v] of req.headers) if (!HOP_HEADERS.has(k.toLowerCase())) headers.set(k, v);

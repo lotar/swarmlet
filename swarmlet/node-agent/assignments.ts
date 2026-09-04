@@ -70,8 +70,8 @@ export class AssignmentRunner {
     return [...this.active.values()].map((x) => ({ id: x.a.id, kind: x.a.kind, deploymentId: x.a.deploymentId, state: x.state, detail: x.detail, ports: x.ports, pid: x.proc?.pid ?? undefined }));
   }
 
-  states(): Array<{ id: string; state: AssignmentState }> {
-    return [...this.active.values()].map((x) => ({ id: x.a.id, state: x.state }));
+  states(): Array<{ id: string; state: AssignmentState; detail?: string; ports?: Record<string, number> }> {
+    return [...this.active.values()].map((x) => ({ id: x.a.id, state: x.state, detail: x.detail, ports: Object.keys(x.ports).length ? x.ports : undefined }));
   }
 
   allowedPorts(): Set<number> {

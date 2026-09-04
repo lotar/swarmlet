@@ -170,7 +170,7 @@ export class Registry {
   }
 
   setAssignmentState(id: string, state: AssignmentState, detail?: string): AssignmentRow | null {
-    this.db.run("UPDATE assignments SET state = ?, detail = ?, updated_at = ? WHERE id = ?", [state, detail ?? null, now(), id]);
+    this.db.run("UPDATE assignments SET state = ?, detail = COALESCE(?, detail), updated_at = ? WHERE id = ?", [state, detail ?? null, now(), id]);
     return this.getAssignment(id);
   }
 

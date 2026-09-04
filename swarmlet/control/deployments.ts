@@ -10,6 +10,8 @@ import type { NodeRow, Registry } from "./registry.ts";
 
 export interface DeploymentDeps { reg: Registry; channel: AgentChannel; profiles: Map<string, ModelProfile>; log: Logger }
 
+/** First port for coordinator / replica llama-servers on a node (SWARMLET_SERVER_PORT_BASE; tests use another base). */
+const serverPortBase = (): number => Number(process.env.SWARMLET_SERVER_PORT_BASE ?? 8100); // read lazily: tests set it after import
 const WORKER_TIMEOUT_MS = 5 * 60_000;
 const COORDINATOR_TIMEOUT_MS = 60 * 60_000;
 const STOP_TIMEOUT_MS = 2 * 60_000;
@@ -29,13 +31,23 @@ export class DeploymentManager {
 
   onAssignmentState(nodeId: string, id: string, state: AssignmentState, detail?: string): void {
     for (const w of this.waiters.get(id) ?? []) w(state, detail);
-    if (state === "failed") {
-      const row = this.deps.reg.getAssignment(id);
-      if (!row) return;
-      const dep = this.deps.reg.getDeployment(row.deploymentId);
-      if (dep && dep.state !== "stopped" && dep.state !== "failed" && dep.state !== "draining") {
-        void this.fail(dep.id, `assignment ${id} on ${nodeId} failed: ${detail ?? "no detail"}`);
+    const row = this.deps.reg.getAssignment(id);
+    if (!row) return;
+    const dep = this.deps.reg.getDeployment(row.deploymentId);
+    if (!dep) return;
+    // an external server is only watched: unhealthy takes it out of routing, healthy again puts it back
+    if (row.body.kind === "replica" && row.body.external && (dep.state === "ready" || dep.state === "loading")) {
+      if (state === "failed" && dep.state === "ready") {
+        this.deps.reg.updateDeployment(dep.id, { state: "loading", endpoint: null, error: `external server unhealthy: ${detail ?? ""}` });
+        this.deps.reg.event("deployment", `external server unhealthy, out of routing (${detail ?? ""})`, { deploymentId: dep.id });
+      } else if (state === "ready" && dep.state === "loading" && dep.spec.external) {
+        this.deps.reg.updateDeployment(dep.id, { state: "ready", error: null, endpoint: { nodeId, port: Number(new URL(dep.spec.external.url).port), modelName: dep.spec.external.modelName } });
+        this.deps.reg.event("deployment", "external server healthy again, back in routing", { deploymentId: dep.id });
       }
+      return;
+    }
+    if (state === "failed" && dep.state !== "stopped" && dep.state !== "failed" && dep.state !== "draining") {
+      void this.fail(dep.id, `assignment ${id} on ${nodeId} failed: ${detail ?? "no detail"}`);
     }
   }
 
@@ -120,13 +132,14 @@ export class DeploymentManager {
   }
 
   /** Ready deployments grouped by served model name, for the router and the Routing page. */
-  routing(): Array<{ modelName: string; deployments: Array<{ id: string; name: string; nodeId: string; port: number; inflight: number; tokPerSec?: number; rttMs?: number }> }> {
-    const byModel = new Map<string, Array<{ id: string; name: string; nodeId: string; port: number; inflight: number; tokPerSec?: number; rttMs?: number }>>();
+  routing(): Array<{ modelName: string; deployments: Array<{ id: string; name: string; kind: string; nodeId: string; port: number; nodes: string[]; inflight: number; tokPerSec?: number; rttMs?: number }> }> {
+    const byModel = new Map<string, Array<{ id: string; name: string; kind: string; nodeId: string; port: number; nodes: string[]; inflight: number; tokPerSec?: number; rttMs?: number }>>();
     for (const dep of this.deps.reg.listDeployments()) {
       if (dep.state !== "ready" || !dep.endpoint) continue;
       const node = this.deps.reg.getNode(dep.endpoint.nodeId);
       const list = byModel.get(dep.endpoint.modelName) ?? [];
-      list.push({ id: dep.id, name: dep.spec.name, nodeId: dep.endpoint.nodeId, port: dep.endpoint.port, inflight: this.inflight.get(dep.id) ?? 0, tokPerSec: this.liveTokPerSec(dep.id) || node?.metrics?.tokPerSec, rttMs: node?.caps?.net?.rttMs });
+      const nodes = dep.plan ? [dep.plan.coordinatorNodeId, ...dep.plan.workers.map((w) => w.nodeId)] : [dep.endpoint.nodeId];
+      list.push({ id: dep.id, name: dep.spec.name, kind: dep.spec.kind, nodeId: dep.endpoint.nodeId, port: dep.endpoint.port, nodes, inflight: this.inflight.get(dep.id) ?? 0, tokPerSec: this.liveTokPerSec(dep.id) || node?.metrics?.tokPerSec, rttMs: node?.caps?.net?.rttMs });
       byModel.set(dep.endpoint.modelName, list);
     }
     return [...byModel].map(([modelName, deployments]) => ({ modelName, deployments }));
@@ -185,7 +198,7 @@ export class DeploymentManager {
     const plan = this.plan(dep.spec, this.usedPorts());
     this.deps.reg.updateDeployment(dep.id, { plan, state: "loading" });
     const node = this.node(plan.coordinatorNodeId);
-    const port = this.freePort(node.id, 8100, this.usedPorts());
+    const port = this.freePort(node.id, serverPortBase(), this.usedPorts());
     const a: ReplicaAssignment = { kind: "replica", id: newId("as"), deploymentId: dep.id, port, model: { path: plan.modelPath }, modelName: profile.modelName, ctx: plan.ctx, parallel: plan.parallel, extraArgs: profile.extraArgs, allow: [] };
     await this.dispatch(node.id, a, ["ready"], COORDINATOR_TIMEOUT_MS);
     this.deps.reg.updateDeployment(dep.id, { state: "ready", endpoint: { nodeId: node.id, port, modelName: profile.modelName } });
@@ -219,7 +232,7 @@ export class DeploymentManager {
     this.deps.reg.updateDeployment(dep.id, { state: "loading" });
     const coordLayers = plan.tensorSplit[plan.tensorSplit.length - 1] ?? 0;
     const externals = dep.spec.stopExternal ? this.deps.reg.listDeployments().filter((d) => d.spec.kind === "external" && d.spec.external?.nodeId === coord.id) : [];
-    const port = this.freePort(coord.id, 8100, used);
+    const port = this.freePort(coord.id, serverPortBase(), used);
     const c: CoordinatorAssignment = {
       kind: "coordinator", id: newId("as"), deploymentId: dep.id, model: { path: plan.modelPath },
       rpc: workers.map(({ w, node }) => endpointFor(node, w.port)), devices: [...workers.map((_, i) => `RPC${i}`), plan.coordinatorDevice],
