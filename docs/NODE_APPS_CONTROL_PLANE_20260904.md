@@ -1,7 +1,7 @@
 # Design: Swarmlet node apps (macOS + Linux, GUI) and the control plane (routing)
 
 **Date:** 2026-09-04
-**Status:** implemented on branch `feat/node-apps-control-plane`; M0–M3 accepted on the rig, M4 blocked by external clients (§13), M5 macOS bundle built / Linux in progress, M6 gate green
+**Status:** implemented on branch `feat/node-apps-control-plane`; M0–M3 accepted on the rig, M4 blocked by external clients (§13), M5 macOS bundle and Linux deb built, M6 gate green
 **Scope:** roadmap item 04 "Product alpha" on swarmlet.ai minus model distribution; gap-audit §5 steps 1–3 (`docs/GAP_AUDIT_INTERNET_MOE_20260902.md`)
 **Rig for acceptance:** M5 (macOS 26.5, 128 GB, production Flash-Next on :8099), Legion 1 (Ubuntu 24.04, GTX 1650 Ti 4 GB), Legion 2 (Ubuntu 24.04, GTX 1650 4 GB)
 
@@ -177,7 +177,7 @@ Model distribution with digests; NAT hole punching / WireGuard; bandwidth shapin
 | M2 agent | both Legions enrolled as systemd user services with worker offers (cuda:0 3600 MiB, 8192 MiB RAM, 10 cores); cgroup `MemoryMax=8192M MemorySwapMax=0 CPUQuota=1000%` observed on the real workers | `sin-harness/data/legion-goal/app-rig-2b-20260904T113351Z` |
 | M3 deployments | Qwen3.5-2B split 3/3/18 planned and started from the control plane, request routed through `/v1/chat/completions`; direct pinned-TLS path **11.87 tok/s** c1 (ready in 12 s), relay through control **10.37 tok/s** c1 | same directory (`plan-*.json`, `deployment-*.json`, `*-c1/summary.json`) |
 | M4 Flash-Next window | production registered as an external deployment and routed (answered through the control plane); plan = split 1,1,46, chain 4, batched GETs, wire off, exactly the measured configuration; the maintenance script refused to stop production for 20 min because two other sessions held idle keep-alive connections to :8099 (PIDs logged); production never stopped, everything cleaned up | `app-rig-flashnext-20260904T115553Z` |
-| M5 shell | macOS `Swarmlet Node.app` (97 MB) with the compiled agent as sidecar and the Metal engine as resources; Linux deb/AppImage build on Legion 1 in progress | `swarmlet/node-shell/` |
+| M5 shell | macOS `Swarmlet Node.app` (97 MB) with the compiled agent as sidecar and the Metal engine as resources; Linux `swarmlet-node_0.1.0_amd64.deb` (263 MB, built on Legion 1, installed on Legion 2: `/usr/bin/swarmlet-node-shell`, sidecar `/usr/bin/swarmlet-node`, engine under `/usr/lib/Swarmlet Node/`, desktop entry); AppImage packaging fails in linuxdeploy (optional, not pursued) | `swarmlet/node-shell/`, `swarmlet/dist/shell/linux/` |
 | M6 gate | `sin-harness/scripts/release-check.sh` runs the swarmlet typecheck + tests: `RELEASE_CHECK_OK` | — |
 
 Reference for M3: the earlier ring-bench run of the same model on the same LAN (split 2/2/20, `ssh -L` forwards,
