@@ -60,7 +60,7 @@ const text = (e: PlanError): string => e.reasons.join("\n");
 describe("profiles", () => {
   test("the shipped profiles load with the measured envelope", () => {
     expect([...profiles.keys()].sort()).toEqual(["flash-next-ud-q4kxl", "qwen35-2b-q8", "qwen36-35b-a3b-q4km"]);
-    expect(flash).toMatchObject({ modelName: "qwen3.8-flash-next", layers: 48, layerMiB: 1608, coordinatorHostMiB: 32768, boundaryBytes: 81920, workerMarginMiB: 1536 });
+    expect(flash).toMatchObject({ modelName: "qwen3.8-flash-next", layers: 48, layerMiB: 1608, coordinatorHostMiB: 2048, boundaryBytes: 81920, workerMarginMiB: 1536 });
     expect(flash.envelope).toEqual([{ workerLayers: 1, maxCtx: 1536, maxParallel: 3, maxChain: 8 }, { workerLayers: 1, maxCtx: 1536, maxParallel: 1, maxChain: 12 }]);
     expect(flash.extraArgs).toEqual(["-ot", "ple_ngram_embd=CPU", "-fa", "on", "--cache-ram", "0", "--ctx-checkpoints", "0"]);
     expect(new RegExp(flash.ggufPattern).test(shard(1).name)).toBe(true);
@@ -114,7 +114,7 @@ describe("split placement on the real rig", () => {
     expect(why).toMatch(/Coordinator m5: largest RAM offer \(110000 MiB\)/);
     expect(why).toMatch(/RPC0 legion1 \(12 ms\), RPC1 legion2 \(15 ms\)/);
     expect(why).toMatch(/row workerLayers 1 \(maxCtx 1536, maxParallel 3, maxChain 8\) fits/);
-    expect(why).toMatch(/keeps 46 of 48 layers on MTL0: 46 × 1608 \+ 32768 MiB host = 106736 MiB of 110000 MiB/);
+    expect(why).toMatch(/keeps 46 of 48 layers on MTL0: 46 × 1608 \+ 2048 MiB host = 76016 MiB of 110000 MiB/);
     expect(why).toMatch(/draft head Qwen3\.8-Flash-Next-MTP-Q8_0\.gguf on m5/);
     expect(why).toMatch(/81920 bytes per token/);
   });
@@ -213,8 +213,8 @@ describe("split placement on the real rig", () => {
   });
 
   test("the coordinator must hold the remaining layers plus the host-side residency", () => {
-    const e = refused({ nodes: [m5({ offer: m5Offer(100000) }), legion1(), legion2()] });
-    expect(text(e)).toMatch(/Coordinator m5 cannot hold 46 of 48 layers: 46 × 1608 \+ 32768 MiB host = 106736 MiB exceeds the 100000 MiB RAM offered/);
+    const e = refused({ nodes: [m5({ offer: m5Offer(70000) }), legion1(), legion2()] });
+    expect(text(e)).toMatch(/Coordinator m5 cannot hold 46 of 48 layers: 46 × 1608 \+ 2048 MiB host = 76016 MiB exceeds the 70000 MiB RAM offered/);
   });
 
   test("coordinator choice: a requested id is validated, the default is the largest RAM offer holding the model", () => {
@@ -274,15 +274,15 @@ describe("replica placement", () => {
     expect(p.mtpPath).toBeUndefined();
     expect(planDevices(p)).toEqual(["MTL0"]);
     expect(p.env.GGML_RPC_FORWARD).toBe("0");
-    expect(p.reasons.join("\n")).toMatch(/Replica m5 keeps 48 of 48 layers on MTL0: 48 × 1608 \+ 32768 MiB host = 109952 MiB of 110000 MiB/);
+    expect(p.reasons.join("\n")).toMatch(/Replica m5 keeps 48 of 48 layers on MTL0: 48 × 1608 \+ 2048 MiB host = 79232 MiB of 110000 MiB/);
     expect(plan({ spec: spec({ kind: "replica", chain: 0 }) })).toEqual(plan({ spec: spec({ kind: "replica", chain: 0 }), nodes: rig().reverse() }));
   });
 
   test("replica: requested node validated, memory checked, draft head required for chain > 0", () => {
     expect(text(refused({ spec: spec({ kind: "replica", replicaNodeId: L1 }) }))).toMatch(/Requested replica node legion1 does not offer the replica role, holds no model matching/);
     expect(plan({ spec: spec({ kind: "replica", chain: 0, replicaNodeId: M5 }) }).coordinatorNodeId).toBe(M5);
-    const e = refused({ spec: spec({ kind: "replica", chain: 0 }), nodes: [m5({ offer: m5Offer(100000) })] });
-    expect(text(e)).toMatch(/Replica m5 cannot hold 48 of 48 layers: 48 × 1608 \+ 32768 MiB host = 109952 MiB exceeds the 100000 MiB RAM offered/);
+    const e = refused({ spec: spec({ kind: "replica", chain: 0 }), nodes: [m5({ offer: m5Offer(70000) })] });
+    expect(text(e)).toMatch(/Replica m5 cannot hold 48 of 48 layers: 48 × 1608 \+ 2048 MiB host = 79232 MiB exceeds the 70000 MiB RAM offered/);
     expect(plan({ spec: spec({ kind: "replica", chain: 4 }) })).toMatchObject({ chain: 4, mtpPath: MTP.path });
     expect(refused({ spec: spec({ kind: "replica", chain: 4 }), nodes: [m5({ models: [shard(1)] })] }).message).toMatch(/needs a draft head matching/);
     expect(refused({ spec: spec({ kind: "replica" }), nodes: [] }).message).toMatch(/No online node offers the replica role/);

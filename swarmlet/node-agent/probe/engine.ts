@@ -43,7 +43,7 @@ const lastLine = (s: string) => s.trim().split("\n").pop()?.trim() ?? "";
 /** Ask the engine itself what it can drive; the caller falls back to OS tools when this is not ok. */
 export async function engineDevices(enginePath: string): Promise<EngineDevices> {
   const bin = join(enginePath, "llama-server");
-  const r = await exec([bin, "--list-devices"], { timeoutMs: 15_000 });
+  const r = await exec([bin, "--list-devices"], { timeoutMs: 90_000 }); // first run of a static Metal build compiles its shader library (~25 s)
   if (r.code === CODE_NOT_FOUND) return { ok: false, reason: `${bin}: not found` };
   if (r.code !== 0) {
     return { ok: false, reason: `${bin} --list-devices exited ${r.code}${r.timedOut ? " (timed out)" : ""}: ${lastLine(r.stderr) || lastLine(r.stdout)}` };

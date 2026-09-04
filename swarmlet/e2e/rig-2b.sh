@@ -18,9 +18,11 @@ trap cleanup EXIT INT TERM
 [ "${1:-}" = "--keep" ] && KEEP=1
 
 # --- control plane on this Mac, reachable from the Legions ---
-log "control @ $CONTROL_URL"
-( cd "$HERE" && SWARMLET_CONTROL_DIR=$CTRL_DIR SWARMLET_CONTROL_HOST=0.0.0.0 SWARMLET_CONTROL_URL=$CONTROL_URL bun run control/main.ts > "$OUT/control.log" 2>&1 ) & PIDS="$PIDS $!"
-for _ in $(seq 1 30); do curl -sf "$CONTROL_URL/health" >/dev/null 2>&1 && break; sleep 1; done
+if curl -sf "$CONTROL_URL/health" >/dev/null 2>&1; then log "control already running @ $CONTROL_URL (reusing)"; else
+  log "control @ $CONTROL_URL"
+  ( cd "$HERE" && SWARMLET_CONTROL_DIR=$CTRL_DIR SWARMLET_CONTROL_HOST=0.0.0.0 SWARMLET_CONTROL_URL=$CONTROL_URL bun run control/main.ts > "$OUT/control.log" 2>&1 ) & PIDS="$PIDS $!"
+  for _ in $(seq 1 30); do curl -sf "$CONTROL_URL/health" >/dev/null 2>&1 && break; sleep 1; done
+fi
 TOKEN=$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))["adminToken"])' "$CTRL_DIR/control.json")
 api(){ curl -sf -H "Authorization: Bearer $TOKEN" -H "content-type: application/json" "$@"; }
 
@@ -41,6 +43,16 @@ PY
 log "M5 agent"
 ( cd "$HERE" && SWARMLET_HOME=$HOME_AGENT SWARMLET_ENGINE=$HERE/engine/dist/darwin bun run node-agent/main.ts run > "$OUT/agent-m5.log" 2>&1 ) & PIDS="$PIDS $!"
 for _ in $(seq 1 30); do curl -sf http://127.0.0.1:47800/api/status >/dev/null 2>&1 && break; sleep 1; done
+# offer from the measured limits (GPU total as the engine reports it), so validation never disables it
+python3 - "$MODELS" <<'PY2'
+import json, sys, urllib.request
+models = sys.argv[1]
+lim = json.load(urllib.request.urlopen("http://127.0.0.1:47800/api/offer"))["limits"]
+gpu = [{"id": g["id"], "memMiB": min(110000, g["totalMiB"])} for g in lim["gpus"][:1]]
+offer = {"enabled": True, "roles": {"worker": False, "coordinator": True, "replica": True}, "gpu": gpu, "ramMiB": min(118000, lim["ramMaxMiB"]), "cpuCores": min(12, lim["cpuMax"]), "diskMiB": 100000, "modelsDir": models}
+req = urllib.request.Request("http://127.0.0.1:47800/api/offer", data=json.dumps(offer).encode(), headers={"content-type": "application/json"}, method="PUT")
+print("offer:", urllib.request.urlopen(req).read().decode(), gpu)
+PY2
 if ! python3 -c 'import json,sys;d=json.load(open(sys.argv[1]));sys.exit(0 if d.get("agentUrl","").startswith("ws://'"$M5_IP"'") else 1)' "$HOME_AGENT/node.json"; then
   CODE=$(api -X POST "$CONTROL_URL/api/join-codes" | python3 -c 'import json,sys;print(json.load(sys.stdin)["code"])')
   curl -sf -X POST -H "content-type: application/json" -d "{\"controlUrl\":\"$CONTROL_URL\",\"code\":\"$CODE\"}" http://127.0.0.1:47800/api/join; echo

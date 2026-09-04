@@ -86,6 +86,7 @@ export class AgentRuntime {
     this.cfg.enrolledNodeId = res.nodeId;
     saveNodeConfig(this.paths, this.cfg);
     this.connect();
+    setTimeout(() => { void this.measure().catch(() => undefined); }, 3000); // rtt/bandwidth right after joining, not only hourly
     return { nodeId: res.nodeId };
   }
 

@@ -6,12 +6,31 @@
   "mtpPattern": "^Qwen3\\.8-Flash-Next-MTP-Q8_0\\.gguf$",
   "layers": 48,
   "layerMiB": 1608,
-  "coordinatorHostMiB": 32768,
+  "coordinatorHostMiB": 2048,
   "boundaryBytes": 81920,
   "workerMarginMiB": 1536,
   "envelope": [
-    { "workerLayers": 1, "maxCtx": 1536, "maxParallel": 3, "maxChain": 8 },
-    { "workerLayers": 1, "maxCtx": 1536, "maxParallel": 1, "maxChain": 12 }
+    {
+      "workerLayers": 1,
+      "maxCtx": 1536,
+      "maxParallel": 3,
+      "maxChain": 8
+    },
+    {
+      "workerLayers": 1,
+      "maxCtx": 1536,
+      "maxParallel": 1,
+      "maxChain": 12
+    }
   ],
-  "extraArgs": ["-ot", "ple_ngram_embd=CPU", "-fa", "on", "--cache-ram", "0", "--ctx-checkpoints", "0"]
+  "extraArgs": [
+    "-ot",
+    "ple_ngram_embd=CPU",
+    "-fa",
+    "on",
+    "--cache-ram",
+    "0",
+    "--ctx-checkpoints",
+    "0"
+  ]
 }
