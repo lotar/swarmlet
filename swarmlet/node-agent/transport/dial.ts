@@ -83,6 +83,7 @@ export class Dialer {
     if (!e.relay) { this.deps.log.warn("no direct path and relay not allowed", { node: e.nodeId, port: e.port }); local.destroy(); return; }
     const stream = this.deps.openRelay(e.nodeId, e.port);
     if (!stream) { this.deps.log.warn("relay unavailable (control channel down)", { node: e.nodeId }); local.destroy(); return; }
+    this.deps.log.info("relay stream opened", { node: e.nodeId, port: e.port, stream: stream.id });
     this.memo.set(this.key(e), "relay");
     early.attach((c) => stream.write(new Uint8Array(c.buffer, c.byteOffset, c.byteLength)));
     stream.onData((c) => { if (!closed) local.write(Buffer.from(c)); });

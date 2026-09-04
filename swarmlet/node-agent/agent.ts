@@ -168,9 +168,10 @@ export class AgentClient {
     const h = stream.header;
     if (h.kind !== "data" && h.kind !== "http") return false;
     if (!this.hooks.allowedPorts().has(h.port)) { this.log.warn("stream to non-allowed port refused", { port: h.port }); return false; }
+    this.log.info("incoming stream", { kind: h.kind, port: h.port, from: h.kind === "data" ? h.from : "control", stream: stream.id });
     const sock = netConnect({ host: "127.0.0.1", port: h.port });
     sock.on("connect", () => pipe(stream, sock));
-    sock.on("error", (e) => stream.close(`connect failed: ${e.message}`));
+    sock.on("error", (e) => { this.log.warn("incoming stream: local connect failed", { port: h.port, err: e.message }); stream.close(`connect failed: ${e.message}`); });
     return true;
   }
 }

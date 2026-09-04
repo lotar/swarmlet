@@ -88,6 +88,16 @@ toggles the model's reasoning mode. The **Nodes** tab (`#nodes`) has a tok/s col
 generation rate of its local llama-server (coordinator, replica, or the external production server) over the last
 heartbeat interval, so the number moves while a reply streams and drops to 0.0 when idle.
 
+## 3c. Internet path (relay through the Cloudflare edge)
+
+All three rig machines share one public IP, so an internet path needs an external hop. `swarmlet/control/cloudflare-tunnel.sh start`
+puts a quick tunnel in front of control (LaunchAgent, new hostname on every start); `swarmlet/e2e/rig-internet.sh` pins that
+hostname on the Legions (the LAN router's resolver drops A records for fresh trycloudflare names) and re-enrolls them through it,
+so their agent channels run as `wss://<tunnel>/agent`. A deployment created with `transport: "relay"` then carries every RPC
+hop through control and the edge (Nodes tab: `relay ↓/↑` bytes per node, measured RTT to control ~70–85 ms instead of 8).
+The M5 keeps its LAN channel because it hosts control. Stop with `cloudflare-tunnel.sh stop` and re-join the Legions on the
+LAN address to go back.
+
 ## 3b. Day-to-day
 
 1. Open `http://192.168.1.53:47900`, paste the admin token once (cookie).

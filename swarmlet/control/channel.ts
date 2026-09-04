@@ -180,13 +180,13 @@ export class AgentChannel {
     const target = this.conns.get(h.target);
     if (!target?.data.mux) { this.log.debug("relay target offline", { fromNodeId, target: h.target }); return false; }
     const right = target.data.mux.open({ kind: "data", port: h.port, from: fromNodeId });
+    this.log.info("relay open", { from: fromNodeId, target: h.target, port: h.port, stream: stream.id });
     // bridge with byte accounting: bytes leaving `from` towards `target` and back, per second, per node
     stream.onData((c) => { this.countRelay(fromNodeId, "out", c.byteLength); this.countRelay(h.target, "in", c.byteLength); right.write(c); });
     right.onData((c) => { this.countRelay(h.target, "out", c.byteLength); this.countRelay(fromNodeId, "in", c.byteLength); stream.write(c); });
-    stream.onEnd((r) => right.close(r ?? "peer closed"));
-    right.onEnd((r) => stream.close(r ?? "peer closed"));
     this.relayStreams++;
-    stream.onEnd(() => { this.relayStreams--; });
+    stream.onEnd((r) => { this.relayStreams--; this.log.info("relay closed by source", { from: fromNodeId, target: h.target, reason: r }); right.close(r ?? "peer closed"); });
+    right.onEnd((r) => { this.log.info("relay closed by target", { from: fromNodeId, target: h.target, reason: r }); stream.close(r ?? "peer closed"); });
     return true;
   }
 
