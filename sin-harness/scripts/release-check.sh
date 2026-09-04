@@ -13,6 +13,8 @@ bash -n scripts/*.sh docker/*.sh ../tools/site/*.sh
 python3 -m compileall -q proofs
 bun run report:results-grid >/tmp/swarmlet-results-grid.log
 cd "$ROOT";git diff --exit-code -- docs/RESULTS_GRID.md
+# product surface (node agent, control plane, protocol): strict typecheck + unit/integration tests, no engine or rig needed
+cd "$ROOT/swarmlet";bun install --frozen-lockfile;bun run test;bash -n engine/*.sh e2e/*.sh;cd "$ROOT"
 SITE_PORT=18123;PORT=$SITE_PORT node site/server.mjs >/tmp/swarmlet-site.log 2>&1 & site_pid=$!
 trap 'kill "$site_pid" 2>/dev/null||true' EXIT
 for _ in $(seq 1 50);do curl -fsS http://127.0.0.1:$SITE_PORT/ >/dev/null 2>&1&&break;sleep .1;done

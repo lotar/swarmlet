@@ -7,6 +7,7 @@
 ## How-to guides
 
 - [Run the two-node proof](HOW_TO_TWO_NODE_PROOF.md): execute disjoint owners over SSH, inject failure, clean up, and sign evidence.
+- [Run a node and the control plane](HOW_TO_NODE_APP.md): install the node agent, offer resources, create deployments, route requests.
 - [Release the source](RELEASE.md): validate, package, checksum, review, tag, and publish.
 - [Preview and QA the site](../site/README.md): run the dependency-free server and optional Chrome probes.
 

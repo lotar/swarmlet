@@ -88,7 +88,7 @@ describe("relay fallback", () => {
     const me = new StreamMux((f) => queueMicrotask(() => peer.handleFrame(f)), () => false, 1);
     peer = new StreamMux((f) => queueMicrotask(() => me.handleFrame(f)), (s: MuxStream) => {
       const sock = connect({ host: "127.0.0.1", port: echoPort });
-      sock.on("data", (d) => s.write(new Uint8Array(d)));
+      sock.on("data", (d: Buffer) => s.write(new Uint8Array(d.buffer, d.byteOffset, d.byteLength)));
       s.onData((c) => sock.write(Buffer.from(c)));
       s.onEnd(() => sock.destroy());
       return true;

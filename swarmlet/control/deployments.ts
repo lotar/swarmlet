@@ -142,9 +142,10 @@ export class DeploymentManager {
     this.deps.reg.updateDeployment(dep.id, { plan });
     const coord = this.node(plan.coordinatorNodeId);
     const workers = plan.workers.map((w) => ({ w, node: this.node(w.nodeId) }));
+    const relayOnly = dep.spec.transport === "relay";
     const endpointFor = (node: NodeRow, port: number): Endpoint => ({
       nodeId: node.id, certFp: node.certFp, port,
-      direct: [...(node.caps?.privateIps ?? []), ...(node.caps?.publicIp ? [node.caps.publicIp] : [])].map((host) => ({ host, port: node.caps?.dataPort ?? AGENT_DATA_PORT })),
+      direct: relayOnly ? [] : [...(node.caps?.privateIps ?? []), ...(node.caps?.publicIp ? [node.caps.publicIp] : [])].map((host) => ({ host, port: node.caps?.dataPort ?? AGENT_DATA_PORT })),
       relay: true,
     });
     // workers first, in ring order; worker i pushes to worker i+1 (peerPort) when forwarding is on
@@ -207,7 +208,7 @@ export class DeploymentManager {
     try {
       return planDeployment({ spec, profile, nodes: this.deps.reg.listNodes().map((n) => ({ ...n, online: this.deps.channel.isOnline(n.id) })), usedPorts });
     } catch (e) {
-      if (e instanceof PlanError) throw new Error(`no plan: ${e.message}\n${e.reasons.join("\n")}`);
+      if (e instanceof PlanError) throw new Error(`no plan: ${e.message}`); // message already carries every reason
       throw e as Error;
     }
   }

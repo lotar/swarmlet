@@ -178,6 +178,8 @@ export interface DeploymentSpec {
   batchedGets?: boolean;
   forwarding?: boolean;
   stopExternal?: boolean;
+  /** "auto" (default): try direct TLS to peers, relay when unreachable; "relay": never dial directly (for A/B measurements). */
+  transport?: "auto" | "relay";
   external?: { nodeId: string; url: string; healthPath: string; modelName: string; maintenance?: string };
 }
 

@@ -31,7 +31,7 @@ async function makeNode(name: string, roles: Offer["roles"], withModel: boolean,
   saveNodeConfig(rt.paths, rt.cfg);
   await rt.start();
   const gpu = rt.caps?.gpus[0];
-  rt.cfg.offer = { enabled: true, roles, gpu: gpu ? [{ id: gpu.id, memMiB: Math.min(2048, gpu.totalMiB) }] : [], ramMiB: 2048, cpuCores: 2, diskMiB: 1024, modelsDir: models };
+  rt.cfg.offer = { enabled: true, roles, gpu: gpu ? [{ id: gpu.id, memMiB: Math.min(4096, gpu.totalMiB) }] : [], ramMiB: 4096, cpuCores: 2, diskMiB: 1024, modelsDir: models };
   saveNodeConfig(rt.paths, rt.cfg);
   rt.models = await (await import("../node-agent/probe/index.ts")).listModels(models);
   const { code } = (await (await api("/api/join-codes", { method: "POST" })).json()) as { code: string };

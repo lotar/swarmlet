@@ -1,0 +1,197 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="theme-color" content="#17221f">
+  <meta name="robots" content="noindex">
+  <title>Swarmlet control</title>
+  <link rel="stylesheet" href="/style.css">
+  <script src="/app.js" defer></script>
+</head>
+<body>
+  <div class="login" id="login" hidden>
+    <form id="login-form" method="post" action="/login">
+      <h1>Swarmlet control</h1>
+      <p>Sign in with the admin token from control.json in the control data directory.</p>
+      <label class="field"><span class="label">Admin token</span><input type="password" id="login-token" name="token" autocomplete="current-password" required></label>
+      <div class="form-actions">
+        <button class="button button--signal" type="submit">Sign in</button>
+        <span class="form-status" id="login-status"></span>
+      </div>
+    </form>
+  </div>
+
+  <div id="app">
+    <header class="head">
+      <div class="brand"><span class="mark" aria-hidden="true"></span><span>Swarmlet <b>control</b></span></div>
+      <div class="head-status"><i class="dot" id="head-dot" data-state="off" aria-hidden="true"></i><span id="head-text">connecting</span></div>
+    </header>
+    <nav class="tabs" role="tablist" aria-label="Sections">
+      <button type="button" role="tab" data-tab="nodes" aria-selected="true">Nodes</button>
+      <button type="button" role="tab" data-tab="deployments" aria-selected="false">Deployments</button>
+      <button type="button" role="tab" data-tab="routing" aria-selected="false">Routing</button>
+      <button type="button" role="tab" data-tab="events" aria-selected="false">Events</button>
+      <button type="button" role="tab" data-tab="keys" aria-selected="false">Keys</button>
+    </nav>
+    <main>
+      <div class="banner banner--error" id="app-error" role="alert" hidden></div>
+
+      <section class="tab" id="tab-nodes" data-tab="nodes">
+        <div class="toolbar">
+          <span class="count grow" id="nodes-count"></span>
+          <span class="form-status" id="join-status"></span>
+          <button class="button button--signal" type="button" id="join-new">New join code</button>
+        </div>
+        <div class="panel" id="join-box" hidden>
+          <span class="label">Join code</span>
+          <code class="big-code" id="join-code"></code>
+          <div class="toolbar">
+            <span class="form-status grow" id="join-expiry"></span>
+            <button class="button button--small" type="button" id="join-copy">Copy</button>
+          </div>
+          <p class="hint" id="join-hint"></p>
+        </div>
+        <div class="table-wrap">
+          <table class="data" id="nodes-table">
+            <thead><tr><th>Node</th><th>Id</th><th>State</th><th>Offer</th><th>Measured</th><th>Metrics</th><th class="num">Models</th></tr></thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </section>
+
+      <section class="tab" id="tab-deployments" data-tab="deployments" hidden>
+        <div class="toolbar">
+          <span class="count grow" id="dep-count"></span>
+          <span class="form-status" id="dep-status"></span>
+          <button class="button button--signal" type="button" id="dep-toggle">New deployment</button>
+        </div>
+        <form class="panel" id="dep-form" hidden novalidate>
+          <div class="form-row">
+            <label class="field"><span class="label">Name</span><input type="text" id="dep-name" placeholder="qwen-split" autocomplete="off" required></label>
+            <label class="field"><span class="label">Kind</span>
+              <select id="dep-kind">
+                <option value="split">split: one coordinator, layers on workers</option>
+                <option value="replica">replica: whole model on one node</option>
+                <option value="external">external: register a server that already runs</option>
+              </select>
+            </label>
+          </div>
+          <div class="form-row">
+            <label class="field" data-kinds="split replica"><span class="label">Profile</span><select id="dep-profile"></select><input type="text" id="dep-profile-text" class="mono" placeholder="profile id" autocomplete="off" hidden></label>
+            <label class="field"><span class="label" id="dep-node-label">Coordinator node</span><select id="dep-node"></select></label>
+          </div>
+          <label class="field" data-kinds="split"><span class="label">Worker nodes</span><select id="dep-workers" multiple size="5"></select><span class="hint">Only online nodes are listed. Hold Ctrl or Cmd to pick several.</span></label>
+          <div class="form-row form-row--3" data-kinds="split replica">
+            <label class="field"><span class="label">Context</span><input type="number" id="dep-ctx" min="1" step="1" placeholder="profile default"></label>
+            <label class="field"><span class="label">Parallel</span><input type="number" id="dep-parallel" min="1" step="1" placeholder="profile default"></label>
+            <label class="field"><span class="label">MTP chain</span><input type="number" id="dep-chain" min="0" step="1" placeholder="profile default, 0 = off"></label>
+          </div>
+          <div class="form-row" data-kinds="split">
+            <label class="field"><span class="label">Wire</span>
+              <select id="dep-wire">
+                <option value="off">off: exact activations</option>
+                <option value="f16">f16: half the bytes per boundary</option>
+                <option value="q8">q8: a quarter of the bytes, lossy</option>
+              </select>
+            </label>
+            <div class="field"><span class="label">Layer boundaries</span>
+              <label class="check"><input type="checkbox" id="dep-batched" checked><span>Batched GETs</span></label>
+              <label class="check"><input type="checkbox" id="dep-forwarding" checked><span>Forwarding between workers</span></label>
+            </div>
+          </div>
+          <div class="field" data-kinds="split replica">
+            <label class="check"><input type="checkbox" id="dep-stop-external"><span>Stop the external server on the node<small class="note--danger">Stops the production server on that node through its maintenance script; it is restarted when the deployment ends.</small></span></label>
+          </div>
+          <div data-kinds="external">
+            <div class="form-row">
+              <label class="field"><span class="label">Server URL</span><input type="url" id="dep-ext-url" placeholder="http://127.0.0.1:8099" spellcheck="false"></label>
+              <label class="field"><span class="label">Health path</span><input type="text" id="dep-ext-health" class="mono" value="/health" spellcheck="false"></label>
+            </div>
+            <label class="field"><span class="label">Model name</span><input type="text" id="dep-ext-model" placeholder="name clients send as model" autocomplete="off"></label>
+          </div>
+          <div class="form-actions">
+            <button class="button" type="button" id="dep-preview">Preview plan</button>
+            <button class="button button--signal" type="submit" id="dep-create">Create and start</button>
+            <span class="form-status" id="dep-form-status"></span>
+          </div>
+          <div id="dep-preview-out"></div>
+        </form>
+        <div class="table-wrap">
+          <table class="data" id="dep-table">
+            <thead><tr><th>Deployment</th><th>State</th><th>Endpoint</th><th>Error</th><th>Updated</th><th>Actions</th></tr></thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </section>
+
+      <section class="tab" id="tab-routing" data-tab="routing" hidden>
+        <h2 class="label">OpenAI-compatible base URL</h2>
+        <code class="big-code" id="routing-base"></code>
+        <pre class="code" id="routing-curl"></pre>
+        <h2 class="label">Live routing</h2>
+        <div class="banner banner--warn" id="routing-note" hidden></div>
+        <div class="table-wrap">
+          <table class="data" id="routing-table">
+            <thead><tr><th>Model</th><th>Deployment</th><th>Id</th><th>Node</th><th class="num">In flight</th><th class="num">tok/s</th></tr></thead>
+            <tbody></tbody>
+          </table>
+        </div>
+        <p class="count" id="routing-totals"></p>
+      </section>
+
+      <section class="tab" id="tab-events" data-tab="events" hidden>
+        <div class="toolbar">
+          <input type="text" class="filter" id="events-filter" placeholder="filter by kind, node, deployment, text" autocomplete="off">
+          <span class="form-status grow" id="events-status"></span>
+        </div>
+        <div class="table-wrap">
+          <table class="data" id="events-table">
+            <thead><tr><th>Time</th><th>Kind</th><th>Node</th><th>Deployment</th><th>Message</th></tr></thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </section>
+
+      <section class="tab" id="tab-keys" data-tab="keys" hidden>
+        <form class="panel" id="key-form" novalidate>
+          <div class="form-row">
+            <label class="field"><span class="label">Key name</span><input type="text" id="key-name" placeholder="my-app" autocomplete="off"></label>
+            <div class="field"><span class="label">&nbsp;</span><button class="button button--signal" type="submit" id="key-create">Create API key</button></div>
+          </div>
+          <span class="form-status" id="key-status"></span>
+        </form>
+        <div class="panel" id="key-box" hidden>
+          <span class="label">New key, shown once</span>
+          <code class="big-code" id="key-value"></code>
+          <div class="toolbar">
+            <span class="hint grow">Store it now. The control plane keeps only the prefix.</span>
+            <button class="button button--small" type="button" id="key-copy">Copy</button>
+          </div>
+        </div>
+        <div class="table-wrap">
+          <table class="data" id="keys-table">
+            <thead><tr><th>Name</th><th>Prefix</th><th>Created</th></tr></thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </section>
+    </main>
+
+    <div class="backdrop" id="drawer-backdrop" hidden></div>
+    <aside class="drawer" id="drawer" aria-label="Deployment details" hidden>
+      <div class="drawer-head">
+        <h2 id="drawer-title"></h2>
+        <div class="actions">
+          <button class="button button--small" type="button" id="drawer-refresh">Refresh</button>
+          <button class="button button--small" type="button" id="drawer-close">Close</button>
+        </div>
+      </div>
+      <span class="form-status" id="drawer-status"></span>
+      <div id="drawer-body"></div>
+      <h2 class="label" id="drawer-logs-title" hidden></h2>
+      <pre class="log" id="drawer-logs" hidden></pre>
+    </aside>
+  </div>
+</body>
+</html>

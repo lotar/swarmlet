@@ -1,0 +1,4 @@
+# Build outputs and machine-built inputs (sidecar + engine copies are produced by scripts/build-sidecar.sh)
+src-tauri/target/
+src-tauri/gen/
+src-tauri/binaries/

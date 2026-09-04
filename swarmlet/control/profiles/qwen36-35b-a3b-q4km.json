@@ -1,0 +1,15 @@
+{
+  "id": "qwen36-35b-a3b-q4km",
+  "name": "Qwen3.6-35B-A3B Q4_K_M",
+  "modelName": "qwen3.6-35b-a3b",
+  "ggufPattern": "^Qwen3\\.6-35B-A3B.*Q4_K_M.*\\.gguf$",
+  "layers": 40,
+  "layerMiB": 512,
+  "coordinatorHostMiB": 4096,
+  "boundaryBytes": 4096,
+  "workerMarginMiB": 1024,
+  "envelope": [
+    { "workerLayers": 4, "maxCtx": 2048, "maxParallel": 4, "maxChain": 7 }
+  ],
+  "extraArgs": ["-fa", "on"]
+}

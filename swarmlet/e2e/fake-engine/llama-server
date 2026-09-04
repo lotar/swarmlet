@@ -7,7 +7,7 @@ import { connect } from "node:net";
 const args = process.argv.slice(2);
 const get = (flag: string) => { const i = args.indexOf(flag); return i >= 0 ? args[i + 1] : undefined; };
 if (args.includes("--list-devices")) {
-  console.log("Available devices:\n  CPU: fake cpu (0 MiB, 0 MiB free)");
+  console.log("Available devices:\n  CUDA0: Fake GPU (8192 MiB, 8000 MiB free)\n  CPU: fake cpu (0 MiB, 0 MiB free)");
   process.exit(0);
 }
 const port = Number(get("--port") ?? 8080);

@@ -1,0 +1,17 @@
+{
+  "id": "flash-next-ud-q4kxl",
+  "name": "Qwen3.8 Flash-Next UD-Q4_K_XL",
+  "modelName": "qwen3.8-flash-next",
+  "ggufPattern": "^Qwen3\\.8-Flash-Next-UD-Q4_K_XL-00001-of-00005\\.gguf$",
+  "mtpPattern": "^Qwen3\\.8-Flash-Next-MTP-Q8_0\\.gguf$",
+  "layers": 48,
+  "layerMiB": 1608,
+  "coordinatorHostMiB": 32768,
+  "boundaryBytes": 81920,
+  "workerMarginMiB": 1536,
+  "envelope": [
+    { "workerLayers": 1, "maxCtx": 1536, "maxParallel": 3, "maxChain": 8 },
+    { "workerLayers": 1, "maxCtx": 1536, "maxParallel": 1, "maxChain": 12 }
+  ],
+  "extraArgs": ["-ot", "ple_ngram_embd=CPU", "-fa", "on", "--cache-ram", "0", "--ctx-checkpoints", "0"]
+}

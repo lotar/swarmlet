@@ -1,0 +1,128 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="theme-color" content="#17221f">
+  <meta name="robots" content="noindex">
+  <title>Swarmlet node</title>
+  <link rel="stylesheet" href="/style.css">
+  <script src="/app.js" defer></script>
+</head>
+<body>
+  <header class="head">
+    <div class="brand"><span class="mark" aria-hidden="true"></span><span>Swarmlet <b>node</b></span></div>
+    <div class="head-status"><i class="dot" id="head-dot" data-state="off" aria-hidden="true"></i><span id="head-conn">connecting to agent</span></div>
+  </header>
+  <nav class="tabs" role="tablist" aria-label="Sections">
+    <button type="button" role="tab" data-tab="status" aria-selected="true">Status</button>
+    <button type="button" role="tab" data-tab="resources" aria-selected="false">Resources</button>
+    <button type="button" role="tab" data-tab="models" aria-selected="false">Models</button>
+    <button type="button" role="tab" data-tab="connection" aria-selected="false">Connection</button>
+    <button type="button" role="tab" data-tab="logs" aria-selected="false">Logs</button>
+  </nav>
+  <main>
+    <div class="banner banner--error" id="agent-error" role="alert" hidden></div>
+
+    <section class="tab" id="tab-status" data-tab="status">
+      <h2 class="label">This node</h2>
+      <dl class="kv" id="status-kv"></dl>
+      <div class="banner banner--error" id="status-offer-errors" hidden></div>
+      <h2 class="label">Live metrics</h2>
+      <div class="tiles" id="status-metrics"></div>
+      <h2 class="label">Assignments</h2>
+      <div class="table-wrap">
+        <table class="data" id="status-assignments">
+          <thead><tr><th>Assignment</th><th>Kind</th><th>Deployment</th><th>State</th><th>Detail</th><th>Ports</th></tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="tab" id="tab-resources" data-tab="resources" hidden>
+      <p class="hint">What this machine offers to the mesh. Nothing above the measured totals is accepted; the OS reserve is kept out of reach.</p>
+      <form id="offer-form" novalidate>
+        <div class="switch-row">
+          <label class="switch"><input type="checkbox" id="offer-enabled"><span class="switch-track" aria-hidden="true"></span><span class="switch-label">Enabled</span></label>
+          <span class="form-status" id="enabled-status">When off, the node keeps reporting but accepts no assignments.</span>
+        </div>
+        <fieldset>
+          <legend class="label">Roles</legend>
+          <label class="check"><input type="checkbox" id="role-worker"><span>Worker<small>Hosts model layers on this GPU or RAM for a coordinator elsewhere.</small></span></label>
+          <label class="check"><input type="checkbox" id="role-coordinator"><span>Coordinator<small>Runs the server that drives a model split across workers.</small></span></label>
+          <label class="check"><input type="checkbox" id="role-replica"><span>Replica<small>Serves a whole model on its own.</small></span></label>
+        </fieldset>
+        <fieldset>
+          <legend class="label">GPU memory</legend>
+          <div id="offer-gpus"></div>
+        </fieldset>
+        <fieldset>
+          <legend class="label">RAM and CPU</legend>
+          <div id="offer-ram"></div>
+          <div id="offer-cpu"></div>
+        </fieldset>
+        <fieldset>
+          <legend class="label">Disk and models</legend>
+          <div class="form-row">
+            <label class="field"><span class="label">Disk cap</span><div class="num-wrap"><input type="number" id="offer-disk" min="0" step="1" inputmode="decimal"><span class="unit">GiB</span><span class="measured" id="offer-disk-measured"></span></div></label>
+            <label class="field"><span class="label">Models directory</span><input type="text" id="offer-models-dir" class="mono" spellcheck="false" autocomplete="off" placeholder="/path/to/models"></label>
+          </div>
+        </fieldset>
+        <div class="form-actions">
+          <button class="button button--signal" type="submit" id="offer-save">Save offer</button>
+          <button class="button" type="button" id="offer-reload">Reload</button>
+          <span class="form-status" id="offer-status"></span>
+        </div>
+        <ul class="msgs msgs--error" id="offer-errors" hidden></ul>
+        <ul class="msgs msgs--warn" id="offer-warnings" hidden></ul>
+      </form>
+    </section>
+
+    <section class="tab" id="tab-models" data-tab="models" hidden>
+      <div class="toolbar">
+        <span class="grow mono small" id="models-dir"></span>
+        <span class="form-status" id="models-status"></span>
+        <button class="button" type="button" id="models-rescan">Rescan</button>
+      </div>
+      <div class="table-wrap">
+        <table class="data" id="models-table">
+          <thead><tr><th>Name</th><th>Kind</th><th class="num">Size (GiB)</th><th>sha256</th></tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="tab" id="tab-connection" data-tab="connection" hidden>
+      <h2 class="label">Control plane</h2>
+      <dl class="kv" id="conn-kv"></dl>
+      <h2 class="label">Join a control plane</h2>
+      <form id="join-form" novalidate>
+        <div class="form-row">
+          <label class="field"><span class="label">Control URL</span><input type="url" id="join-url" placeholder="https://control.example.net:47900" autocomplete="url" spellcheck="false" required></label>
+          <label class="field"><span class="label">Join code</span><input type="text" id="join-code" class="mono" placeholder="from the control UI" autocomplete="off" autocapitalize="characters" spellcheck="false" required></label>
+        </div>
+        <div class="form-actions">
+          <button class="button button--signal" type="submit" id="join-submit">Join</button>
+          <span class="form-status" id="join-status"></span>
+        </div>
+        <ul class="msgs msgs--error" id="join-errors" hidden></ul>
+      </form>
+      <h2 class="label">Network</h2>
+      <div class="toolbar">
+        <button class="button" type="button" id="net-measure">Measure network</button>
+        <span class="form-status" id="net-status"></span>
+      </div>
+      <div class="tiles" id="net-tiles"></div>
+    </section>
+
+    <section class="tab" id="tab-logs" data-tab="logs" hidden>
+      <div class="toolbar">
+        <label class="field field--inline"><span class="label">Source</span><select id="logs-source"><option value="">Agent log</option></select></label>
+        <label class="check check--inline"><input type="checkbox" id="logs-follow" checked> <span>Follow</span></label>
+        <span class="form-status" id="logs-status"></span>
+      </div>
+      <pre class="log" id="logs-out" aria-live="off"></pre>
+    </section>
+  </main>
+</body>
+</html>

@@ -106,6 +106,7 @@ sin-harness/                 deterministic harness and proof programs
   test/                      portable and explicit integration test tiers
 docs/                        architecture, evidence, results, runbooks
 site/                        dependency-free swarmlet.ai static site
+swarmlet/                    product surface: node agent + GUI shell, control plane, protocol, engine build
 tools/site/                  optional Chrome QA utilities
 ```
 
