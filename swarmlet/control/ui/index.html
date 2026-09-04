@@ -29,6 +29,7 @@
     </header>
     <nav class="tabs" role="tablist" aria-label="Sections">
       <button type="button" role="tab" data-tab="nodes" aria-selected="true">Nodes</button>
+      <button type="button" role="tab" data-tab="chat" aria-selected="false">Chat</button>
       <button type="button" role="tab" data-tab="deployments" aria-selected="false">Deployments</button>
       <button type="button" role="tab" data-tab="routing" aria-selected="false">Routing</button>
       <button type="button" role="tab" data-tab="events" aria-selected="false">Events</button>
@@ -54,12 +55,36 @@
         </div>
         <div class="table-wrap">
           <table class="data" id="nodes-table">
-            <thead><tr><th>Node</th><th>Id</th><th>State</th><th>Offer</th><th>Measured</th><th>Metrics</th><th class="num">Models</th></tr></thead>
+            <thead><tr><th>Node</th><th>Id</th><th>State</th><th>Offer</th><th>Measured</th><th>Metrics</th><th class="num">tok/s</th><th class="num">Models</th></tr></thead>
             <tbody></tbody>
           </table>
         </div>
       </section>
 
+      <section class="tab" id="tab-chat" data-tab="chat" hidden>
+        <div class="toolbar">
+          <label class="field field--inline"><span class="label">Model</span><select id="chat-model"></select></label>
+          <label class="field field--inline"><span class="label">Max tokens</span><input type="number" id="chat-max" value="512" min="16" max="8192" step="16"></label>
+          <label class="check check--inline"><input type="checkbox" id="chat-think"> <span>Thinking</span></label>
+          <span class="form-status grow" id="chat-status"></span>
+          <button class="button button--small" type="button" id="chat-clear">New chat</button>
+        </div>
+        <div class="tiles" id="chat-tiles">
+          <div class="tile"><span class="label">Last reply</span><div class="value" id="chat-tps">&mdash;</div><div class="sub" id="chat-tps-sub">tok/s, server timing</div></div>
+          <div class="tile"><span class="label">Tokens</span><div class="value" id="chat-tokens">&mdash;</div><div class="sub" id="chat-tokens-sub">prompt / completion</div></div>
+          <div class="tile"><span class="label">First token</span><div class="value" id="chat-ttft">&mdash;</div><div class="sub">ms after send</div></div>
+          <div class="tile"><span class="label">Served by</span><div class="value value--text" id="chat-node">&mdash;</div><div class="sub" id="chat-dep">deployment</div></div>
+          <div class="tile"><span class="label">Session</span><div class="value" id="chat-session">&mdash;</div><div class="sub" id="chat-session-sub">tok/s over all replies</div></div>
+        </div>
+        <div class="chat-log" id="chat-log"><p class="hint">Pick a model and say something. Replies stream through the control plane router to whichever deployment serves that model; the Nodes tab shows the generation rate per machine while it runs.</p></div>
+        <form class="chat-form" id="chat-form">
+          <textarea id="chat-input" rows="3" placeholder="Message (Enter sends, Shift+Enter adds a line)"></textarea>
+          <div class="chat-actions">
+            <button class="button button--signal" type="submit" id="chat-send">Send</button>
+            <button class="button button--small" type="button" id="chat-stop" disabled>Stop</button>
+          </div>
+        </form>
+      </section>
       <section class="tab" id="tab-deployments" data-tab="deployments" hidden>
         <div class="toolbar">
           <span class="count grow" id="dep-count"></span>

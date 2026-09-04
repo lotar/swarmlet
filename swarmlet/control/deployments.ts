@@ -39,6 +39,27 @@ export class DeploymentManager {
     }
   }
 
+  /** A node (re)connected and listed what it still runs: re-issue health-only external assignments it
+   *  lost (an agent restart forgets them), fail deployments whose engine processes died with the agent. */
+  onHello(nodeId: string, reported: Array<{ id: string; state: AssignmentState }>): void {
+    const have = new Set(reported.map((r) => r.id));
+    for (const row of this.deps.reg.listAssignments()) {
+      if (row.nodeId !== nodeId || have.has(row.id)) continue;
+      const dep = this.deps.reg.getDeployment(row.deploymentId);
+      if (!dep || dep.state === "stopped" || dep.state === "failed" || dep.state === "planned") continue;
+      const externalHealthOnly = row.body.kind === "replica" && !!row.body.external;
+      // a clean agent restart reports its health-only external assignment as stopped; the deployment
+      // is still ready (the external server kept running), so the watch is simply re-issued
+      if (row.state === "stopped" && !externalHealthOnly) continue;
+      if (externalHealthOnly) {
+        this.deps.log.info("re-issuing external assignment after agent restart", { nodeId, id: row.id });
+        this.deps.channel.assign(nodeId, row.body);
+      } else {
+        void this.fail(dep.id, `node ${nodeId} restarted without assignment ${row.id} (${row.body.kind})`);
+      }
+    }
+  }
+
   onOffline(nodeId: string): void {
     for (const dep of this.deps.reg.listDeployments()) {
       if (dep.state === "stopped" || dep.state === "failed" || dep.state === "planned") continue;

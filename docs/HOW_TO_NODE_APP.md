@@ -74,6 +74,15 @@ machine has are rejected with the reason. What each control enforces:
 | CPU | cgroup `CPUQuota` + `-t` | `-t` |
 | disk | models dir cap | same |
 
+## 3a. Chat and live throughput
+
+The **Chat** tab (`http://192.168.1.53:47900/#chat`) is a small chat client that goes through the router like any
+API client: pick a served model, type, Enter. Each reply shows the server's own timing (tok/s, prompt and completion
+tokens, time to first token), which node and deployment served it, and a running session average. "Thinking"
+toggles the model's reasoning mode. The **Nodes** tab (`#nodes`) has a tok/s column: every agent reports the
+generation rate of its local llama-server (coordinator, replica, or the external production server) over the last
+heartbeat interval, so the number moves while a reply streams and drops to 0.0 when idle.
+
 ## 3b. Day-to-day
 
 1. Open `http://192.168.1.53:47900`, paste the admin token once (cookie).

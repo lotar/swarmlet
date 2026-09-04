@@ -73,9 +73,15 @@ export interface NodeMetrics {
   rssMiB?: number;
   freeRamMiB?: number;
   gpu?: Array<{ id: string; usedMiB: number }>;
-  /** From llama-server /metrics on coordinator/replica nodes. */
+  /** Generation rate over the last heartbeat interval, from llama-server /metrics on coordinator/replica
+   *  nodes (delta of tokens_predicted_total); 0 when idle. */
   tokPerSec?: number;
+  /** llama-server's own lifetime average (llamacpp:predicted_tokens_seconds). */
+  tokPerSecAvg?: number;
+  tokensTotal?: number;
   inflight?: number;
+  /** Served model name of the local llama-server the metrics came from. */
+  serving?: string;
 }
 
 // ---------- what control asks a node to run ----------

@@ -7,7 +7,7 @@
   var POLL_MS = 3000;
   var GIB = 1024;          /* MiB per GiB: the API speaks MiB, people read GiB */
   var NA = '—';
-  var TABS = ['nodes', 'deployments', 'routing', 'events', 'keys'];
+  var TABS = ['nodes', 'chat', 'deployments', 'routing', 'events', 'keys'];
   var STARTABLE = ['planned', 'stopped', 'failed'];
   var STOPPABLE = ['placing', 'loading', 'ready'];
 
@@ -209,6 +209,7 @@
     if (history.replaceState) history.replaceState(null, '', '#' + name);
     if (name === 'deployments') ensureProfiles();
     if (name === 'keys') loadKeys().catch(showError);
+    if (name === 'chat') loadChatModels().catch(showError);
     tick();
   }
 
@@ -236,6 +237,13 @@
     return ['rtt ' + num(net.rttMs, 0) + ' ms', el('br'), 'up ' + num(net.upMbit, 0) + ' / down ' + num(net.downMbit, 0) + ' Mbit'];
   }
 
+  function tpsCell(m) {
+    if (!m || !isNum(m.tokPerSec)) return el('span', { class: 'dim', text: NA });
+    var live = m.tokPerSec > 0;
+    var sub = (m.serving ? m.serving : '') + (isNum(m.tokPerSecAvg) && m.tokPerSecAvg > 0 ? (m.serving ? ' \u00b7 ' : '') + 'avg ' + m.tokPerSecAvg.toFixed(1) : '');
+    return [el('span', { class: live ? 'strong tps-live' : 'dim', text: m.tokPerSec.toFixed(1) }), el('br'), el('span', { class: 'dim small', text: sub || 'idle' })];
+  }
+
   function metricsSummary(m) {
     if (!m) return el('span', { class: 'dim', text: 'no metrics yet' });
     var gpuUsed = (m.gpu || []).reduce(function (s, g) { return s + (g.usedMiB || 0); }, 0);
@@ -260,6 +268,7 @@
         td(offerSummary(n.offer), 'small'),
         td(netSummary(caps.net), 'mono small'),
         td(metricsSummary(n.metrics), 'mono small'),
+        td(tpsCell(n.metrics), 'num mono'),
         td(String((n.models || []).length), 'num'),
       ]);
     }), 'No nodes yet. Create a join code and enter it in a node agent.');
@@ -698,12 +707,181 @@
   });
   $('key-copy').addEventListener('click', function () { copyText($('key-value').textContent, $('key-copy')); });
 
+  /* ---------- chat: talks to the router, measures the reply ---------- */
+  var chat = { messages: [], busy: false, abort: null, models: [], stats: { tokens: 0, seconds: 0, replies: 0 } };
+
+  function loadChatModels() {
+    return api('GET', '/v1/models').then(function (r) {
+      var list = (r.data || []).map(function (m) { return m.id; });
+      var sel = $('chat-model');
+      var cur = sel.value;
+      if (list.join('|') !== chat.models.join('|')) {
+        clear(sel);
+        list.forEach(function (id) { sel.appendChild(el('option', { value: id, text: id })); });
+        if (list.indexOf(cur) >= 0) sel.value = cur;
+        chat.models = list;
+      }
+      if (!list.length) note('chat-status', 'No ready deployment serves a model yet (Deployments tab).', 'error');
+      else if (/No ready deployment/.test($('chat-status').textContent)) note('chat-status', '');
+    });
+  }
+
+  function chatBubble(role, text) {
+    var node = el('div', { class: 'msg msg--' + role }, [el('div', { class: 'msg-role', text: role === 'user' ? 'you' : 'assistant' }), el('div', { class: 'msg-text', text: text })]);
+    var log = $('chat-log');
+    var hint = log.querySelector('.hint');
+    if (hint) hint.parentNode.removeChild(hint);
+    log.appendChild(node);
+    log.scrollTop = log.scrollHeight;
+    return node;
+  }
+
+  function setTile(id, value, small) {
+    var v = clear($(id));
+    v.appendChild(D.createTextNode(value));
+    if (small) v.appendChild(el('small', { text: small }));
+  }
+
+  function sendChat(text) {
+    if (chat.busy) return;
+    var model = $('chat-model').value;
+    if (!model) { note('chat-status', 'Pick a model first.', 'error'); return; }
+    chat.messages.push({ role: 'user', content: text });
+    chatBubble('user', text);
+    var bubble = chatBubble('assistant', '');
+    var textNode = bubble.querySelector('.msg-text');
+    var meta = el('div', { class: 'msg-meta dim small mono', text: 'waiting for the first token…' });
+    bubble.appendChild(meta);
+    var reasoningNode = null;
+    chat.busy = true;
+    $('chat-send').disabled = true;
+    $('chat-stop').disabled = false;
+    var ctrl = new AbortController();
+    chat.abort = ctrl;
+    var body = {
+      model: model, messages: chat.messages.slice(), stream: true, stream_options: { include_usage: true },
+      max_tokens: Math.max(16, Number($('chat-max').value) || 512),
+      chat_template_kwargs: { enable_thinking: $('chat-think').checked },
+    };
+    var t0 = performance.now(), tFirst = 0, tEnd = 0, content = '', reasoning = '', chunks = 0, usage = null, timings = null, served = {};
+    note('chat-status', 'Sending to ' + model + '…');
+
+    function handle(obj) {
+      if (obj.timings) timings = obj.timings;
+      if (obj.usage) usage = obj.usage;
+      var ch = obj.choices && obj.choices[0];
+      var d = ch && ch.delta;
+      if (!d) return;
+      if (d.reasoning_content) {
+        reasoning += d.reasoning_content;
+        if (!reasoningNode) {
+          reasoningNode = el('details', { class: 'msg-reasoning' }, [el('summary', { text: 'thinking' }), el('div', { class: 'msg-text dim' })]);
+          bubble.insertBefore(reasoningNode, textNode);
+        }
+        reasoningNode.lastChild.textContent = reasoning;
+        if (!tFirst) tFirst = performance.now();
+      }
+      if (d.content) {
+        if (!tFirst) tFirst = performance.now();
+        chunks++;
+        content += d.content;
+        textNode.textContent = content;
+        tEnd = performance.now();
+        if (chunks % 3 === 0) {
+          var sec = (tEnd - tFirst) / 1000;
+          meta.textContent = '≈ ' + (sec > 0.2 ? (chunks / sec).toFixed(1) : '…') + ' tok/s while streaming';
+        }
+      }
+    }
+
+    function finish(failed, why) {
+      chat.busy = false;
+      chat.abort = null;
+      $('chat-send').disabled = false;
+      $('chat-stop').disabled = true;
+      if (!tEnd) tEnd = performance.now();
+      var n = (timings && isNum(timings.predicted_n)) ? timings.predicted_n : (usage && isNum(usage.completion_tokens)) ? usage.completion_tokens : chunks;
+      var promptN = (timings && isNum(timings.prompt_n)) ? timings.prompt_n : (usage && isNum(usage.prompt_tokens)) ? usage.prompt_tokens : null;
+      var genSec = (timings && isNum(timings.predicted_ms)) ? timings.predicted_ms / 1000 : (tFirst ? (tEnd - tFirst) / 1000 : 0);
+      var tps = (timings && isNum(timings.predicted_per_second)) ? timings.predicted_per_second : (genSec > 0 ? n / genSec : 0);
+      var source = (timings && isNum(timings.predicted_per_second)) ? 'server timing' : 'measured in the browser';
+      var ttft = tFirst ? Math.round(tFirst - t0) : null;
+      if (content || reasoning) chat.messages.push({ role: 'assistant', content: content });
+      else chat.messages.pop();
+      if (n > 0 && genSec > 0) { chat.stats.tokens += n; chat.stats.seconds += genSec; chat.stats.replies++; }
+      setTile('chat-tps', tps ? tps.toFixed(1) : NA, tps ? ' tok/s' : '');
+      $('chat-tps-sub').textContent = source + (failed ? ' (' + why + ')' : '');
+      setTile('chat-tokens', (promptN == null ? NA : promptN) + ' / ' + n);
+      $('chat-tokens-sub').textContent = 'prompt / completion' + (genSec ? ', ' + genSec.toFixed(1) + ' s generating' : '');
+      setTile('chat-ttft', ttft == null ? NA : String(ttft), ttft == null ? '' : ' ms');
+      setTile('chat-node', served.node ? nodeName(served.node) : NA);
+      $('chat-dep').textContent = served.dep ? 'deployment ' + shortId(served.dep) + ' · ' + model : 'deployment';
+      var sess = chat.stats.seconds > 0 ? chat.stats.tokens / chat.stats.seconds : 0;
+      setTile('chat-session', sess ? sess.toFixed(1) : NA, sess ? ' tok/s' : '');
+      $('chat-session-sub').textContent = chat.stats.replies + (chat.stats.replies === 1 ? ' reply, ' : ' replies, ') + chat.stats.tokens + ' tokens';
+      meta.textContent = failed ? (why || 'failed') : (tps ? tps.toFixed(1) + ' tok/s' : '') + (n ? ' · ' + n + ' tokens' : '') + (ttft != null ? ' · first token ' + ttft + ' ms' : '') + (served.node ? ' · ' + nodeName(served.node) : '');
+      if (failed) meta.className = 'msg-meta err small mono';
+      note('chat-status', failed ? (why || 'failed') : '', failed ? 'error' : undefined);
+      $('chat-log').scrollTop = $('chat-log').scrollHeight;
+      $('chat-input').focus();
+    }
+
+    fetch('/v1/chat/completions', { method: 'POST', headers: { 'content-type': 'application/json' }, credentials: 'same-origin', body: JSON.stringify(body), signal: ctrl.signal }).then(function (res) {
+      served = { node: res.headers.get('x-swarmlet-node'), dep: res.headers.get('x-swarmlet-deployment') };
+      if (res.status === 401) { showLogin(); throw new Error('not logged in'); }
+      if (!res.ok) return res.text().then(function (t) { throw new Error('HTTP ' + res.status + ': ' + t.slice(0, 200)); });
+      var reader = res.body.getReader();
+      var dec = new TextDecoder();
+      var buf = '';
+      function pump() {
+        return reader.read().then(function (r) {
+          if (r.done) return;
+          buf += dec.decode(r.value, { stream: true });
+          var parts = buf.split('\n\n');
+          buf = parts.pop();
+          parts.forEach(function (p) {
+            p.split('\n').forEach(function (line) {
+              if (line.indexOf('data:') !== 0) return;
+              var data = line.slice(5).trim();
+              if (!data || data === '[DONE]') return;
+              try { handle(JSON.parse(data)); } catch (_) { /* partial frame */ }
+            });
+          });
+          $('chat-log').scrollTop = $('chat-log').scrollHeight;
+          return pump();
+        });
+      }
+      return pump();
+    }).then(function () { finish(false); }).catch(function (e) { finish(true, e.name === 'AbortError' ? 'stopped' : e.message); });
+  }
+
+  $('chat-form').addEventListener('submit', function (ev) {
+    ev.preventDefault();
+    var text = $('chat-input').value.trim();
+    if (!text) return;
+    $('chat-input').value = '';
+    sendChat(text);
+  });
+  $('chat-input').addEventListener('keydown', function (ev) {
+    if (ev.key === 'Enter' && !ev.shiftKey) { ev.preventDefault(); $('chat-form').dispatchEvent(new Event('submit', { cancelable: true })); }
+  });
+  $('chat-stop').addEventListener('click', function () { if (chat.abort) chat.abort.abort(); });
+  $('chat-clear').addEventListener('click', function () {
+    if (chat.abort) chat.abort.abort();
+    chat.messages = [];
+    chat.stats = { tokens: 0, seconds: 0, replies: 0 };
+    replace($('chat-log'), el('p', { class: 'hint', text: 'New conversation. The model keeps no memory of the previous one.' }));
+    ['chat-tps', 'chat-tokens', 'chat-ttft', 'chat-node', 'chat-session'].forEach(function (id) { setTile(id, NA); });
+    note('chat-status', '');
+  });
+
   /* ---------- polling ---------- */
   function tick() {
     if (!state.authed) return;
     var extra = Promise.resolve();
     if (state.active === 'routing') extra = loadRouting();
     else if (state.active === 'events') extra = loadEvents();
+    else if (state.active === 'chat' && !chat.busy) extra = loadChatModels();
     Promise.all([loadNodes(), loadDeployments(), extra]).then(function () {
       $('app-error').hidden = true;
       renderJoinCode();

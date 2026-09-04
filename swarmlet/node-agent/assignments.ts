@@ -94,14 +94,26 @@ export class AssignmentRunner {
 
   recentLog(id: string, n = 200): string[] { return this.active.get(id)?.proc?.recent(n) ?? []; }
 
-  /** Best-effort tok/s + in-flight from a local llama-server /metrics. */
-  async serverMetrics(): Promise<{ tokPerSec?: number; inflight?: number } | null> {
-    const srv = [...this.active.values()].find((x) => (x.a.kind === "coordinator" || (x.a.kind === "replica" && !x.a.external)) && x.state === "ready");
-    if (!srv) return null;
+  private lastTokens: { total: number; at: number } | null = null;
+
+  /** tok/s over the last interval (delta of tokens_predicted_total), lifetime average and in-flight
+   *  requests from the local llama-server /metrics: coordinator, replica, or an external server. */
+  async serverMetrics(): Promise<{ tokPerSec?: number; tokPerSecAvg?: number; tokensTotal?: number; inflight?: number; serving?: string } | null> {
+    const srv = [...this.active.values()].find((x) => (x.a.kind === "coordinator" || x.a.kind === "replica") && x.state === "ready");
+    if (!srv) { this.lastTokens = null; return null; }
+    const a = srv.a as CoordinatorAssignment | ReplicaAssignment;
+    const base = a.kind === "replica" && a.external ? a.external.url.replace(/\/$/, "") : `http://127.0.0.1:${a.port}`;
     try {
-      const text = await (await fetch(`http://127.0.0.1:${(srv.a as CoordinatorAssignment | ReplicaAssignment).port}/metrics`, { signal: AbortSignal.timeout(2000) })).text();
+      const text = await (await fetch(`${base}/metrics`, { signal: AbortSignal.timeout(2000), headers: { connection: "close" } })).text();
       const num = (name: string) => { const m = text.match(new RegExp(`^${name}(?:\\{[^}]*\\})?\\s+([0-9.eE+-]+)`, "m")); return m ? Number(m[1]) : undefined; };
-      return { tokPerSec: num("llamacpp:predicted_tokens_seconds"), inflight: num("llamacpp:requests_processing") };
+      const total = num("llamacpp:tokens_predicted_total");
+      const now = Date.now();
+      let tokPerSec: number | undefined;
+      if (total !== undefined) {
+        if (this.lastTokens && now > this.lastTokens.at) tokPerSec = Math.max(0, (total - this.lastTokens.total) / ((now - this.lastTokens.at) / 1000));
+        this.lastTokens = { total, at: now };
+      }
+      return { tokPerSec: tokPerSec === undefined ? undefined : Math.round(tokPerSec * 10) / 10, tokPerSecAvg: num("llamacpp:predicted_tokens_seconds"), tokensTotal: total, inflight: num("llamacpp:requests_processing"), serving: a.modelName };
     } catch { return null; }
   }
 

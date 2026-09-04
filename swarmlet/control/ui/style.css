@@ -215,3 +215,19 @@ select[multiple] option { padding:var(--s1) var(--s2); }
   .drawer { padding:var(--s3) var(--s3) var(--s7); }
   .big-code { font-size:1.15rem; letter-spacing:.06em; }
 }
+
+/* ---------- chat ---------- */
+.chat-log { height:52vh; min-height:16rem; margin-top:var(--s3); padding:var(--s3); border:1px solid var(--line); background:var(--bg-deep); overflow:auto; }
+.msg { margin:0 0 var(--s3); padding:var(--s3); border:1px solid var(--line-soft); background:var(--bg-2); max-width:min(76ch,100%); }
+.msg--user { margin-left:auto; border-color:var(--copy); }
+.msg-role { margin-bottom:var(--s2); color:var(--muted); font:750 .6rem/1 var(--font-mono); text-transform:uppercase; letter-spacing:.08em; }
+.msg-text { white-space:pre-wrap; overflow-wrap:anywhere; font-size:.92rem; line-height:1.5; }
+.msg-meta { margin-top:var(--s2); }
+.msg-reasoning { margin-bottom:var(--s2); font-size:.8rem; }
+.msg-reasoning summary { cursor:pointer; color:var(--muted); font:750 .6rem/1 var(--font-mono); text-transform:uppercase; letter-spacing:.08em; }
+.chat-form { display:flex; gap:var(--s3); margin-top:var(--s3); align-items:flex-end; }
+.chat-form textarea { flex:1; min-height:3.2rem; resize:vertical; }
+.chat-actions { display:flex; flex-direction:column; gap:var(--s2); }
+.tile .value--text { font-size:1rem; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.tps-live { color:var(--signal); }
+@media (max-width:640px) { .chat-form { flex-direction:column; align-items:stretch; } .chat-actions { flex-direction:row; } }
