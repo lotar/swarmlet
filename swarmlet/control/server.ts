@@ -52,13 +52,32 @@ export function createControlServer(deps: ControlDeps): Server<ConnData> {
   const { cfg, reg, channel, log, deployments } = deps;
   const publicJwk = () => readPublicJwk(`${cfg.dataDir}/keys`);
 
+  const nodesSnapshot = () => {
+    const live = deployments.liveTokPerSecByNode();
+    return reg.listNodes().map((n) => { const r = channel.relayRate(n.id); return { ...n, pubJwk: undefined, online: channel.isOnline(n.id), routedTokPerSec: live.get(n.id) ?? 0, relayInBps: r.inBps, relayOutBps: r.outBps }; });
+  };
+
   const api = async (req: Request, path: string): Promise<Response> => {
     const url = new URL(req.url);
     const seg = path.split("/").filter(Boolean); // ["api", ...]
     const m = req.method;
-    if (seg[1] === "nodes" && m === "GET" && seg.length === 2) {
-      const live = deployments.liveTokPerSecByNode();
-      return json({ nodes: reg.listNodes().map((n) => ({ ...n, pubJwk: undefined, online: channel.isOnline(n.id), routedTokPerSec: live.get(n.id) ?? 0 })) });
+    if (seg[1] === "nodes" && m === "GET" && seg.length === 2) return json({ nodes: nodesSnapshot() });
+    if (seg[1] === "stream" && m === "GET") {
+      // server-sent events: a nodes + routing snapshot every second while the browser listens
+      const enc = new TextEncoder();
+      let timer: ReturnType<typeof setInterval> | null = null;
+      const stream = new ReadableStream<Uint8Array>({
+        start(controller) {
+          const push = () => {
+            try { controller.enqueue(enc.encode(`data: ${JSON.stringify({ t: "snapshot", ts: new Date().toISOString(), nodes: nodesSnapshot(), routing: deployments.routing(), relayStreams: channel.openRelayStreams })}\n\n`)); }
+            catch { if (timer) clearInterval(timer); }
+          };
+          push();
+          timer = setInterval(push, 1000);
+        },
+        cancel() { if (timer) clearInterval(timer); },
+      });
+      return new Response(stream, { headers: { "content-type": "text/event-stream", "cache-control": "no-store", connection: "keep-alive" } });
     }
     if (seg[1] === "nodes" && seg[2] && m === "GET" && seg.length === 3) { const n = reg.getNode(seg[2]); return n ? json({ ...n, online: channel.isOnline(n.id) }) : json({ error: "not found" }, 404); }
     if (seg[1] === "nodes" && seg[2] && seg[3] === "offer" && m === "PUT") {
@@ -107,7 +126,11 @@ export function createControlServer(deps: ControlDeps): Server<ConnData> {
         if (path === "/enroll" && req.method === "POST") {
           const out = await handleEnroll(reg, await req.json().catch(() => null));
           if (!out.ok) return json({ error: out.error }, out.status);
-          return json({ ok: true, nodeId: out.nodeId, controlPubJwk: await publicJwk(), agentUrl: cfg.publicUrl.replace(/^http/, "ws") + "/agent" });
+          // the agent connects back through whatever path it enrolled on (LAN address, or a tunnel hostname)
+          const fwdProto = req.headers.get("x-forwarded-proto") ?? url.protocol.replace(":", "");
+          const fwdHost = req.headers.get("x-forwarded-host") ?? req.headers.get("host") ?? new URL(cfg.publicUrl).host;
+          const agentUrl = `${fwdProto === "https" ? "wss" : "ws"}://${fwdHost}/agent`;
+          return json({ ok: true, nodeId: out.nodeId, controlPubJwk: await publicJwk(), agentUrl });
         }
         if (path === "/agent") {
           if (srv.upgrade(req, { data: channel.newConnData() })) return undefined as unknown as Response;

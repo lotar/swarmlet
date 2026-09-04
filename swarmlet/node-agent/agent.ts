@@ -39,8 +39,10 @@ export async function enroll(controlUrl: string, code: string, id: Identity, cap
   const body: EnrollRequest = { code, nodeId: id.nodeId, pubJwk: id.pubJwk, certFp: id.certFp, hostname: caps.hostname, caps };
   const signed = await signObject(body, id.keys.priv);
   const res = await fetch(`${controlUrl.replace(/\/$/, "")}/enroll`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(signed) });
-  const out = (await res.json()) as EnrollResponse | { error: string };
-  if (!res.ok || !("ok" in out)) throw new Error(`enroll failed (${res.status}): ${"error" in out ? out.error : "unknown"}`);
+  const text = await res.text();
+  let out: EnrollResponse | { error: string } | null = null;
+  try { out = JSON.parse(text) as EnrollResponse | { error: string }; } catch { out = null; }
+  if (!res.ok || !out || !("ok" in out)) throw new Error(`enroll failed (${res.status}): ${out && "error" in out ? out.error : text.replace(/\s+/g, " ").slice(0, 120) || "no body"}`);
   return out;
 }
 

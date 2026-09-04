@@ -129,7 +129,7 @@ export class AgentRuntime {
     });
     log.info(`local UI http://127.0.0.1:${this.cfg.uiPort}  node ${this.id.nodeId}  cert ${this.id.certFp.slice(0, 16)}`);
     this.connect();
-    this.timers.push(setInterval(() => { void this.tick(); }, 5000));
+    this.timers.push(setInterval(() => { void this.tick(); }, 2000));
     this.timers.push(setInterval(() => { void this.refreshCaps().then(() => this.client?.send({ t: "heartbeat", ts: new Date().toISOString(), metrics: this.metrics ?? { ts: new Date().toISOString() }, caps: this.caps ?? undefined })); }, 5 * 60_000));
     this.timers.push(setInterval(() => { void this.measure().catch(() => undefined); }, 60 * 60_000));
     if (this.cfg.controlUrl) setTimeout(() => { void this.measure().catch(() => undefined); }, 3000);
@@ -141,7 +141,7 @@ export class AgentRuntime {
   private async tick(): Promise<void> {
     try {
       const pids = this.runner.snapshot().map((s) => s.pid).filter((p): p is number => typeof p === "number");
-      const m = await probeMetrics({ pids, gpus: this.caps?.gpus ?? [] });
+      const m = await probeMetrics({ pids, gpus: this.caps?.gpus ?? [], sampleMs: 500 });
       const srv = await this.runner.serverMetrics();
       this.metrics = { ...m, ...(srv ?? {}) };
     } catch (e) { log.debug("metrics failed", { err: (e as Error).message }); }

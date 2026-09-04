@@ -4,7 +4,7 @@
 // {kind:"data", port, from} stream on the target node.
 
 import type { ServerWebSocket } from "bun";
-import { bridge, StreamMux, type MuxStream } from "../protocol/frame.ts";
+import { StreamMux, type MuxStream } from "../protocol/frame.ts";
 import { canonicalize, importPublicJwk, normalizeFingerprint } from "../protocol/sign.ts";
 import { parseAgentMessage } from "../protocol/validate.ts";
 import type { AgentToControl, Assignment, AssignmentState, ControlToAgent, HelloMsg, StreamHeader } from "../protocol/types.ts";
@@ -180,7 +180,39 @@ export class AgentChannel {
     const target = this.conns.get(h.target);
     if (!target?.data.mux) { this.log.debug("relay target offline", { fromNodeId, target: h.target }); return false; }
     const right = target.data.mux.open({ kind: "data", port: h.port, from: fromNodeId });
-    bridge(stream, right);
+    // bridge with byte accounting: bytes leaving `from` towards `target` and back, per second, per node
+    stream.onData((c) => { this.countRelay(fromNodeId, "out", c.byteLength); this.countRelay(h.target, "in", c.byteLength); right.write(c); });
+    right.onData((c) => { this.countRelay(h.target, "out", c.byteLength); this.countRelay(fromNodeId, "in", c.byteLength); stream.write(c); });
+    stream.onEnd((r) => right.close(r ?? "peer closed"));
+    right.onEnd((r) => stream.close(r ?? "peer closed"));
+    this.relayStreams++;
+    stream.onEnd(() => { this.relayStreams--; });
     return true;
   }
+
+  /** Relayed bytes per node in 1 s buckets (kept 30 s) for a live rate. */
+  private relayBuckets = new Map<string, Map<number, { in: number; out: number }>>();
+  private relayStreams = 0;
+
+  private countRelay(nodeId: string, dir: "in" | "out", n: number): void {
+    const sec = Math.floor(Date.now() / 1000);
+    const b = this.relayBuckets.get(nodeId) ?? new Map<number, { in: number; out: number }>();
+    const cur = b.get(sec) ?? { in: 0, out: 0 };
+    cur[dir] += n;
+    b.set(sec, cur);
+    for (const k of b.keys()) if (k < sec - 30) b.delete(k);
+    this.relayBuckets.set(nodeId, b);
+  }
+
+  /** Bytes per second relayed through control for a node over the last `windowSec` seconds. */
+  relayRate(nodeId: string, windowSec = 3): { inBps: number; outBps: number } {
+    const b = this.relayBuckets.get(nodeId);
+    if (!b) return { inBps: 0, outBps: 0 };
+    const now = Math.floor(Date.now() / 1000);
+    let i = 0, o = 0;
+    for (const [k, v] of b) if (k > now - windowSec && k <= now) { i += v.in; o += v.out; }
+    return { inBps: Math.round(i / windowSec), outBps: Math.round(o / windowSec) };
+  }
+
+  get openRelayStreams(): number { return this.relayStreams; }
 }

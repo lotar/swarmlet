@@ -253,12 +253,16 @@
     return [el('span', { class: live > 0 ? 'strong tps-live' : 'dim', text: live.toFixed(1) }), el('br'), el('span', { class: 'dim small', text: sub })];
   }
 
-  function metricsSummary(m) {
+  function fmtRate(bps) { return bps >= 1048576 ? (bps / 1048576).toFixed(1) + ' MB/s' : bps >= 1024 ? (bps / 1024).toFixed(0) + ' KB/s' : bps + ' B/s'; }
+
+  function metricsSummary(m, n) {
     if (!m) return el('span', { class: 'dim', text: 'no metrics yet' });
     var gpuUsed = (m.gpu || []).reduce(function (s, g) { return s + (g.usedMiB || 0); }, 0);
+    var relay = n && ((n.relayInBps || 0) + (n.relayOutBps || 0) > 0) ? el('span', { class: 'tps-live', text: 'relay \u2193 ' + fmtRate(n.relayInBps || 0) + ' \u2191 ' + fmtRate(n.relayOutBps || 0) }) : null;
     return [
       'free RAM ' + fmtGiB(m.freeRamMiB) + ' GiB', el('br'),
       'GPU used ' + (m.gpu && m.gpu.length ? fmtGiB(gpuUsed) + ' GiB' : NA) + ', CPU ' + num(m.cpuPct, 0) + ' %', el('br'),
+      relay, relay ? el('br') : null,
       el('span', { class: 'dim', text: ago(m.ts) }),
     ];
   }
@@ -276,7 +280,7 @@
         td([badge(n.online ? 'online' : 'offline'), n.online ? null : el('div', { class: 'dim small', text: n.lastSeen ? 'seen ' + ago(n.lastSeen) : 'never seen' })]),
         td(offerSummary(n.offer), 'small'),
         td(netSummary(caps.net), 'mono small'),
-        td(metricsSummary(n.metrics), 'mono small'),
+        td(metricsSummary(n.metrics, n), 'mono small'),
         td(tpsCell(n.metrics, n.routedTokPerSec, servedModels(n.id)), 'num mono'),
         td(String((n.models || []).length), 'num'),
       ]);
@@ -944,6 +948,8 @@
     if (rtt != null) parts.push('rtt ' + num(rtt, 0) + ' ms');
     var live = isNum(n.routedTokPerSec) && n.routedTokPerSec > 0 ? n.routedTokPerSec : (n.metrics && isNum(n.metrics.tokPerSec) ? n.metrics.tokPerSec : null);
     if (live != null) parts.push(num(live, 1) + ' tok/s');
+    if ((n.relayInBps || 0) + (n.relayOutBps || 0) > 0) parts.push('relay \u2193' + fmtRate(n.relayInBps || 0) + ' \u2191' + fmtRate(n.relayOutBps || 0));
+    if (n.metrics && isNum(n.metrics.cpuPct)) parts.push('cpu ' + num(n.metrics.cpuPct, 0) + '%');
     return parts.join(' · ');
   }
 
@@ -979,8 +985,10 @@
         'ctx ' + plan.ctx + ', parallel ' + plan.parallel + (plan.chain ? ', MTP chain ' + plan.chain : ''),
         nodeLive(plan.coordinatorNodeId),
       ]));
+      var controlHost = (state.whoami && state.whoami.publicUrl) ? state.whoami.publicUrl.replace(/^https?:\/\//, '') : location.host;
       (plan.workers || []).forEach(function (w, i) {
-        var path = paths['rpc' + i] || (coordA ? 'path pending' : 'not started');
+        var raw = paths['rpc' + i];
+        var path = raw === 'relay' ? 'relay via control (' + controlHost + ')' : raw === 'direct' ? 'direct TLS' : (coordA ? 'path pending' : 'not started');
         var bytes = prof && isNum(prof.boundaryBytes) ? ' · ' + fmtBytes(prof.boundaryBytes) + '/token' : '';
         row.appendChild(topoEdge('RPC' + i + ' · ' + path + bytes));
         row.appendChild(topoNode('topo-worker' + (served === w.nodeId ? ' topo-node--served' : ''), [
@@ -1007,10 +1015,17 @@
     body.appendChild(el('div', { class: 'topo-notes dim small' }, notes.map(function (t) { return el('div', { text: t }); })));
   }
 
+  var topoCache = null;
+  function refreshTopologyLive() {
+    if (!topoCache) return;
+    try { renderTopology(topoCache.dep, topoCache.profiles, topoCache.opts); } catch (_) { /* keep the old drawing */ }
+  }
+
   function loadTopology(depId, opts) {
     return Promise.all([ensureTopoProfiles(), api('GET', '/api/deployments/' + encodeURIComponent(depId))]).then(function (r) {
       topo.lastDep = depId;
       topo.lastOpts = opts;
+      topoCache = { dep: r[1], profiles: r[0], opts: opts };
       renderTopology(r[1], r[0], opts);
     });
   }
@@ -1030,14 +1045,37 @@
   $('chat-model').addEventListener('change', function () { fillChatDeployments(); loadTopologyForModel().catch(showError); });
   $('chat-dep').addEventListener('change', function () { loadTopologyForModel().catch(showError); });
 
+  /* ---------- live stream (server-sent events), polling stays as the fallback ---------- */
+  var live = { es: null, ok: false, last: 0 };
+  function startLive() {
+    if (live.es || !window.EventSource) return;
+    try {
+      var es = new EventSource('/api/stream');
+      live.es = es;
+      es.onmessage = function (ev) {
+        var snap; try { snap = JSON.parse(ev.data); } catch (_) { return; }
+        if (!snap || snap.t !== 'snapshot') return;
+        live.ok = true; live.last = Date.now();
+        state.nodes = snap.nodes || [];
+        chat.routing = snap.routing || chat.routing;
+        renderNodes();
+        if (state.active === 'chat') { fillChatDeployments(); if (topo.lastDep) refreshTopologyLive(); }
+        $('head-text').textContent = state.nodes.filter(function (n) { return n.online; }).length + ' of ' + state.nodes.length + ' nodes online \u00b7 live';
+      };
+      es.onerror = function () { live.ok = false; };
+    } catch (_) { live.ok = false; }
+  }
+
   /* ---------- polling ---------- */
   function tick() {
     if (!state.authed) return;
+    startLive();
     var extra = Promise.resolve();
     if (state.active === 'routing') extra = loadRouting();
     else if (state.active === 'events') extra = loadEvents();
     else if (state.active === 'chat') extra = chat.busy ? (topo.lastDep ? loadTopology(topo.lastDep, topo.lastOpts || {}) : Promise.resolve()) : loadChatModels();
-    Promise.all([loadNodes(), loadDeployments(), extra]).then(function () {
+    var nodesP = (live.ok && Date.now() - live.last < 4000) ? Promise.resolve() : loadNodes();
+    Promise.all([nodesP, loadDeployments(), extra]).then(function () {
       $('app-error').hidden = true;
       renderJoinCode();
       if (state.drawer.id) return loadDrawer();

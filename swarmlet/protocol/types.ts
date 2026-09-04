@@ -4,7 +4,7 @@
 export const PROTOCOL_VERSION = 1;
 export const AGENT_UI_PORT = 47800;
 export const AGENT_DATA_PORT = 47801;
-export const HEARTBEAT_MS = 5000;
+export const HEARTBEAT_MS = 2000;
 
 // ---------- what a machine has (measured by the agent) ----------
 
