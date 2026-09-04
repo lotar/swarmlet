@@ -1,0 +1,3047 @@
+diff --git a/ggml/include/ggml-rpc.h b/ggml/include/ggml-rpc.h
+index cbfe400..b166000 100644
+--- a/ggml/include/ggml-rpc.h
++++ b/ggml/include/ggml-rpc.h
+@@ -6,8 +6,35 @@
+ extern "C" {
+ #endif
+ 
+-#define RPC_PROTO_MAJOR_VERSION    6
+-#define RPC_PROTO_MINOR_VERSION    0
++// v7: RPC_CMD_GRAPH_COMPUTE gained a graph_uid field in its serialized payload (right after
++// device) and rpc_msg_graph_recompute_req gained a graph_uid field, so the server can cache up
++// to RPC_GRAPH_UID_CACHE_SIZE graphs per device (keyed by uid, LRU-evicted) instead of only the
++// last one -- fixes a race where two llama_contexts sharing one RPC connection could each
++// believe a different graph was "the" cached one and recompute against the wrong tensors.
++//
++// v8: adds push forwarding between rpc-servers so a client (e.g. llama-server) does not have to
++// round-trip an intermediate activation through itself when split N's output lives on remote
++// node A and split N+1 runs on remote node B. Three new commands: RPC_CMD_FORWARD_TENSOR (client
++// -> source server: "GET this tensor and push it to peer P"), RPC_CMD_PUSH_TENSOR (source server
++// -> destination server's PEER LISTENER, out of band from the client connection: "here is the
++// tensor data"), RPC_CMD_WAIT_INBOUND (client -> destination server: "block until the pushed
++// tensor with this seq has arrived, then SET it"). See ggml_backend_rpc_cpy_tensor_async (gated
++// behind GGML_RPC_FORWARD=1) and rpc_server's peer inbox/outbound-peer-socket machinery.
++//
++// Both v7 and v8 major-bump (not minor) so an old client and a new server -- or a new client and
++// an old server -- refuse each other via the existing HELLO version check instead of one side
++// silently misinterpreting the other's wire format.
++//
++// v8.1 (minor bump only): optional on-the-wire compression of F32 tensor transfers, enabled per
++// CLIENT process with GGML_RPC_WIRE=f16|q8. Four new commands -- RPC_CMD_SET_TENSOR_WIRE,
++// RPC_CMD_GET_TENSOR_WIRE, RPC_CMD_FORWARD_TENSOR_WIRE, RPC_CMD_PUSH_TENSOR_WIRE -- carry a
++// one-byte wire mode (0=raw, 1=f16, 2=q8_0) plus the raw byte count, and the receiving side
++// expands the payload back to F32 before it touches the tensor. The pre-existing commands keep
++// their exact v8.0 encoding, so this is a minor (additive) change: a v8.1 client only sends the
++// *_WIRE commands to a server whose HELLO reply advertises minor >= 1 (see rpc_wire_pick() in
++// ggml-rpc.cpp) and otherwise silently stays on the v8.0 commands.
++#define RPC_PROTO_MAJOR_VERSION    8
++#define RPC_PROTO_MINOR_VERSION    1
+ #define RPC_PROTO_PATCH_VERSION    0
+ 
+ #ifdef  __cplusplus
+@@ -27,6 +54,24 @@ GGML_BACKEND_API void ggml_backend_rpc_get_device_memory(const char * endpoint,
+ GGML_BACKEND_API void ggml_backend_rpc_start_server(const char * endpoint, const char * cache_dir,
+                                                     size_t n_threads, size_t n_devices, ggml_backend_dev_t * devices);
+ 
++// One entry per --peer IDX=host:port CLI option: the peer server this server can push tensors to
++// via RPC_CMD_PUSH_TENSOR, keyed by the client-side RPC device index of that peer (i.e. its
++// position in the client's --rpc endpoint list -- see ggml_backend_rpc_peer_index() below).
++struct ggml_backend_rpc_peer {
++    uint32_t    index;
++    const char * endpoint; // "host:port" of the peer's --peer-port listener
++};
++
++// Same as ggml_backend_rpc_start_server, plus an optional peer table (n_peers entries, may be 0/
++// nullptr for "no forwarding support") and an optional peer_port to listen on for inbound pushes
++// from other servers (0 = do not start a peer listener). Kept as a separate entry point so the
++// original 5-arg ggml_backend_rpc_start_server signature -- and every existing caller of it --
++// is untouched.
++GGML_BACKEND_API void ggml_backend_rpc_start_server_ex(const char * endpoint, const char * cache_dir,
++                                                    size_t n_threads, size_t n_devices, ggml_backend_dev_t * devices,
++                                                    const struct ggml_backend_rpc_peer * peers, size_t n_peers,
++                                                    int peer_port);
++
+ GGML_BACKEND_API ggml_backend_reg_t ggml_backend_rpc_reg(void);
+ GGML_BACKEND_API ggml_backend_reg_t ggml_backend_rpc_add_server(const char * endpoint);
+ 
+diff --git a/ggml/src/ggml-backend.cpp b/ggml/src/ggml-backend.cpp
+index ffe20b9..dd15126 100644
+--- a/ggml/src/ggml-backend.cpp
++++ b/ggml/src/ggml-backend.cpp
+@@ -1651,10 +1651,32 @@ static bool ggml_backend_sched_alloc_splits(ggml_backend_sched_t sched) {
+     return true;
+ }
+ 
++// LAB (GGML_RPC_GET_PIPELINE=1): read once. Off by default -- every input copy then takes exactly
++// the pre-existing path below.
++static bool ggml_backend_sched_rpc_get_pipeline(void) {
++    static const bool v = []() {
++        const char * e = getenv("GGML_RPC_GET_PIPELINE");
++        return e != nullptr && strcmp(e, "1") == 0;
++    }();
++    return v;
++}
++
++// One split input whose GET from an RPC backend has been enqueued but not yet applied to its
++// copy on the split backend -- see the GGML_RPC_GET_PIPELINE branch in
++// ggml_backend_sched_compute_splits(). `data` is the staging buffer the reply lands in.
++struct ggml_backend_sched_pending_get {
++    ggml_backend_t        backend;   // source (RPC) backend the GET was enqueued on
++    struct ggml_tensor  * input_cpy; // destination tensor on the split backend
++    std::vector<uint8_t>  data;
++};
++
+ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t sched) {
+     GGML_ASSERT(sched);
+     struct ggml_backend_sched_split * splits = sched->splits;
+ 
++    // LAB: GETs of this split's inputs that are in flight (GGML_RPC_GET_PIPELINE=1 only)
++    std::vector<ggml_backend_sched_pending_get> pending_gets;
++
+     ggml_tensor * prev_ids_tensor = nullptr;
+     std::vector<int32_t> ids;
+     std::vector<ggml_bitset_t> used_ids;
+@@ -1677,6 +1699,8 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
+         }
+ 
+         // copy the input tensors to the split backend
++        pending_gets.clear();
++        pending_gets.reserve(split->n_inputs);
+         for (int input_id = 0; input_id < split->n_inputs; input_id++) {
+             ggml_backend_t input_backend = ggml_backend_sched_get_tensor_backend(sched, split->inputs[input_id]);
+             struct ggml_tensor * input = split->inputs[input_id];
+@@ -1787,6 +1811,34 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
+                     // try async copy, but if not possible, we can still use a sync copy without synchronizing the dst backend, since we handle the synchronization here with multiple copies and events
+                     // TODO: add public function to facilitate this, since applications do not have direct access to the backend interface
+                     if (!split_backend->iface.cpy_tensor_async || !split_backend->iface.cpy_tensor_async(input_backend, split_backend, input, input_cpy)) {
++                        if (ggml_backend_sched_rpc_get_pipeline() && strncmp(ggml_backend_name(input_backend), "RPC", 3) == 0) {
++                            // LAB (GGML_RPC_GET_PIPELINE=1): only ENQUEUE the read here. Every input of this
++                            // split that comes from an RPC backend gets its GET on the wire back to back, and
++                            // the single wait + the writes to the split backend happen after the loop (see
++                            // "apply pending GETs" below) -- one round trip for all of them instead of the
++                            // get-wait-set-per-input of the GGML_SCHED_PIPELINED_COPY branch. Needs the
++                            // pipelined dispatcher (GGML_RPC_PIPELINE=1) to actually overlap: the default
++                            // one-thread dispatcher still answers each GET before writing the next.
++                            const size_t nbytes = ggml_nbytes(input);
++                            pending_gets.push_back({ input_backend, input_cpy, std::vector<uint8_t>(nbytes) });
++                            // pending_gets was reserved for n_inputs above, so this pointer stays valid
++                            // (and std::vector's move keeps the heap block anyway).
++                            ggml_backend_tensor_get_async(input_backend, input, pending_gets.back().data.data(), 0, nbytes);
++                        } else if (getenv("GGML_SCHED_PIPELINED_COPY") && strncmp(ggml_backend_name(input_backend), "RPC", 3) == 0) {
++                            // LAB: queue the read behind the source backend's pending work (in-order backends such as RPC
++                            // answer it right after the compute), wait once, then write asynchronously to the destination.
++                            // Saves two blocking round trips per split boundary on remote backends.
++                            const size_t nbytes = ggml_nbytes(input);
++                            std::vector<uint8_t> tmp(nbytes);
++                            ggml_backend_tensor_get_async(input_backend, input, tmp.data(), 0, nbytes);
++                            ggml_backend_synchronize(input_backend);
++                            if (sched->events[split_backend_id][sched->cur_copy] != NULL) {
++                                ggml_backend_event_synchronize(sched->events[split_backend_id][sched->cur_copy]);
++                            } else {
++                                ggml_backend_synchronize(split_backend);
++                            }
++                            ggml_backend_tensor_set_async(split_backend, input_cpy, tmp.data(), 0, nbytes);
++                        } else {
+                         ggml_backend_synchronize(input_backend);
+                         if (sched->events[split_backend_id][sched->cur_copy] != NULL) {
+                             ggml_backend_event_synchronize(sched->events[split_backend_id][sched->cur_copy]);
+@@ -1794,9 +1846,38 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
+                             ggml_backend_synchronize(split_backend);
+                         }
+                         ggml_backend_tensor_copy(input, input_cpy);
++                        }
++                    }
++                }
++            }
++        }
++
++        // LAB (GGML_RPC_GET_PIPELINE=1): apply pending GETs -- wait once per distinct source backend
++        // (all of its GETs are already in flight, so this is a single round trip), then wait once for
++        // the split backend to be done with the previous use of the copies (host-side, same as the
++        // per-input wait the non-batched paths do before their write), then write them all.
++        if (!pending_gets.empty()) {
++            for (size_t i = 0; i < pending_gets.size(); i++) {
++                bool already_waited = false;
++                for (size_t j = 0; j < i; j++) {
++                    if (pending_gets[j].backend == pending_gets[i].backend) {
++                        already_waited = true;
++                        break;
+                     }
+                 }
++                if (!already_waited) {
++                    ggml_backend_synchronize(pending_gets[i].backend);
++                }
++            }
++            if (sched->events[split_backend_id][sched->cur_copy] != NULL) {
++                ggml_backend_event_synchronize(sched->events[split_backend_id][sched->cur_copy]);
++            } else {
++                ggml_backend_synchronize(split_backend);
++            }
++            for (auto & g : pending_gets) {
++                ggml_backend_tensor_set_async(split_backend, g.input_cpy, g.data.data(), 0, g.data.size());
+             }
++            pending_gets.clear();
+         }
+ 
+         if (!sched->callback_eval) {
+diff --git a/ggml/src/ggml-rpc/ggml-rpc.cpp b/ggml/src/ggml-rpc/ggml-rpc.cpp
+index a97db24..250880e 100644
+--- a/ggml/src/ggml-rpc/ggml-rpc.cpp
++++ b/ggml/src/ggml-rpc/ggml-rpc.cpp
+@@ -6,6 +6,7 @@
+ 
+ #include <array>
+ #include <cinttypes>
++#include <functional>
+ #include <optional>
+ #include <string>
+ #include <vector>
+@@ -15,6 +16,7 @@
+ #include <memory>
+ #include <mutex>
+ #include <unordered_map>
++#include <cstdlib>
+ #include <unordered_set>
+ #include <cstring>
+ #include <fstream>
+@@ -22,12 +24,55 @@
+ #include <algorithm>
+ #include <atomic>
+ #include <thread>
++#include <chrono>
+ 
+ static const char * RPC_DEBUG = std::getenv("GGML_RPC_DEBUG");
+ 
+ #define LOG_DBG(...) \
+     do { if (RPC_DEBUG) GGML_LOG_DEBUG(__VA_ARGS__); } while (0)
+ 
++// LAB: opt-in, silent-by-default per-message timeline for diagnosing pipelining. Off unless
++// GGML_RPC_PIPELINE_TRACE=1 is set; writes to stderr directly (not through the ggml log filter,
++// which drops LOG_LEVEL_DEBUG at the server's default verbosity) so it's actually visible when
++// asked for.
++static bool rpc_trace_enabled() {
++    static const bool v = []() {
++        const char * e = std::getenv("GGML_RPC_PIPELINE_TRACE");
++        return e != nullptr && std::string(e) == "1";
++    }();
++    return v;
++}
++#define TRACE_MSG(...) \
++    do { if (rpc_trace_enabled()) { \
++        fprintf(stderr, "%.6f ", std::chrono::duration<double>(std::chrono::system_clock::now().time_since_epoch()).count()); \
++        fprintf(stderr, __VA_ARGS__); \
++    } } while (0)
++
++// LAB: SERVER-side timeline, opt-in via GGML_RPC_SERVER_TRACE=1 (off by default: one static bool
++// test per event). Same epoch-seconds timestamp as TRACE_MSG, prefixed "SRV", but composed into one
++// buffer and written with a single fputs so lines from the client-connection thread and the peer
++// listener thread never interleave. Every line carries conn=<socket ptr> (client connection) or
++// peer=<listener socket ptr> / hub=<peer hub ptr> so a multi-client server can be untangled.
++static bool rpc_server_trace_enabled() {
++    static const bool v = []() {
++        const char * e = std::getenv("GGML_RPC_SERVER_TRACE");
++        return e != nullptr && std::string(e) == "1";
++    }();
++    return v;
++}
++static double rpc_now_s() {
++    return std::chrono::duration<double>(std::chrono::system_clock::now().time_since_epoch()).count();
++}
++#define STRACE_MSG(...) \
++    do { if (rpc_server_trace_enabled()) { \
++        char strace_buf_[640]; \
++        int strace_n_ = snprintf(strace_buf_, sizeof(strace_buf_), "%.6f SRV ", rpc_now_s()); \
++        if (strace_n_ > 0 && strace_n_ < (int) sizeof(strace_buf_)) { \
++            snprintf(strace_buf_ + strace_n_, sizeof(strace_buf_) - strace_n_, __VA_ARGS__); \
++        } \
++        fputs(strace_buf_, stderr); \
++    } } while (0)
++
+ 
+ namespace fs = std::filesystem;
+ 
+@@ -77,6 +122,17 @@ enum rpc_cmd {
+     RPC_CMD_DEVICE_COUNT,
+     RPC_CMD_GRAPH_RECOMPUTE,
+     RPC_CMD_MEMSET_TENSOR,
++    // v8 push-forwarding commands -- see the version-history comment in ggml-rpc.h.
++    RPC_CMD_FORWARD_TENSOR,
++    RPC_CMD_PUSH_TENSOR,
++    RPC_CMD_WAIT_INBOUND,
++    // v8.1 wire-compressed variants of SET/GET/FORWARD/PUSH -- see "v8.1 wire compression" below.
++    // Inserted before RPC_CMD_NONE, which is a client-side queue marker that never goes on the
++    // wire, so shifting it (and RPC_CMD_COUNT) changes nothing observable.
++    RPC_CMD_SET_TENSOR_WIRE,
++    RPC_CMD_GET_TENSOR_WIRE,
++    RPC_CMD_FORWARD_TENSOR_WIRE,
++    RPC_CMD_PUSH_TENSOR_WIRE,
+     RPC_CMD_NONE,
+     RPC_CMD_COUNT,
+ };
+@@ -202,10 +258,240 @@ struct rpc_msg_get_device_memory_rsp {
+ 
+ struct rpc_msg_graph_recompute_req {
+     uint32_t device;
++    uint64_t graph_uid; // which of the server's cached graphs (see rpc_server::stored_graphs) to
++                        // recompute; must match a graph_uid this connection previously sent via
++                        // RPC_CMD_GRAPH_COMPUTE (rpc_server::graph_recompute() returns false, and
++                        // the connection ends, if it is not cached server-side any more).
++};
++
++// --- v8 push-forwarding wire structs ---
++//
++// RPC_CMD_FORWARD_TENSOR: client -> source server, no reply. `src` is serialized against the
++// SOURCE server's own buffer namespace (same as any other rpc_tensor this server receives);
++// `dst` is serialized against the DESTINATION server's namespace -- the client is the only party
++// that knows both, so it builds both halves and the source server just forwards `dst` verbatim
++// inside the PUSH_TENSOR payload without interpreting it itself.
++struct rpc_msg_forward_tensor_req {
++    uint64_t   seq;  // client-assigned, unique per forward; matched up by RPC_CMD_WAIT_INBOUND
++    uint32_t   peer; // which of this server's outbound peer connections to push over (see
++                     // rpc_server_peer_table / --peer IDX=host:port)
++    rpc_tensor src;
++    rpc_tensor dst;
++};
++
++// RPC_CMD_PUSH_TENSOR: source server -> destination server's PEER LISTENER (not the client
++// connection), no reply. Wire format (see rpc_peer_conn_loop): the usual 1-byte cmd + 8-byte
++// size header, then payload = | uint64_t seq | rpc_tensor dst | data bytes (ggml_nbytes(dst)) |.
++// Not a #pragma-packed struct on purpose: it is never recv_msg()'d as a fixed-size blob (the
++// data tail is variable-length), it's built into a byte buffer by hand in forward_tensor_push().
++
++// RPC_CMD_WAIT_INBOUND: client -> destination server, no reply. Blocks server-side (see
++// rpc_server::wait_inbound) until a PUSH_TENSOR with this seq has landed in the inbox, then
++// deserializes+validates its `dst` the same way SET_TENSOR does and applies the data.
++struct rpc_msg_wait_inbound_req {
++    uint64_t seq;
++};
++
++// --- v8.1 wire compression structs ---
++//
++// Wire mode byte shared by all four *_WIRE commands. RAW is accepted by the server-side decoders
++// for completeness, but a v8.1 client never sends it: a transfer that is not worth compressing
++// goes out on the plain v8.0 command instead, so with GGML_RPC_WIRE unset none of this is used.
++enum rpc_wire_mode : uint8_t {
++    RPC_WIRE_RAW  = 0,
++    RPC_WIRE_F16  = 1, // F32 -> ggml_fp16_t, 2 bytes per element
++    RPC_WIRE_Q8_0 = 2, // F32 -> block_q8_0, 34 bytes per 32 elements; needs ne[0] % 32 == 0
++};
++
++// RPC_CMD_GET_TENSOR_WIRE request: rpc_msg_get_tensor_req plus the wire mode. `size` is the RAW
++// (F32) byte count exactly as for GET_TENSOR; the reply payload is rpc_wire_encoded_size(wire,
++// size) bytes and the client expands it back to `size` bytes of F32.
++struct rpc_msg_get_tensor_wire_req {
++    rpc_tensor tensor;
++    uint64_t offset;
++    uint64_t size;
++    uint8_t  wire;
+ };
+ 
++// RPC_CMD_FORWARD_TENSOR_WIRE request: rpc_msg_forward_tensor_req plus the wire mode the source
++// server should encode its PUSH with (the client's GGML_RPC_WIRE choice -- servers never read that
++// env var themselves).
++struct rpc_msg_forward_tensor_wire_req {
++    uint64_t   seq;
++    uint32_t   peer;
++    uint8_t    wire;
++    rpc_tensor src;
++    rpc_tensor dst;
++};
++
++// RPC_CMD_SET_TENSOR_WIRE payload (variable length, built by hand like SET_TENSOR's):
++//   | rpc_tensor | offset (8 bytes) | wire (1 byte) | raw_size (8 bytes) | encoded data |
++// RPC_CMD_PUSH_TENSOR_WIRE payload (peer connections only, like PUSH_TENSOR):
++//   | uint64_t seq | rpc_tensor dst | wire (1 byte) | raw_size (8 bytes) | encoded data |
++// In both, `encoded data` is exactly rpc_wire_encoded_size(wire, raw_size) bytes.
++
+ #pragma pack(pop)
+ 
++// --- v8.1 wire compression helpers ---
++//
++// Client opt-in: GGML_RPC_WIRE=f16 or GGML_RPC_WIRE=q8 (anything else, including unset, = off).
++// Read once; with it unset rpc_wire_pick() returns RPC_WIRE_RAW without looking at the tensor and
++// every transfer takes the pre-existing v8.0 path unchanged.
++static uint8_t rpc_wire_env() {
++    static const uint8_t v = []() -> uint8_t {
++        const char * e = std::getenv("GGML_RPC_WIRE");
++        if (e == nullptr) {
++            return RPC_WIRE_RAW;
++        }
++        const std::string s(e);
++        if (s == "f16") {
++            return RPC_WIRE_F16;
++        }
++        if (s == "q8" || s == "q8_0") {
++            return RPC_WIRE_Q8_0;
++        }
++        if (!s.empty() && s != "off" && s != "0") {
++            GGML_LOG_WARN("[ggml-rpc] GGML_RPC_WIRE='%s' not recognised (expected off|f16|q8); wire compression stays off\n", e);
++        }
++        return RPC_WIRE_RAW;
++    }();
++    return v;
++}
++
++// First protocol minor whose servers understand the *_WIRE commands.
++static constexpr uint8_t RPC_PROTO_MINOR_WIRE = 1;
++// Transfers below this go raw: the conversion plus the 9-byte header is not worth it under a page,
++// and it keeps the small per-token control tensors well clear of the compressed path.
++static constexpr size_t  RPC_WIRE_MIN_BYTES   = 4096;
++// Header of an RPC_CMD_SET_TENSOR_WIRE payload: | rpc_tensor | offset (8) | wire (1) | raw_size (8) |
++static constexpr size_t  RPC_SET_TENSOR_WIRE_HDR = sizeof(rpc_tensor) + sizeof(uint64_t) + sizeof(uint8_t) + sizeof(uint64_t);
++
++static const char * rpc_wire_name(uint8_t wire) {
++    switch (wire) {
++        case RPC_WIRE_F16:  return "f16";
++        case RPC_WIRE_Q8_0: return "q8_0";
++        default:            return "raw";
++    }
++}
++
++// Can an F32 byte range of raw_size bytes, taken from a tensor with ne[0] == ne0, be encoded in
++// this mode? Also the server-side sanity check on every *_WIRE request it receives.
++static bool rpc_wire_ok(uint8_t wire, uint64_t raw_size, uint64_t ne0) {
++    switch (wire) {
++        case RPC_WIRE_RAW:
++            return true;
++        case RPC_WIRE_F16:
++            return raw_size > 0 && raw_size % sizeof(float) == 0;
++        case RPC_WIRE_Q8_0: {
++            // whole Q8_0 blocks (32 floats = 128 bytes) and rows that are a whole number of blocks
++            const uint64_t blck = (uint64_t) ggml_blck_size(GGML_TYPE_Q8_0);
++            return raw_size > 0 && raw_size % (blck * sizeof(float)) == 0 && ne0 % blck == 0;
++        }
++        default:
++            return false;
++    }
++}
++
++// Encoded byte count for raw_size bytes of F32 in this mode (precondition: rpc_wire_ok()).
++static size_t rpc_wire_encoded_size(uint8_t wire, size_t raw_size) {
++    switch (wire) {
++        case RPC_WIRE_F16:  return raw_size / sizeof(float) * sizeof(ggml_fp16_t);
++        case RPC_WIRE_Q8_0: return ggml_row_size(GGML_TYPE_Q8_0, (int64_t) (raw_size / sizeof(float)));
++        default:            return raw_size;
++    }
++}
++
++// raw (raw_size bytes of F32) -> enc (rpc_wire_encoded_size(wire, raw_size) bytes)
++static void rpc_wire_encode(uint8_t wire, const void * raw, size_t raw_size, uint8_t * enc) {
++    const int64_t n = (int64_t) (raw_size / sizeof(float));
++    switch (wire) {
++        case RPC_WIRE_F16:
++            ggml_fp32_to_fp16_row((const float *) raw, (ggml_fp16_t *) enc, n);
++            break;
++        case RPC_WIRE_Q8_0: {
++            // Quantized as one "row" of n elements: Q8_0 blocks are independent (own scale each),
++            // so the tensor's real row structure does not matter for the encoding itself --
++            // rpc_wire_ok's ne0 % 32 rule just keeps blocks from straddling rows.
++            const size_t written = ggml_quantize_chunk(GGML_TYPE_Q8_0, (const float *) raw, enc, 0, 1, n, nullptr);
++            GGML_ASSERT(written == rpc_wire_encoded_size(wire, raw_size));
++            break;
++        }
++        default:
++            memcpy(enc, raw, raw_size);
++            break;
++    }
++}
++
++// enc -> raw (raw_size bytes of F32)
++static void rpc_wire_decode(uint8_t wire, const uint8_t * enc, void * raw, size_t raw_size) {
++    const int64_t n = (int64_t) (raw_size / sizeof(float));
++    switch (wire) {
++        case RPC_WIRE_F16:
++            ggml_fp16_to_fp32_row((const ggml_fp16_t *) enc, (float *) raw, n);
++            break;
++        case RPC_WIRE_Q8_0:
++            ggml_get_type_traits(GGML_TYPE_Q8_0)->to_float(enc, (float *) raw, n);
++            break;
++        default:
++            memcpy(raw, enc, raw_size);
++            break;
++    }
++}
++
++// Client-side decision for one transfer of `size` bytes at `offset` of `tensor` to/from a server
++// whose HELLO advertised protocol minor `server_minor`. RPC_WIRE_RAW means "use the v8.0 command".
++static uint8_t rpc_wire_pick(uint8_t server_minor, const ggml_tensor * tensor, size_t offset, size_t size) {
++    const uint8_t want = rpc_wire_env();
++    if (want == RPC_WIRE_RAW || server_minor < RPC_PROTO_MINOR_WIRE) {
++        return RPC_WIRE_RAW;
++    }
++    if (tensor == nullptr || tensor->type != GGML_TYPE_F32 || size < RPC_WIRE_MIN_BYTES) {
++        return RPC_WIRE_RAW;
++    }
++    if (offset % sizeof(float) != 0 || size % sizeof(float) != 0 || !ggml_is_contiguous(tensor)) {
++        // only a contiguous run of whole floats can be reinterpreted as an F32 array
++        return RPC_WIRE_RAW;
++    }
++    if (tensor->buffer != nullptr && ggml_backend_buffer_get_usage(tensor->buffer) == GGML_BACKEND_BUFFER_USAGE_WEIGHTS) {
++        // model weights (loaded once; F32 norms etc.) stay exact -- this is for activations
++        return RPC_WIRE_RAW;
++    }
++    if (want == RPC_WIRE_Q8_0 && rpc_wire_ok(RPC_WIRE_Q8_0, size, (uint64_t) tensor->ne[0])) {
++        return RPC_WIRE_Q8_0;
++    }
++    // q8 asked for but this tensor can't be blocked -> f16, the next best; else raw
++    return rpc_wire_ok(RPC_WIRE_F16, size, (uint64_t) tensor->ne[0]) ? RPC_WIRE_F16 : RPC_WIRE_RAW;
++}
++
++// One line per tensor transfer under GGML_RPC_PIPELINE_TRACE=1 (client: SET/GET/FWD, server:
++// PUSH) so wire bytes can be summed per token: `raw` is the F32 byte count, `enc` what actually
++// goes on the wire. Emitted for raw transfers too, so wire-off runs sum with the same tooling.
++static void rpc_wire_trace(const char * kind, const void * who, const char * name, uint32_t type,
++                           const int64_t * ne, uint64_t offset, uint64_t raw, uint8_t wire, uint64_t enc) {
++    TRACE_MSG("[%p] WIRE %s name=%.*s type=%s ne=[%" PRId64 ",%" PRId64 ",%" PRId64 ",%" PRId64 "] off=%" PRIu64 " raw=%" PRIu64 " mode=%s enc=%" PRIu64 "\n",
++              who, kind, GGML_MAX_NAME, name, ggml_type_name((ggml_type) type), ne[0], ne[1], ne[2], ne[3], offset, raw, rpc_wire_name(wire), enc);
++}
++
++// Same, for a serialized rpc_tensor (server side).
++static void rpc_wire_trace_rt(const char * kind, const void * who, const rpc_tensor & t, uint64_t offset, uint64_t raw, uint8_t wire, uint64_t enc) {
++    const int64_t ne[GGML_MAX_DIMS] = { t.ne[0], t.ne[1], t.ne[2], t.ne[3] };
++    rpc_wire_trace(kind, who, t.name, t.type, ne, offset, raw, wire, enc);
++}
++
++// Builds an RPC_CMD_SET_TENSOR_WIRE payload for `size` raw bytes of `data` (format: see above).
++static std::shared_ptr<uint8_t> rpc_build_set_tensor_wire(const rpc_tensor & rt, const void * data, uint64_t offset, uint64_t size, uint8_t wire, size_t * input_size) {
++    const size_t enc_size = rpc_wire_encoded_size(wire, size);
++    *input_size = RPC_SET_TENSOR_WIRE_HDR + enc_size;
++    uint8_t * input = new uint8_t[*input_size];
++    uint8_t * p = input;
++    memcpy(p, &rt, sizeof(rt));           p += sizeof(rt);
++    memcpy(p, &offset, sizeof(offset));   p += sizeof(offset);
++    *p++ = wire;
++    memcpy(p, &size, sizeof(size));       p += sizeof(size);
++    rpc_wire_encode(wire, data, size, p);
++    return std::shared_ptr<uint8_t>(input, std::default_delete<uint8_t[]>());
++}
++
+ // RPC data structures
+ 
+ static ggml_guid_t ggml_backend_rpc_guid() {
+@@ -213,12 +499,61 @@ static ggml_guid_t ggml_backend_rpc_guid() {
+     return &guid;
+ }
+ 
++// Small LRU set of the last N graph uids sent to this device: mirrors the server's per-device
++// stored_graph cache (see rpc_server::stored_graphs) so both sides agree on which graphs are
++// still recomputable without a round trip. Fixed capacity, linear scan -- N is tiny (8), so a
++// hash map buys nothing here.
++static constexpr size_t RPC_GRAPH_UID_CACHE_SIZE = 8;
++
++class rpc_graph_uid_lru {
++public:
++    // true if uid is present (and is moved to most-recently-used); false (and uid is inserted,
++    // evicting the LRU entry if already full) otherwise. uid == 0 is the "unset" sentinel used
++    // by ggml_cgraph::uid and is never considered present or inserted.
++    bool touch_or_insert(uint64_t uid) {
++        if (uid == 0) {
++            return false;
++        }
++        for (size_t i = 0; i < uids.size(); i++) {
++            if (uids[i] == uid) {
++                uids.erase(uids.begin() + i);
++                uids.push_back(uid);
++                return true;
++            }
++        }
++        if (uids.size() >= RPC_GRAPH_UID_CACHE_SIZE) {
++            uids.erase(uids.begin());
++        }
++        uids.push_back(uid);
++        return false;
++    }
++
++private:
++    std::vector<uint64_t> uids; // front = least recently used, back = most recently used
++};
++
+ struct ggml_backend_rpc_device_context {
+     std::string endpoint;
+     uint32_t    device;
+     std::string name;
+     std::string description;
+-    uint64_t    last_graph_uid;
++    // Guards graph_uid_cache: held by ggml_backend_rpc_graph_compute() from the reuse-or-not
++    // decision through the send_async() push, so that when multiple llama_contexts (each on
++    // its own thread) share this device, the check-then-enqueue is atomic as a unit. Without
++    // this, two threads can race: both see "not cached", both decide COMPUTE, but only the
++    // request that lands second on the wire is what the server actually stores -- so the first
++    // thread's later RECOMPUTE (issued believing its own graph is the one cached) can execute
++    // against the OTHER thread's graph and tensors. That is the crash from the rig runs.
++    std::mutex          graph_uid_mutex;
++    rpc_graph_uid_lru   graph_uid_cache;
++    // Stable index of this device's ENDPOINT within the calling process's --rpc endpoint list --
++    // i.e. the order ggml_backend_rpc_add_server() was called in for distinct endpoints, not the
++    // process-wide device id ggml_backend_rpc_reg_get_device() hands out. Used as the `peer`
++    // field of RPC_CMD_FORWARD_TENSOR (see ggml_backend_rpc_cpy_tensor_async): the destination
++    // server needs to know which of ITS --peer entries names the source server, and --peer
++    // indices are assigned by the operator to match this same endpoint-list position, not the
++    // client's internal device numbering.
++    uint32_t            peer_index;
+ };
+ 
+ struct ggml_backend_rpc_buffer_type_context {
+@@ -320,6 +655,29 @@ static bool send_rpc_cmd(socket_ptr sock, enum rpc_cmd cmd, const void * input,
+     return sock->flush();
+ }
+ 
++// Same wire format as the 4-arg send_rpc_cmd above (header byte, 8-byte size, payload), but
++// coalesced into a single send_data() call instead of three. Used only by the pipelined-mode
++// WRITER (work_writer()); the default single-threaded path keeps calling the 3-call version
++// above unchanged. This matters only because of how many separate segments the write turns
++// into on the wire -- for small requests (the common case: everything but SET_TENSOR/
++// SET_TENSOR_HASH payloads, which are copied into request buffers anyway) it also avoids two
++// extra small-buffer send() syscalls per request.
++static bool send_rpc_cmd_coalesced(socket_ptr sock, enum rpc_cmd cmd, const void * input, size_t input_size) {
++    constexpr size_t header_size = sizeof(uint8_t) + sizeof(uint64_t);
++    std::vector<uint8_t> buf(header_size + input_size);
++    uint8_t cmd_byte = cmd;
++    uint64_t sz = input_size;
++    memcpy(buf.data(), &cmd_byte, sizeof(cmd_byte));
++    memcpy(buf.data() + sizeof(cmd_byte), &sz, sizeof(sz));
++    if (input_size > 0) {
++        memcpy(buf.data() + header_size, input, input_size);
++    }
++    if (!sock->send_data(buf.data(), buf.size())) {
++        return false;
++    }
++    return sock->flush();
++}
++
+ // RPC request : | rpc_cmd (1 byte) | request_size (8 bytes) | request_data (request_size bytes) |
+ // RPC response: | response_size (8 bytes) | response_data (response_size bytes) |
+ static bool send_rpc_cmd(socket_ptr sock, enum rpc_cmd cmd, const void * input, size_t input_size, void * output, size_t output_size) {
+@@ -344,7 +702,9 @@ static bool send_rpc_cmd(socket_ptr sock, enum rpc_cmd cmd, const void * input,
+ // Performs HELLO handshake with transport auto-negotiation.
+ // Advertises local capabilities via conn_caps; if the server responds with
+ // matching capabilities, the socket is upgraded transparently.
+-static bool negotiate_hello(const std::shared_ptr<socket_t> & sock) {
++// `server_minor` (optional) receives the minor version the server advertised, so callers can gate
++// v8.1 features on it (see rpc_wire_pick / rpc_peer_hub::push_wire).
++static bool negotiate_hello(const std::shared_ptr<socket_t> & sock, uint8_t * server_minor = nullptr) {
+     rpc_msg_hello_req request = {};
+     rpc_msg_hello_rsp response = {};
+ 
+@@ -360,6 +720,9 @@ static bool negotiate_hello(const std::shared_ptr<socket_t> & sock) {
+     }
+ 
+     sock->update_caps(response.conn_caps);
++    if (server_minor != nullptr) {
++        *server_minor = response.minor;
++    }
+     return true;
+ }
+ 
+@@ -412,6 +775,14 @@ public:
+     void send(enum rpc_cmd cmd, std::shared_ptr<const void> input, size_t input_size, void * output, size_t output_size);
+     void send_async(enum rpc_cmd cmd, std::shared_ptr<const void> input, size_t input_size);
+     void send_async(enum rpc_cmd cmd, std::shared_ptr<const void> input, size_t input_size, void * output, size_t output_size);
++    // v8.1: like the reply-expecting send_async above, plus a hook run on the dispatcher's reply
++    // thread right after `output` has been filled and before the message completes -- used to
++    // expand a wire-compressed GET reply into the caller's F32 buffer while still honouring the
++    // "synchronize() returns only after every earlier reply is fully applied" rule.
++    void send_async(enum rpc_cmd cmd, std::shared_ptr<const void> input, size_t input_size, void * output, size_t output_size, std::function<void()> post_recv);
++
++    // Protocol minor the server advertised in its HELLO reply (0 until start() has run).
++    uint8_t server_minor() const { return server_minor_; }
+ 
+     ggml_backend_event_t event_new(ggml_backend_dev_t dev);
+     void event_free(ggml_backend_event_t event);
+@@ -421,6 +792,8 @@ public:
+ 
+     void start(const std::string & endpoint);
+     void work();
++    void work_writer();
++    void work_reader();
+ 
+     ~rpc_dispatcher();
+ 
+@@ -432,6 +805,7 @@ private:
+         void                        * output;
+         size_t                        output_size;
+         std::promise<void>            completion;
++        std::function<void()>         post_recv; // v8.1, see send_async(); empty for every other message
+     };
+     using rpc_msg_ptr   = std::shared_ptr<rpc_msg>;
+     using rpc_msg_queue = message_queue<rpc_msg_ptr>;
+@@ -443,6 +817,18 @@ private:
+     socket_ptr       sock;
+     std::atomic_bool running;
+     std::thread      thread;
++
++    // Pipelined mode (GGML_RPC_PIPELINE=1): a WRITER thread issues requests without waiting
++    // for their replies, handing off messages that expect a reply to a second in-flight queue;
++    // a READER thread drains that queue in order, reading each reply as it arrives. This lets
++    // multiple requests be outstanding on the wire at once instead of one round trip at a time.
++    // With the env var unset, `pipelined` is false and only the single `thread` running work()
++    // is used, unchanged from upstream behavior.
++    bool             pipelined = false;
++    rpc_msg_queue    inflight;
++    std::thread      reader_thread;
++
++    uint8_t          server_minor_ = 0;
+ };
+ 
+ static void rpc_dispatcher_trampoline(rpc_dispatcher * dispatcher)
+@@ -450,6 +836,16 @@ static void rpc_dispatcher_trampoline(rpc_dispatcher * dispatcher)
+     dispatcher->work();
+ }
+ 
++static void rpc_dispatcher_writer_trampoline(rpc_dispatcher * dispatcher)
++{
++    dispatcher->work_writer();
++}
++
++static void rpc_dispatcher_reader_trampoline(rpc_dispatcher * dispatcher)
++{
++    dispatcher->work_reader();
++}
++
+ void rpc_dispatcher::send(enum rpc_cmd cmd, std::shared_ptr<const void> input, size_t input_size) {
+     auto msg = std::make_shared<rpc_msg>();
+     msg->cmd = cmd;
+@@ -494,6 +890,17 @@ void rpc_dispatcher::send_async(enum rpc_cmd cmd, std::shared_ptr<const void> in
+     GGML_ASSERT(queue.push(msg));
+ }
+ 
++void rpc_dispatcher::send_async(enum rpc_cmd cmd, std::shared_ptr<const void> input, size_t input_size, void * output, size_t output_size, std::function<void()> post_recv) {
++    auto msg = std::make_shared<rpc_msg>();
++    msg->cmd = cmd;
++    msg->input = input;
++    msg->input_size = input_size;
++    msg->output = output;
++    msg->output_size = output_size;
++    msg->post_recv = std::move(post_recv);
++    GGML_ASSERT(queue.push(msg));
++}
++
+ ggml_backend_event_t rpc_dispatcher::event_new(ggml_backend_dev_t dev) {
+     rpc_event * ev = new rpc_event;
+     ev->msg = std::make_shared<rpc_msg>();
+@@ -546,12 +953,28 @@ void rpc_dispatcher::start(const std::string & endpoint) {
+     if (sock == nullptr) {
+         GGML_ABORT("Failed to connect to %s\n", endpoint.c_str());
+     }
+-    if (!negotiate_hello(sock)) {
++    if (!negotiate_hello(sock, &server_minor_)) {
+         GGML_ABORT("RPC handshake failed for %s\n", endpoint.c_str());
+     }
+     LOG_DBG("[%s] connected to %s\n", __func__, endpoint.c_str());
++    if (rpc_wire_env() != RPC_WIRE_RAW && server_minor_ < RPC_PROTO_MINOR_WIRE) {
++        GGML_LOG_WARN("[ggml-rpc] %s speaks protocol %d.%d; GGML_RPC_WIRE=%s needs minor >= %d, sending raw to it\n",
++                      endpoint.c_str(), RPC_PROTO_MAJOR_VERSION, server_minor_, rpc_wire_name(rpc_wire_env()), RPC_PROTO_MINOR_WIRE);
++    }
+     running = true;
+-    thread = std::thread(rpc_dispatcher_trampoline, this);
++    // Read once: with GGML_RPC_PIPELINE unset (the default), pipelined stays false and only the
++    // single-threaded work() loop below is used — byte-for-byte the original behavior.
++    static const bool pipeline_env = []() {
++        const char * v = std::getenv("GGML_RPC_PIPELINE");
++        return v != nullptr && std::string(v) == "1";
++    }();
++    pipelined = pipeline_env;
++    if (pipelined) {
++        thread        = std::thread(rpc_dispatcher_writer_trampoline, this);
++        reader_thread = std::thread(rpc_dispatcher_reader_trampoline, this);
++    } else {
++        thread = std::thread(rpc_dispatcher_trampoline, this);
++    }
+ }
+ 
+ void rpc_dispatcher::work() {
+@@ -562,12 +985,78 @@ void rpc_dispatcher::work() {
+         }
+         if (msg_ptr->cmd != RPC_CMD_NONE) {
+             if (msg_ptr->output) {
++                TRACE_MSG("[%p] DEFAULT cmd=%d output=%p BEGIN\n", (void*)this, (int)msg_ptr->cmd, msg_ptr->output);
+                 bool status = send_rpc_cmd(sock, msg_ptr->cmd, msg_ptr->input.get(), msg_ptr->input_size, msg_ptr->output, msg_ptr->output_size);
+                 RPC_STATUS_ASSERT(status);
++                if (msg_ptr->post_recv) {
++                    msg_ptr->post_recv();
++                }
++                TRACE_MSG("[%p] DEFAULT cmd=%d END\n", (void*)this, (int)msg_ptr->cmd);
+             } else {
++                TRACE_MSG("[%p] DEFAULT cmd=%d (no-reply) BEGIN\n", (void*)this, (int)msg_ptr->cmd);
+                 bool status = send_rpc_cmd(sock, msg_ptr->cmd, msg_ptr->input.get(), msg_ptr->input_size);
+                 RPC_STATUS_ASSERT(status);
++                TRACE_MSG("[%p] DEFAULT cmd=%d (no-reply) END\n", (void*)this, (int)msg_ptr->cmd);
++            }
++        }
++        msg_ptr->completion.set_value();
++    }
++}
++
++// Pipelined mode WRITER: pops from `queue` and issues the request without blocking for a reply.
++// A message expecting a reply (output != nullptr) or an RPC_CMD_NONE marker (synchronize()/event)
++// is handed to `inflight` for the READER to complete in order. A message with no reply (e.g.
++// SET_TENSOR) completes immediately here, right after the write — matching the fact that the
++// server never sends a reply for it, so there is nothing to pipeline for that message.
++void rpc_dispatcher::work_writer() {
++    while (running) {
++        rpc_msg_ptr msg_ptr;
++        if (!queue.pop(&msg_ptr)) {
++            break;
++        }
++        if (msg_ptr->cmd != RPC_CMD_NONE) {
++            TRACE_MSG("[%p] WRITE cmd=%d output=%p\n", (void*)this, (int)msg_ptr->cmd, msg_ptr->output);
++            bool status = send_rpc_cmd_coalesced(sock, msg_ptr->cmd, msg_ptr->input.get(), msg_ptr->input_size);
++            RPC_STATUS_ASSERT(status);
++            if (msg_ptr->output != nullptr) {
++                if (!inflight.push(msg_ptr)) {
++                    break;
++                }
++                continue;
++            }
++            msg_ptr->completion.set_value();
++        } else {
++            TRACE_MSG("[%p] WRITE marker(NONE)\n", (void*)this);
++            // synchronize()/event marker: must complete only after every earlier reply has been
++            // read, so it goes through the in-flight queue too instead of completing here.
++            if (!inflight.push(msg_ptr)) {
++                break;
++            }
++        }
++    }
++}
++
++// Pipelined mode READER: drains `inflight` in order (the server answers in request order on one
++// connection) and reads each reply as it arrives.
++void rpc_dispatcher::work_reader() {
++    while (running) {
++        rpc_msg_ptr msg_ptr;
++        if (!inflight.pop(&msg_ptr)) {
++            break;
++        }
++        if (msg_ptr->cmd != RPC_CMD_NONE) {
++            TRACE_MSG("[%p] READ cmd=%d waiting\n", (void*)this, (int)msg_ptr->cmd);
++            uint64_t out_size;
++            bool status = sock->recv_data(&out_size, sizeof(out_size));
++            RPC_STATUS_ASSERT(status && out_size == msg_ptr->output_size);
++            status = sock->recv_data(msg_ptr->output, msg_ptr->output_size);
++            RPC_STATUS_ASSERT(status);
++            if (msg_ptr->post_recv) {
++                msg_ptr->post_recv();
+             }
++            TRACE_MSG("[%p] READ cmd=%d done\n", (void*)this, (int)msg_ptr->cmd);
++        } else {
++            TRACE_MSG("[%p] READ marker(NONE) done\n", (void*)this);
+         }
+         msg_ptr->completion.set_value();
+     }
+@@ -576,10 +1065,18 @@ void rpc_dispatcher::work() {
+ rpc_dispatcher::~rpc_dispatcher() {
+     running = false;
+     queue.interrupt();
+-    sock = nullptr;
++    inflight.interrupt();
++    // Join before releasing the socket: in pipelined mode a message can already be sitting in
++    // `inflight` when we interrupt (message_queue::pop drains what's queued before honoring
++    // interrupt), so the reader may still be mid-recv_data() on `sock` after interrupt() returns.
++    // Wait for both threads to actually exit their loops first, then it's safe to drop the socket.
+     if (thread.joinable()) {
+         thread.join();
+     }
++    if (reader_thread.joinable()) {
++        reader_thread.join();
++    }
++    sock = nullptr;
+ }
+ 
+ static std::shared_ptr<rpc_dispatcher> get_dispatcher(const std::string & endpoint) {
+@@ -712,6 +1209,15 @@ static void ggml_backend_rpc_buffer_set_tensor(ggml_backend_buffer_t buffer, ggm
+             return;
+         }
+     }
++    const uint8_t wire = rpc_wire_pick(ctx->dispatcher->server_minor(), tensor, offset, size);
++    if (wire != RPC_WIRE_RAW) {
++        size_t input_size = 0;
++        auto input_ptr = rpc_build_set_tensor_wire(rpc_tensor, data, offset, size, wire, &input_size);
++        rpc_wire_trace("SET", ctx->dispatcher.get(), tensor->name, tensor->type, tensor->ne, offset, size, wire, input_size - RPC_SET_TENSOR_WIRE_HDR);
++        ctx->dispatcher->send(RPC_CMD_SET_TENSOR_WIRE, input_ptr, input_size);
++        return;
++    }
++    rpc_wire_trace("SET", ctx->dispatcher.get(), tensor->name, tensor->type, tensor->ne, offset, size, RPC_WIRE_RAW, size);
+     // input serialization format: | rpc_tensor | offset (8 bytes) | data (size bytes)
+     size_t input_size = sizeof(rpc_tensor) + sizeof(uint64_t) + size;
+     uint8_t * input = new uint8_t[input_size]();
+@@ -724,6 +1230,21 @@ static void ggml_backend_rpc_buffer_set_tensor(ggml_backend_buffer_t buffer, ggm
+ 
+ static void ggml_backend_rpc_buffer_get_tensor(ggml_backend_buffer_t buffer, const ggml_tensor * tensor, void * data, size_t offset, size_t size) {
+     ggml_backend_rpc_buffer_context * ctx = (ggml_backend_rpc_buffer_context *)buffer->context;
++    const uint8_t wire = rpc_wire_pick(ctx->dispatcher->server_minor(), tensor, offset, size);
++    if (wire != RPC_WIRE_RAW) {
++        auto request = std::make_shared<rpc_msg_get_tensor_wire_req>();
++        request->tensor = serialize_tensor(tensor);
++        request->offset = offset;
++        request->size   = size;
++        request->wire   = wire;
++        const size_t enc_size = rpc_wire_encoded_size(wire, size);
++        rpc_wire_trace("GET", ctx->dispatcher.get(), tensor->name, tensor->type, tensor->ne, offset, size, wire, enc_size);
++        std::vector<uint8_t> enc(enc_size);
++        ctx->dispatcher->send(RPC_CMD_GET_TENSOR_WIRE, request, sizeof(*request), enc.data(), enc_size);
++        rpc_wire_decode(wire, enc.data(), data, size);
++        return;
++    }
++    rpc_wire_trace("GET", ctx->dispatcher.get(), tensor->name, tensor->type, tensor->ne, offset, size, RPC_WIRE_RAW, size);
+     auto request = std::make_shared<rpc_msg_get_tensor_req>();
+     request->tensor = serialize_tensor(tensor);
+     request->offset = offset;
+@@ -940,6 +1461,15 @@ static void ggml_backend_rpc_set_tensor_async(ggml_backend_t backend, ggml_tenso
+             return;
+         }
+     }
++    const uint8_t wire = rpc_wire_pick(ctx->dispatcher->server_minor(), tensor, offset, size);
++    if (wire != RPC_WIRE_RAW) {
++        size_t input_size = 0;
++        auto input_ptr = rpc_build_set_tensor_wire(rpc_tensor, data, offset, size, wire, &input_size);
++        rpc_wire_trace("SET", ctx->dispatcher.get(), tensor->name, tensor->type, tensor->ne, offset, size, wire, input_size - RPC_SET_TENSOR_WIRE_HDR);
++        ctx->dispatcher->send_async(RPC_CMD_SET_TENSOR_WIRE, input_ptr, input_size);
++        return;
++    }
++    rpc_wire_trace("SET", ctx->dispatcher.get(), tensor->name, tensor->type, tensor->ne, offset, size, RPC_WIRE_RAW, size);
+     // input serialization format: | rpc_tensor | offset (8 bytes) | data (size bytes)
+     size_t input_size = sizeof(rpc_tensor) + sizeof(uint64_t) + size;
+     uint8_t * input = new uint8_t[input_size]();
+@@ -952,6 +1482,23 @@ static void ggml_backend_rpc_set_tensor_async(ggml_backend_t backend, ggml_tenso
+ 
+ static void ggml_backend_rpc_get_tensor_async(ggml_backend_t backend, const ggml_tensor * tensor, void * data, size_t offset, size_t size) {
+     ggml_backend_rpc_context * ctx = (ggml_backend_rpc_context *)backend->context;
++    const uint8_t wire = rpc_wire_pick(ctx->dispatcher->server_minor(), tensor, offset, size);
++    if (wire != RPC_WIRE_RAW) {
++        auto request = std::make_shared<rpc_msg_get_tensor_wire_req>();
++        request->tensor = serialize_tensor(tensor);
++        request->offset = offset;
++        request->size   = size;
++        request->wire   = wire;
++        const size_t enc_size = rpc_wire_encoded_size(wire, size);
++        rpc_wire_trace("GET", ctx->dispatcher.get(), tensor->name, tensor->type, tensor->ne, offset, size, wire, enc_size);
++        auto enc = std::make_shared<std::vector<uint8_t>>(enc_size);
++        // The reply lands in `enc`; post_recv expands it into `data` on the dispatcher's reply
++        // thread before the message completes, so a later synchronize() sees F32 in place.
++        ctx->dispatcher->send_async(RPC_CMD_GET_TENSOR_WIRE, request, sizeof(*request), enc->data(), enc_size,
++            [enc, wire, data, size]() { rpc_wire_decode(wire, enc->data(), data, size); });
++        return;
++    }
++    rpc_wire_trace("GET", ctx->dispatcher.get(), tensor->name, tensor->type, tensor->ne, offset, size, RPC_WIRE_RAW, size);
+     auto request = std::make_shared<rpc_msg_get_tensor_req>();
+     request->tensor = serialize_tensor(tensor);
+     request->offset = offset;
+@@ -964,6 +1511,105 @@ static void ggml_backend_rpc_synchronize(ggml_backend_t backend) {
+     rpc_ctx->dispatcher->synchronize();
+ }
+ 
++// Read once: with GGML_RPC_FORWARD unset (the default), ggml_backend_rpc_cpy_tensor_async always
++// returns false and the scheduler falls back to the existing GET_TENSOR/SET_TENSOR (or, with
++// GGML_SCHED_PIPELINED_COPY=1, the pipelined GET-then-SET) path unchanged.
++static bool rpc_forward_env() {
++    static const bool v = []() {
++        const char * e = std::getenv("GGML_RPC_FORWARD");
++        return e != nullptr && std::string(e) == "1";
++    }();
++    return v;
++}
++
++// Client-assigned, process-global, monotonically increasing: identifies one push so the
++// destination server's RPC_CMD_WAIT_INBOUND can match it against the RPC_CMD_PUSH_TENSOR the
++// source server sends the peer listener. Only needs to be unique per (source, destination) pair
++// in flight at once, but a single global counter is simplest and cheap (this is one atomic
++// increment per split boundary, not per byte).
++static std::atomic<uint64_t> rpc_forward_seq{1};
++
++// Installed as ggml_backend_rpc_interface.cpy_tensor_async. Called by the scheduler as
++// split_backend->iface.cpy_tensor_async(input_backend, split_backend, input, input_cpy) -- i.e.
++// `backend_dst` (this hook's owner) is the DESTINATION split's backend, `backend_src` is where
++// the input tensor currently lives. See ggml_backend_sched_compute_splits() in ggml-backend.cpp
++// around the cpy_tensor_async call for the exact call site and ordering guarantees this relies
++// on (the source split's compute is always queued before this call, and this call's WAIT is
++// always queued before the destination split's own compute).
++//
++// Returns true to tell the scheduler forwarding was queued (no further action needed from it);
++// false to make it fall back to the pre-existing copy path. NOT a synchronous copy: both the
++// FORWARD_TENSOR send and the WAIT_INBOUND send are send_async() -- this returns as soon as both
++// are enqueued on their respective dispatchers, matching every other *_async hook in this file.
++static bool ggml_backend_rpc_cpy_tensor_async(ggml_backend_t backend_src, ggml_backend_t backend_dst, const ggml_tensor * src, ggml_tensor * dst) {
++    if (!rpc_forward_env()) {
++        return false;
++    }
++    if (!ggml_backend_is_rpc(backend_src) || !ggml_backend_is_rpc(backend_dst)) {
++        return false;
++    }
++    ggml_backend_rpc_context * src_ctx = (ggml_backend_rpc_context *)backend_src->context;
++    ggml_backend_rpc_context * dst_ctx = (ggml_backend_rpc_context *)backend_dst->context;
++    if (src_ctx->dispatcher == dst_ctx->dispatcher) {
++        // Same server: today's ggml_backend_rpc_buffer_cpy_tensor (a same-connection COPY_TENSOR)
++        // already handles this case without a network hop; forwarding has nothing to add and
++        // .cpy_tensor (not .cpy_tensor_async) is what the scheduler actually calls for that path,
++        // so this hook simply isn't the right one here -- fall back.
++        return false;
++    }
++    if (!ggml_backend_buffer_is_rpc(src->buffer) || !ggml_backend_buffer_is_rpc(dst->buffer)) {
++        return false;
++    }
++    ggml_backend_rpc_buffer_context * src_buf_ctx = (ggml_backend_rpc_buffer_context *)src->buffer->context;
++    ggml_backend_rpc_buffer_context * dst_buf_ctx = (ggml_backend_rpc_buffer_context *)dst->buffer->context;
++    if (src_buf_ctx->dispatcher != src_ctx->dispatcher || dst_buf_ctx->dispatcher != dst_ctx->dispatcher) {
++        // src/dst tensor's buffer isn't actually on the backend the scheduler thinks it's on --
++        // let the fallback path's own validation (deserialize_tensor server-side) handle it.
++        return false;
++    }
++
++    ggml_backend_dev_t dst_dev = ggml_backend_get_device(backend_dst);
++    ggml_backend_rpc_device_context * dst_dev_ctx = (ggml_backend_rpc_device_context *)dst_dev->context;
++
++    uint64_t seq = rpc_forward_seq.fetch_add(1, std::memory_order_relaxed);
++
++    // v8.1: the source server encodes its PUSH the way this client would encode a SET of `src`.
++    // Both servers must speak 8.1 -- the source to accept FORWARD_TENSOR_WIRE, the destination's
++    // peer listener to accept PUSH_TENSOR_WIRE -- so the pick is gated on the lower of the two.
++    const size_t  nbytes = ggml_nbytes(src);
++    const uint8_t wire   = rpc_wire_pick(std::min(src_ctx->dispatcher->server_minor(), dst_ctx->dispatcher->server_minor()), src, 0, nbytes);
++    if (wire != RPC_WIRE_RAW) {
++        auto fwd_req = std::make_shared<rpc_msg_forward_tensor_wire_req>();
++        fwd_req->seq  = seq;
++        fwd_req->peer = dst_dev_ctx->peer_index;
++        fwd_req->wire = wire;
++        fwd_req->src  = serialize_tensor(src, src_ctx->dispatcher); // namespaces: see the raw branch
++        fwd_req->dst  = serialize_tensor(dst, dst_ctx->dispatcher);
++        rpc_wire_trace("FWD", src_ctx->dispatcher.get(), src->name, src->type, src->ne, 0, nbytes, wire, rpc_wire_encoded_size(wire, nbytes));
++        src_ctx->dispatcher->send_async(RPC_CMD_FORWARD_TENSOR_WIRE, fwd_req, sizeof(*fwd_req));
++    } else {
++        rpc_wire_trace("FWD", src_ctx->dispatcher.get(), src->name, src->type, src->ne, 0, nbytes, RPC_WIRE_RAW, nbytes);
++        auto fwd_req = std::make_shared<rpc_msg_forward_tensor_req>();
++        fwd_req->seq  = seq;
++        fwd_req->peer = dst_dev_ctx->peer_index;
++        // src is serialized in the SOURCE server's namespace: pass its own dispatcher to
++        // serialize_tensor so tensors on OTHER RPC connections resolve to buffer=0/data=0 (same rule
++        // GET_TENSOR/SET_TENSOR already follow) rather than leaking a pointer that is meaningless to
++        // that server.
++        fwd_req->src  = serialize_tensor(src, src_ctx->dispatcher);
++        // dst is serialized in the DESTINATION server's namespace -- the source server never
++        // interprets it, only relays the bytes inside RPC_CMD_PUSH_TENSOR.
++        fwd_req->dst  = serialize_tensor(dst, dst_ctx->dispatcher);
++        src_ctx->dispatcher->send_async(RPC_CMD_FORWARD_TENSOR, fwd_req, sizeof(*fwd_req));
++    }
++
++    auto wait_req = std::make_shared<rpc_msg_wait_inbound_req>();
++    wait_req->seq = seq;
++    dst_ctx->dispatcher->send_async(RPC_CMD_WAIT_INBOUND, wait_req, sizeof(*wait_req));
++
++    return true;
++}
++
+ static void add_tensor(ggml_tensor * tensor, const ggml_cgraph * cgraph, const std::shared_ptr<rpc_dispatcher> & dispatcher, std::vector<rpc_tensor> & tensors, std::unordered_set<ggml_tensor*> & visited) {
+     if (tensor == nullptr) {
+         return;
+@@ -992,13 +1638,21 @@ static uint8_t * serialize_graph(uint32_t device, const ggml_cgraph * cgraph, co
+         add_tensor(cgraph->nodes[i], cgraph, dispatcher, tensors, visited);
+     }
+     // serialization format:
+-    // | device (4 bytes) | n_nodes (4 bytes) | nodes (n_nodes * sizeof(uint64_t) | n_tensors (4 bytes) | tensors (n_tensors * sizeof(rpc_tensor)) |
++    // | device (4 bytes) | graph_uid (8 bytes) | n_nodes (4 bytes) | nodes (n_nodes * sizeof(uint64_t) | n_tensors (4 bytes) | tensors (n_tensors * sizeof(rpc_tensor)) |
++    // graph_uid is cgraph->uid: the key the server stores this graph under (see
++    // rpc_server::graph_compute / stored_graphs), so a later RPC_CMD_GRAPH_RECOMPUTE can name it
++    // explicitly instead of relying on "whatever this device's connection computed last" -- see
++    // ggml_backend_rpc_device_context::graph_uid_cache for why that was unsafe with multiple
++    // llama_contexts sharing one device.
+     uint32_t n_tensors = tensors.size();
+-    *output_size = 2*sizeof(uint32_t) + n_nodes * sizeof(uint64_t) + sizeof(uint32_t) + n_tensors * sizeof(rpc_tensor);
++    *output_size = sizeof(uint32_t) + sizeof(uint64_t) + sizeof(uint32_t) + n_nodes * sizeof(uint64_t) + sizeof(uint32_t) + n_tensors * sizeof(rpc_tensor);
+     uint8_t * output = new uint8_t[*output_size]();
+     uint8_t * dest = output;
+     memcpy(dest, &device, sizeof(device));
+     dest += sizeof(device);
++    uint64_t graph_uid = cgraph->uid;
++    memcpy(dest, &graph_uid, sizeof(graph_uid));
++    dest += sizeof(graph_uid);
+     memcpy(dest, &n_nodes, sizeof(n_nodes));
+     dest += sizeof(n_nodes);
+     for (uint32_t i = 0; i < n_nodes; i++) {
+@@ -1018,13 +1672,22 @@ static enum ggml_status ggml_backend_rpc_graph_compute(ggml_backend_t backend, g
+     ggml_backend_rpc_device_context * rpc_dev_ctx = (ggml_backend_rpc_device_context *)rpc_dev->context;
+ 
+     GGML_ASSERT(cgraph->n_nodes > 0);
+-    bool reuse = cgraph->uid != 0 && rpc_dev_ctx->last_graph_uid == cgraph->uid;
++
++    // The reuse decision and the enqueue must be one atomic unit: rpc_dev_ctx is shared by every
++    // llama_context (thread) using this device. Without holding the lock across both, two
++    // threads can each decide "not cached, must COMPUTE" (or one decides RECOMPUTE while the
++    // other's COMPUTE for the same uid hasn't landed on the wire yet), and whichever request the
++    // server actually receives last is what ends up stored -- so a RECOMPUTE issued by the
++    // "wrong" thread executes someone else's graph against its own tensors. That's the
++    // out-of-bounds row/expert-index assert seen under concurrent streams.
++    std::lock_guard<std::mutex> lock(rpc_dev_ctx->graph_uid_mutex);
++    bool reuse = rpc_dev_ctx->graph_uid_cache.touch_or_insert(cgraph->uid);
+     if (reuse) {
+         auto request = std::make_shared<rpc_msg_graph_recompute_req>();
+-        request->device = rpc_ctx->device;
++        request->device    = rpc_ctx->device;
++        request->graph_uid = cgraph->uid;
+         rpc_ctx->dispatcher->send_async(RPC_CMD_GRAPH_RECOMPUTE, request, sizeof(*request));
+     } else {
+-        rpc_dev_ctx->last_graph_uid = cgraph->uid;
+         size_t input_size = 0;
+         uint8_t * input = serialize_graph(rpc_ctx->device, cgraph, rpc_ctx->dispatcher, &input_size);
+         std::shared_ptr<uint8_t> input_ptr(input, std::default_delete<uint8_t[]>());
+@@ -1051,7 +1714,7 @@ static ggml_backend_i ggml_backend_rpc_interface = {
+     /* .get_tensor_async        = */ ggml_backend_rpc_get_tensor_async,
+     /* .set_tensor_2d_async     = */ NULL,
+     /* .get_tensor_2d_async     = */ NULL,
+-    /* .cpy_tensor_async        = */ NULL,
++    /* .cpy_tensor_async        = */ ggml_backend_rpc_cpy_tensor_async,
+     /* .synchronize             = */ ggml_backend_rpc_synchronize,
+     /* .graph_plan_create       = */ NULL,
+     /* .graph_plan_free         = */ NULL,
+@@ -1127,11 +1790,323 @@ void ggml_backend_rpc_get_device_memory(const char * endpoint, uint32_t device,
+ 
+ // RPC server-side implementation
+ 
++// --- v8 push-forwarding server-side machinery ---
++//
++// One rpc_peer_hub per server PROCESS (not per client connection -- rpc_serve_client() below
++// constructs a fresh rpc_server for every accepted client, but pushes and their matching WAITs
++// can straddle client connections in principle, and definitely straddle the "one command loop at
++// a time" structure of a single connection, so this state has to outlive any one rpc_server).
++// Holds:
++//  - the inbox: pushes that have arrived via RPC_CMD_PUSH_TENSOR (from this server's peer
++//    listener, i.e. from another server) but have not yet been claimed by a client's
++//    RPC_CMD_WAIT_INBOUND. A push can arrive before its WAIT does -- the client only knows to
++//    send WAIT after it has already told the source server to FORWARD, and the source server may
++//    finish the push before the client's WAIT reaches this server -- so this has to be a proper
++//    inbox (store-then-claim), not a rendezvous that assumes WAIT is already waiting.
++//  - outbound peer connections: lazily opened, persistent client sockets to the peer servers
++//    named on this server's --peer command line, used by forward_tensor() to relay pushes.
++class rpc_peer_hub {
++public:
++    struct inbox_entry {
++        rpc_tensor           dst; // deserialized against THIS server's own buffers by wait_inbound()
++        std::vector<uint8_t> data;
++    };
++
++    // endpoint by peer index (from --peer IDX=host:port); a peer index with no entry here means
++    // this server was not told how to reach that peer, so forward_tensor() fails for it.
++    std::unordered_map<uint32_t, std::string> peer_endpoints;
++
++    // Waits (up to a fixed timeout) until `seq` is in the inbox, removes and returns it. false on
++    // timeout -- matches every other rpc_server method's "false means end the client connection"
++    // convention, since the client is left with no idea what state the destination tensor is in.
++    bool wait_and_take(uint64_t seq, inbox_entry & out) {
++        std::unique_lock<std::mutex> lock(mutex);
++        // 120 s: generous relative to any one graph split's forward, but still finite so a
++        // mismatched/never-sent seq (client bug, or the source server's FORWARD_TENSOR failing
++        // silently on its own connection close) doesn't hang the destination connection forever.
++        bool got = cv.wait_for(lock, std::chrono::seconds(120), [&] {
++            return inbox.find(seq) != inbox.end();
++        });
++        if (!got) {
++            return false;
++        }
++        out = std::move(inbox[seq]);
++        inbox.erase(seq);
++        return true;
++    }
++
++    // Called from the peer LISTENER thread (see rpc_peer_conn_loop) when a PUSH_TENSOR arrives.
++    void deposit(uint64_t seq, inbox_entry && entry) {
++        std::lock_guard<std::mutex> lock(mutex);
++        inbox[seq] = std::move(entry);
++        cv.notify_all();
++    }
++
++    // Sends a PUSH_TENSOR to peer `peer_idx`'s listener. Opens (and HELLO-handshakes) the
++    // connection on first use; on a send failure, closes it and retries ONCE with a fresh
++    // connection (the peer's listener thread may have exited from an earlier transient error, or
++    // this is the very first send after the peer server restarted) before giving up. Guarded by
++    // its own mutex distinct from the inbox mutex: pushes only ever happen from a client
++    // connection's single command-loop thread, but guarding costs nothing and removes any doubt
++    // if that ever changes.
++    bool push(uint32_t peer_idx, uint64_t seq, const rpc_tensor & dst, const void * data, size_t size) {
++        std::lock_guard<std::mutex> lock(peers_mutex);
++        auto it = peer_endpoints.find(peer_idx);
++        if (it == peer_endpoints.end()) {
++            GGML_LOG_ERROR("[rpc_peer_hub::push] no --peer entry for peer index %u\n", peer_idx);
++            return false;
++        }
++        for (int attempt = 0; attempt < 2; attempt++) {
++            if (peer_conns.find(peer_idx) == peer_conns.end()) {
++                if (!open_peer_locked(peer_idx, it->second)) {
++                    return false;
++                }
++            }
++            if (send_push_locked(peer_idx, seq, dst, data, size)) {
++                return true;
++            }
++            // send failed: drop the (presumably dead) connection and let the next attempt reopen it
++            peer_conns.erase(peer_idx);
++        }
++        return false;
++    }
++
++    // v8.1 counterpart of push(): `raw` is the F32 data. It goes out as PUSH_TENSOR_WIRE encoded
++    // per `wire`, or as a plain v8.0 PUSH_TENSOR (raw bytes) if the peer's HELLO minor predates
++    // the *_WIRE commands. Same open-on-first-use / retry-once-on-send-failure shape as push().
++    bool push_wire(uint32_t peer_idx, uint64_t seq, const rpc_tensor & dst, uint8_t wire, const void * raw, size_t raw_size) {
++        std::lock_guard<std::mutex> lock(peers_mutex);
++        auto it = peer_endpoints.find(peer_idx);
++        if (it == peer_endpoints.end()) {
++            GGML_LOG_ERROR("[rpc_peer_hub::push_wire] no --peer entry for peer index %u\n", peer_idx);
++            return false;
++        }
++        for (int attempt = 0; attempt < 2; attempt++) {
++            if (peer_conns.find(peer_idx) == peer_conns.end()) {
++                if (!open_peer_locked(peer_idx, it->second)) {
++                    return false;
++                }
++            }
++            const bool peer_has_wire = peer_minors[peer_idx] >= RPC_PROTO_MINOR_WIRE;
++            const bool ok = (wire == RPC_WIRE_RAW || !peer_has_wire)
++                ? send_push_locked(peer_idx, seq, dst, raw, raw_size)
++                : send_push_wire_locked(peer_idx, seq, dst, wire, raw, raw_size);
++            if (ok) {
++                return true;
++            }
++            peer_conns.erase(peer_idx);
++        }
++        return false;
++    }
++
++private:
++    bool open_peer_locked(uint32_t peer_idx, const std::string & endpoint) {
++        std::string host;
++        int port;
++        if (!parse_endpoint(endpoint, host, port)) {
++            GGML_LOG_ERROR("[rpc_peer_hub] bad --peer endpoint '%s'\n", endpoint.c_str());
++            return false;
++        }
++        socket_ptr sock = socket_t::connect(host.c_str(), port);
++        if (sock == nullptr) {
++            GGML_LOG_ERROR("[rpc_peer_hub] failed to connect to peer %u at %s\n", peer_idx, endpoint.c_str());
++            return false;
++        }
++        uint8_t minor = 0;
++        if (!negotiate_hello(sock, &minor)) {
++            GGML_LOG_ERROR("[rpc_peer_hub] HELLO handshake failed with peer %u at %s\n", peer_idx, endpoint.c_str());
++            return false;
++        }
++        peer_conns[peer_idx]  = sock;
++        peer_minors[peer_idx] = minor;
++        return true;
++    }
++
++    // Peer connections carry no replies at all (see RPC_CMD_PUSH_TENSOR's wire format comment),
++    // so this is a bare send, not send_rpc_cmd(): | cmd (1B) | size (8B) | seq(8B) dst rpc_tensor data... |
++    bool send_push_locked(uint32_t peer_idx, uint64_t seq, const rpc_tensor & dst, const void * data, size_t size) {
++        socket_ptr sock = peer_conns.at(peer_idx);
++        size_t payload_size = sizeof(seq) + sizeof(dst) + size;
++        std::vector<uint8_t> payload(payload_size);
++        uint8_t * p = payload.data();
++        memcpy(p, &seq, sizeof(seq)); p += sizeof(seq);
++        memcpy(p, &dst, sizeof(dst)); p += sizeof(dst);
++        if (size > 0) {
++            memcpy(p, data, size);
++        }
++        rpc_wire_trace_rt("PUSH", this, dst, 0, size, RPC_WIRE_RAW, size);
++        STRACE_MSG("hub=%p push begin seq=%" PRIu64 " peer=%u bytes=%zu\n", (void *) this, seq, peer_idx, payload_size);
++        const double t0 = rpc_now_s();
++        const bool ok = send_rpc_cmd(sock, RPC_CMD_PUSH_TENSOR, payload.data(), payload_size);
++        STRACE_MSG("hub=%p push end seq=%" PRIu64 " peer=%u ok=%d send_ms=%.3f\n", (void *) this, seq, peer_idx, (int) ok, (rpc_now_s() - t0) * 1e3);
++        return ok;
++    }
++
++    // v8.1: | cmd (1B) | size (8B) | seq (8B) | dst rpc_tensor | wire (1B) | raw_size (8B) | encoded... |
++    bool send_push_wire_locked(uint32_t peer_idx, uint64_t seq, const rpc_tensor & dst, uint8_t wire, const void * raw, size_t raw_size) {
++        socket_ptr sock = peer_conns.at(peer_idx);
++        const size_t   enc_size   = rpc_wire_encoded_size(wire, raw_size);
++        const uint64_t raw_size64 = raw_size;
++        std::vector<uint8_t> payload(sizeof(seq) + sizeof(dst) + sizeof(wire) + sizeof(raw_size64) + enc_size);
++        uint8_t * p = payload.data();
++        memcpy(p, &seq, sizeof(seq));               p += sizeof(seq);
++        memcpy(p, &dst, sizeof(dst));               p += sizeof(dst);
++        *p++ = wire;
++        memcpy(p, &raw_size64, sizeof(raw_size64)); p += sizeof(raw_size64);
++        rpc_wire_encode(wire, raw, raw_size, p);
++        rpc_wire_trace_rt("PUSH", this, dst, 0, raw_size, wire, enc_size);
++        STRACE_MSG("hub=%p push begin seq=%" PRIu64 " peer=%u bytes=%zu wire=%s\n", (void *) this, seq, peer_idx, payload.size(), rpc_wire_name(wire));
++        const double t0 = rpc_now_s();
++        const bool ok = send_rpc_cmd(sock, RPC_CMD_PUSH_TENSOR_WIRE, payload.data(), payload.size());
++        STRACE_MSG("hub=%p push end seq=%" PRIu64 " peer=%u ok=%d send_ms=%.3f\n", (void *) this, seq, peer_idx, (int) ok, (rpc_now_s() - t0) * 1e3);
++        return ok;
++    }
++
++    std::mutex                                       mutex;    // guards inbox
++    std::condition_variable                          cv;
++    std::unordered_map<uint64_t, inbox_entry>         inbox;
++
++    std::mutex                                       peers_mutex; // guards peer_conns (peer_endpoints is set once at startup, before any thread reads it, so it needs no lock)
++    std::unordered_map<uint32_t, socket_ptr>          peer_conns;
++    // Protocol minor each connected peer advertised in its HELLO reply (guarded by peers_mutex like
++    // peer_conns): push_wire() falls back to a raw push() for a peer that predates the *_WIRE commands.
++    std::unordered_map<uint32_t, uint8_t>             peer_minors;
++};
++
++// One peer connection handler: runs on the peer LISTENER (see start_peer_listener), one thread
++// per accepted peer (i.e. per OTHER server that pushes to this one). Requires the same HELLO
++// handshake as a client connection, then loops reading PUSH_TENSOR messages -- and only that
++// command; anything else on a peer connection is a protocol violation and ends the connection,
++// same as an unknown command does on a client connection.
++static void rpc_peer_conn_loop(rpc_peer_hub * hub, socket_ptr sock) {
++    uint8_t cmd;
++    if (!sock->recv_data(&cmd, 1)) {
++        return;
++    }
++    if (cmd != RPC_CMD_HELLO) {
++        GGML_LOG_ERROR("[peer listener] expected HELLO, got cmd %d\n", cmd);
++        return;
++    }
++    uint64_t hello_input_size;
++    if (!sock->recv_data(&hello_input_size, sizeof(hello_input_size)) || hello_input_size != sizeof(rpc_msg_hello_req)) {
++        return;
++    }
++    rpc_msg_hello_req req = {};
++    if (!sock->recv_data(&req, sizeof(req))) {
++        return;
++    }
++    rpc_msg_hello_rsp rsp = {};
++    rsp.major = RPC_PROTO_MAJOR_VERSION;
++    rsp.minor = RPC_PROTO_MINOR_VERSION;
++    rsp.patch = RPC_PROTO_PATCH_VERSION;
++    sock->get_caps(rsp.conn_caps);
++    if (!send_msg(sock, &rsp, sizeof(rsp))) {
++        return;
++    }
++    sock->update_caps(req.conn_caps);
++
++    while (true) {
++        if (!sock->recv_data(&cmd, 1)) {
++            return;
++        }
++        const double t_first_byte = rpc_server_trace_enabled() ? rpc_now_s() : 0.0;
++        if (cmd != RPC_CMD_PUSH_TENSOR && cmd != RPC_CMD_PUSH_TENSOR_WIRE) {
++            GGML_LOG_ERROR("[peer listener] unexpected cmd %d on peer connection (only PUSH_TENSOR/PUSH_TENSOR_WIRE are valid)\n", cmd);
++            return;
++        }
++        std::vector<uint8_t> input;
++        if (!recv_msg(sock, input)) {
++            return;
++        }
++        if (rpc_server_trace_enabled()) {
++            // seq is the first 8 bytes of every PUSH payload; recv_ms = first byte of the header to
++            // last byte of the payload, i.e. how long the push took to arrive on this socket
++            uint64_t seq_peek = 0;
++            if (input.size() >= sizeof(seq_peek)) {
++                memcpy(&seq_peek, input.data(), sizeof(seq_peek));
++            }
++            STRACE_MSG("peer=%p push_recv cmd=%d seq=%" PRIu64 " bytes=%zu recv_ms=%.3f\n",
++                       (void *) sock.get(), (int) cmd, seq_peek, input.size(), (rpc_now_s() - t_first_byte) * 1e3);
++        }
++        if (input.size() < sizeof(uint64_t) + sizeof(rpc_tensor)) {
++            GGML_LOG_ERROR("[peer listener] PUSH_TENSOR payload too small\n");
++            return;
++        }
++        const uint8_t * p = input.data();
++        uint64_t seq;
++        memcpy(&seq, p, sizeof(seq)); p += sizeof(seq);
++        rpc_tensor dst;
++        memcpy(&dst, p, sizeof(dst)); p += sizeof(dst);
++        rpc_peer_hub::inbox_entry entry;
++        entry.dst = dst;
++        if (cmd == RPC_CMD_PUSH_TENSOR) {
++            size_t data_size = input.size() - sizeof(seq) - sizeof(dst);
++            entry.data.assign(p, p + data_size);
++        } else {
++            // v8.1: | wire (1) | raw_size (8) | encoded | -- expanded to F32 right here on the
++            // listener thread, so wait_inbound() keeps applying plain raw bytes exactly as it
++            // does for a PUSH_TENSOR.
++            if (input.size() < sizeof(seq) + sizeof(dst) + sizeof(uint8_t) + sizeof(uint64_t)) {
++                GGML_LOG_ERROR("[peer listener] PUSH_TENSOR_WIRE payload too small\n");
++                return;
++            }
++            const uint8_t wire = *p++;
++            uint64_t raw_size;
++            memcpy(&raw_size, p, sizeof(raw_size)); p += sizeof(raw_size);
++            const size_t enc_size = input.size() - (size_t) (p - input.data());
++            if (wire > RPC_WIRE_Q8_0 || dst.type != GGML_TYPE_F32 || !rpc_wire_ok(wire, raw_size, dst.ne[0]) ||
++                enc_size != rpc_wire_encoded_size(wire, raw_size)) {
++                GGML_LOG_ERROR("[peer listener] PUSH_TENSOR_WIRE: bad wire=%u raw_size=%" PRIu64 " enc_size=%zu for tensor type %u ne0=%u\n",
++                               wire, raw_size, enc_size, dst.type, dst.ne[0]);
++                return;
++            }
++            entry.data.resize(raw_size);
++            rpc_wire_decode(wire, p, entry.data.data(), raw_size);
++        }
++        hub->deposit(seq, std::move(entry));
++        // no reply on peer connections -- loop straight back to the next PUSH_TENSOR
++    }
++}
++
++static void start_peer_listener(rpc_peer_hub * hub, const std::string & host, int port) {
++    auto server_socket = socket_t::create_server(host.c_str(), port);
++    if (server_socket == nullptr) {
++        fprintf(stderr, "Failed to create peer listener socket on %s:%d\n", host.c_str(), port);
++        return;
++    }
++    printf("Peer listener on %s:%d\n", host.c_str(), port);
++    fflush(stdout);
++    while (true) {
++        auto peer_socket = server_socket->accept();
++        if (peer_socket == nullptr) {
++            fprintf(stderr, "Failed to accept peer connection\n");
++            return;
++        }
++        // Detached: each peer connection lives for the server process's lifetime (a source
++        // server opens it once, lazily, and reuses it -- see rpc_peer_hub::push), so there is no
++        // natural join point short of process exit.
++        std::thread(rpc_peer_conn_loop, hub, peer_socket).detach();
++    }
++}
++
+ class rpc_server {
+ public:
+-    rpc_server(std::vector<ggml_backend_t> all_backends, const char * cache_dir)
+-        : backends(std::move(all_backends)), cache_dir(cache_dir) {
+-        stored_graphs.resize(backends.size());
++    rpc_server(std::vector<ggml_backend_t> all_backends, const char * cache_dir, rpc_peer_hub * peer_hub = nullptr)
++        : backends(std::move(all_backends)), cache_dir(cache_dir), peer_hub(peer_hub) {
++        stored_graphs_per_device.resize(backends.size());
++        alloc_bytes.assign(backends.size(), 0);
++        // GGML_RPC_MEM_CAP_MIB (unset/0 = off): per-device ceiling, in MiB, on what this server
++        // will allocate for a client and on the free/total it reports from get_device_memory().
++        // Set by the node owner (rpc-server --mem-cap-mib) so the mesh cannot take more of a
++        // device than was offered, even when a client's placement is wrong. Accounting is per
++        // client connection (one rpc_server per connection), which is one coordinator per worker.
++        if (const char * e = std::getenv("GGML_RPC_MEM_CAP_MIB")) {
++            char * end = nullptr;
++            unsigned long long mib = std::strtoull(e, &end, 10);
++            if (end && *end == '\0' && mib > 0) {
++                mem_cap_bytes = (size_t) mib * 1024ull * 1024ull;
++            }
++        }
+     }
+     ~rpc_server();
+ 
+@@ -1152,26 +2127,62 @@ public:
+     bool init_tensor(const rpc_msg_init_tensor_req & request);
+     bool get_alloc_size(const rpc_msg_get_alloc_size_req & request, rpc_msg_get_alloc_size_rsp & response);
+     bool get_device_memory(const rpc_msg_get_device_memory_req & request, rpc_msg_get_device_memory_rsp & response);
++    // RPC_CMD_FORWARD_TENSOR handler: GETs `src` locally (same validation as get_tensor()), then
++    // pushes it to peer_hub->push(request.peer, ...). No reply message; returns false (ending the
++    // client connection, same as every other false-returning handler here) if peer_hub is null
++    // (this server wasn't started with --peer support), src fails to deserialize/validate, or the
++    // push itself fails (unknown peer index, connect failure, or two failed send attempts).
++    bool forward_tensor(const rpc_msg_forward_tensor_req & request);
++    // RPC_CMD_WAIT_INBOUND handler: blocks (via peer_hub) until request.seq's push has arrived,
++    // then deserializes its dst descriptor against THIS server's own buffers (same validation as
++    // set_tensor()) and applies the data. No reply message. False (ending the connection) on
++    // timeout, missing peer_hub, or dst failing to deserialize/validate.
++    bool wait_inbound(const rpc_msg_wait_inbound_req & request);
++    // v8.1 wire-compressed variants: same validation as set_tensor()/get_tensor()/forward_tensor()
++    // (delegated to them), with the payload expanded from / encoded to the requested wire mode.
++    bool set_tensor_wire(const std::vector<uint8_t> & input);
++    bool get_tensor_wire(const rpc_msg_get_tensor_wire_req & request, std::vector<uint8_t> & response);
++    bool forward_tensor_wire(const rpc_msg_forward_tensor_wire_req & request);
+ 
+     struct stored_graph {
+-        std::vector<uint8_t>   buffer;
+-        ggml_cgraph          * graph;
++        uint64_t                uid; // 0 is never used here: graph_compute() only stores when
++                                      // the client sent a non-zero graph_uid (see there)
++        std::vector<uint8_t>    buffer;
++        ggml_cgraph            * graph;
+     };
+ 
+ private:
+     bool get_cached_file(uint64_t hash, std::vector<uint8_t> & data);
+     ggml_tensor * deserialize_tensor(struct ggml_context * ctx, const rpc_tensor * tensor);
++    // Shared by forward_tensor() and forward_tensor_wire(): deserializes + bounds-checks `src`
++    // against this server's buffers and reads the whole tensor into `data`.
++    bool forward_read_src(const rpc_tensor & src, uint64_t seq, uint32_t peer, std::vector<uint8_t> & data);
+     ggml_tensor * create_node(uint64_t id,
+                               struct ggml_context * ctx,
+                               const std::unordered_map<uint64_t, const rpc_tensor*> & tensor_ptrs,
+                               std::unordered_map<uint64_t, struct ggml_tensor*> & tensor_map);
+ 
++    // Up to RPC_GRAPH_UID_CACHE_SIZE stored graphs per device, keyed by graph_uid, LRU-evicted
++    // in the same order the client's rpc_graph_uid_lru evicts its own uid list (oldest first),
++    // so both sides agree on which graphs are still recomputable. Linear scan is fine: capacity
++    // is 8. front() = least recently used, back() = most recently used, matching
++    // rpc_graph_uid_lru's ordering.
++    stored_graph * find_stored_graph(uint32_t device, uint64_t uid);
++    void store_graph(uint32_t device, uint64_t uid, std::vector<uint8_t> && buffer, ggml_cgraph * graph);
+ 
+     std::vector<ggml_backend_t> backends;
+     const char * cache_dir;
++    rpc_peer_hub * peer_hub; // not owned; process-lifetime object, see rpc_peer_hub above. May be
++                             // null (forwarding commands then always fail, ending the connection
++                             // if a client actually sends one -- which GGML_RPC_FORWARD-gated
++                             // clients only do if this server was reachable, so a null hub here
++                             // paired with a client sending FORWARD/WAIT is already a config bug).
+     std::unordered_set<ggml_backend_buffer_t> buffers;
+-    // store the last computed graph for each backend
+-    std::vector<stored_graph> stored_graphs;
++    // GGML_RPC_MEM_CAP_MIB accounting (see the constructor): 0 = no cap.
++    size_t mem_cap_bytes = 0;
++    std::vector<size_t> alloc_bytes;
++    std::unordered_map<ggml_backend_buffer_t, uint32_t> buffer_device;
++    std::vector<std::vector<stored_graph>> stored_graphs_per_device;
+ };
+ 
+ void rpc_server::hello(rpc_msg_hello_rsp & response) {
+@@ -1227,15 +2238,23 @@ bool rpc_server::alloc_buffer(const rpc_msg_alloc_buffer_req & request, rpc_msg_
+         return false;
+     }
+     ggml_backend_buffer_type_t buft = ggml_backend_get_default_buffer_type(backends[dev_id]);
+-    ggml_backend_buffer_t buffer = ggml_backend_buft_alloc_buffer(buft, request.size);
+     response.remote_ptr = 0;
+     response.remote_size = 0;
++    if (mem_cap_bytes != 0 && alloc_bytes[dev_id] + request.size > mem_cap_bytes) {
++        // Same outcome as a backend OOM: remote_ptr 0, the client fails its placement cleanly.
++        GGML_LOG_ERROR("[%s] device: %d, size: %" PRIu64 " refused: %zu already allocated, cap %zu (GGML_RPC_MEM_CAP_MIB)\n",
++            __func__, dev_id, request.size, alloc_bytes[dev_id], mem_cap_bytes);
++        return true;
++    }
++    ggml_backend_buffer_t buffer = ggml_backend_buft_alloc_buffer(buft, request.size);
+     if (buffer != nullptr) {
+         response.remote_ptr = reinterpret_cast<uint64_t>(buffer);
+         response.remote_size = buffer->size;
+         LOG_DBG("[%s] device: %d, size: %" PRIu64 " -> remote_ptr: %" PRIx64 ", remote_size: %" PRIu64 "\n",
+             __func__, dev_id, request.size, response.remote_ptr, response.remote_size);
+         buffers.insert(buffer);
++        alloc_bytes[dev_id] += buffer->size;
++        buffer_device[buffer] = dev_id;
+     } else {
+         LOG_DBG("[%s] device: %d, size: %" PRIu64 " -> failed\n", __func__, dev_id, request.size);
+     }
+@@ -1285,6 +2304,12 @@ bool rpc_server::free_buffer(const rpc_msg_free_buffer_req & request) {
+         GGML_LOG_ERROR("[%s] buffer not found\n", __func__);
+         return false;
+     }
++    auto bd = buffer_device.find(buffer);
++    if (bd != buffer_device.end()) {
++        size_t sz = ggml_backend_buffer_get_size(buffer);
++        alloc_bytes[bd->second] -= std::min(sz, alloc_bytes[bd->second]);
++        buffer_device.erase(bd);
++    }
+     ggml_backend_buffer_free(buffer);
+     buffers.erase(buffer);
+     return true;
+@@ -1581,6 +2606,184 @@ bool rpc_server::get_tensor(const rpc_msg_get_tensor_req & request, std::vector<
+     return true;
+ }
+ 
++bool rpc_server::forward_read_src(const rpc_tensor & src, uint64_t seq, uint32_t peer, std::vector<uint8_t> & data) {
++    if (peer_hub == nullptr) {
++        GGML_LOG_ERROR("[%s] server was not started with --peer support\n", __func__);
++        return false;
++    }
++
++    struct ggml_init_params params {
++        /*.mem_size   =*/ ggml_tensor_overhead(),
++        /*.mem_buffer =*/ NULL,
++        /*.no_alloc   =*/ true,
++    };
++    ggml_context_ptr ctx_ptr { ggml_init(params) };
++    GGML_ASSERT(ctx_ptr != nullptr);
++    ggml_context * ctx = ctx_ptr.get();
++    // `src` is in THIS server's own buffer namespace (see ggml_backend_rpc_cpy_tensor_async, which
++    // serializes it with this server's dispatcher) -- deserialize and bounds-check it exactly like
++    // get_tensor() does.
++    ggml_tensor * tensor = deserialize_tensor(ctx, &src);
++    if (tensor == nullptr || tensor->buffer == nullptr) {
++        GGML_LOG_ERROR("[%s] error deserializing src tensor\n", __func__);
++        return false;
++    }
++    const uint64_t size = (uint64_t) ggml_nbytes(tensor);
++    LOG_DBG("[%s] seq: %" PRIu64 ", peer: %u, buffer: %p, data: %p, size: %" PRIu64 "\n",
++            __func__, seq, peer, (void*)tensor->buffer, tensor->data, size);
++
++    // sanitize tensor->data (whole-tensor read, offset 0 -- unlike get_tensor() there is no
++    // client-supplied offset/size to validate against a sub-range, but the tensor itself must
++    // still fit inside its buffer)
++    {
++        const size_t p0 = (size_t) ggml_backend_buffer_get_base(tensor->buffer);
++        const size_t p1 = p0 + ggml_backend_buffer_get_size(tensor->buffer);
++        if (src.data < p0 || src.data >= p1 || size > (p1 - src.data)) {
++            GGML_LOG_ERROR("[%s] src tensor region (data=0x%" PRIx64 ", size=%" PRIu64 ") out of buffer bounds [0x%zx, 0x%zx)\n",
++                           __func__, src.data, size, p0, p1);
++            return false;
++        }
++    }
++
++    data.resize(size);
++    ggml_backend_tensor_get(tensor, data.data(), 0, size);
++    return true;
++}
++
++bool rpc_server::forward_tensor(const rpc_msg_forward_tensor_req & request) {
++    std::vector<uint8_t> data;
++    if (!forward_read_src(request.src, request.seq, request.peer, data)) {
++        return false;
++    }
++    if (!peer_hub->push(request.peer, request.seq, request.dst, data.data(), data.size())) {
++        GGML_LOG_ERROR("[%s] push to peer %u failed (seq %" PRIu64 ")\n", __func__, request.peer, request.seq);
++        return false;
++    }
++    return true;
++}
++
++// v8.1: FORWARD_TENSOR with a wire mode. Rejects (ending the connection, like any other malformed
++// request) a mode the src tensor cannot be encoded in -- a v8.1 client never asks for one (see
++// rpc_wire_pick), so that is a protocol violation rather than a case to fall back on. The push
++// itself may still go out raw if the PEER predates 8.1 (see rpc_peer_hub::push_wire).
++bool rpc_server::forward_tensor_wire(const rpc_msg_forward_tensor_wire_req & request) {
++    std::vector<uint8_t> data;
++    if (!forward_read_src(request.src, request.seq, request.peer, data)) {
++        return false;
++    }
++    if (request.wire > RPC_WIRE_Q8_0 || request.src.type != GGML_TYPE_F32 ||
++        !rpc_wire_ok(request.wire, data.size(), request.src.ne[0])) {
++        GGML_LOG_ERROR("[%s] cannot encode src (type %u, ne0=%u, %zu bytes) as wire mode %u (seq %" PRIu64 ")\n",
++                       __func__, request.src.type, request.src.ne[0], data.size(), request.wire, request.seq);
++        return false;
++    }
++    if (!peer_hub->push_wire(request.peer, request.seq, request.dst, request.wire, data.data(), data.size())) {
++        GGML_LOG_ERROR("[%s] push to peer %u failed (seq %" PRIu64 ")\n", __func__, request.peer, request.seq);
++        return false;
++    }
++    return true;
++}
++
++// v8.1: same validation + read as get_tensor() (delegated to it), reply encoded per request.wire.
++bool rpc_server::get_tensor_wire(const rpc_msg_get_tensor_wire_req & request, std::vector<uint8_t> & response) {
++    if (request.wire > RPC_WIRE_Q8_0 || request.tensor.type != GGML_TYPE_F32 ||
++        !rpc_wire_ok(request.wire, request.size, request.tensor.ne[0])) {
++        GGML_LOG_ERROR("[%s] cannot encode tensor (type %u, ne0=%u, size=%" PRIu64 ") as wire mode %u\n",
++                       __func__, request.tensor.type, request.tensor.ne[0], request.size, request.wire);
++        return false;
++    }
++    rpc_msg_get_tensor_req raw_req;
++    raw_req.tensor = request.tensor;
++    raw_req.offset = request.offset;
++    raw_req.size   = request.size;
++    std::vector<uint8_t> raw;
++    if (!get_tensor(raw_req, raw)) {
++        return false;
++    }
++    response.resize(rpc_wire_encoded_size(request.wire, raw.size()));
++    rpc_wire_encode(request.wire, raw.data(), raw.size(), response.data());
++    return true;
++}
++
++// v8.1: | rpc_tensor | offset (8) | wire (1) | raw_size (8) | encoded | -- expands the payload
++// back to F32 into a v8.0-format SET_TENSOR buffer and hands that to set_tensor(), so the bounds
++// checks and the write are shared with the raw path instead of duplicated.
++bool rpc_server::set_tensor_wire(const std::vector<uint8_t> & input) {
++    if (input.size() < RPC_SET_TENSOR_WIRE_HDR) {
++        return false;
++    }
++    const rpc_tensor * in_tensor = (const rpc_tensor *) input.data();
++    const uint8_t * p = input.data() + sizeof(rpc_tensor);
++    uint64_t offset;
++    memcpy(&offset, p, sizeof(offset)); p += sizeof(offset);
++    const uint8_t wire = *p++;
++    uint64_t raw_size;
++    memcpy(&raw_size, p, sizeof(raw_size)); p += sizeof(raw_size);
++    const size_t enc_size = input.size() - RPC_SET_TENSOR_WIRE_HDR;
++    if (wire > RPC_WIRE_Q8_0 || in_tensor->type != GGML_TYPE_F32 || !rpc_wire_ok(wire, raw_size, in_tensor->ne[0]) ||
++        enc_size != rpc_wire_encoded_size(wire, raw_size)) {
++        GGML_LOG_ERROR("[%s] bad wire=%u raw_size=%" PRIu64 " enc_size=%zu for tensor type %u ne0=%u\n",
++                       __func__, wire, raw_size, enc_size, in_tensor->type, in_tensor->ne[0]);
++        return false;
++    }
++    // rebuild as a v8.0 SET_TENSOR payload: | rpc_tensor | offset (8) | raw data (raw_size bytes) |
++    std::vector<uint8_t> raw_input(sizeof(rpc_tensor) + sizeof(offset) + raw_size);
++    memcpy(raw_input.data(), in_tensor, sizeof(rpc_tensor));
++    memcpy(raw_input.data() + sizeof(rpc_tensor), &offset, sizeof(offset));
++    rpc_wire_decode(wire, p, raw_input.data() + sizeof(rpc_tensor) + sizeof(offset), raw_size);
++    return set_tensor(raw_input);
++}
++
++bool rpc_server::wait_inbound(const rpc_msg_wait_inbound_req & request) {
++    if (peer_hub == nullptr) {
++        GGML_LOG_ERROR("[%s] server was not started with --peer support\n", __func__);
++        return false;
++    }
++
++    rpc_peer_hub::inbox_entry entry;
++    STRACE_MSG("srv=%p wait_inbound begin seq=%" PRIu64 "\n", (void *) this, request.seq);
++    const double t_wait0 = rpc_now_s();
++    if (!peer_hub->wait_and_take(request.seq, entry)) {
++        GGML_LOG_ERROR("[%s] timed out waiting for inbound seq %" PRIu64 "\n", __func__, request.seq);
++        return false;
++    }
++    STRACE_MSG("srv=%p wait_inbound satisfied seq=%" PRIu64 " bytes=%zu blocked_ms=%.3f\n", (void *) this, request.seq, entry.data.size(), (rpc_now_s() - t_wait0) * 1e3);
++
++    // `entry.dst` is in THIS server's own buffer namespace (see ggml_backend_rpc_cpy_tensor_async,
++    // which serializes it with the destination dispatcher before the source server ever sees it
++    // -- the source server only relayed it verbatim in the PUSH_TENSOR payload). Deserialize and
++    // bounds-check exactly like set_tensor() does.
++    struct ggml_init_params params {
++        /*.mem_size   =*/ ggml_tensor_overhead(),
++        /*.mem_buffer =*/ NULL,
++        /*.no_alloc   =*/ true,
++    };
++    ggml_context_ptr ctx_ptr { ggml_init(params) };
++    GGML_ASSERT(ctx_ptr != nullptr);
++    ggml_context * ctx = ctx_ptr.get();
++    ggml_tensor * tensor = deserialize_tensor(ctx, &entry.dst);
++    if (tensor == nullptr || tensor->buffer == nullptr) {
++        GGML_LOG_ERROR("[%s] error deserializing dst tensor (seq %" PRIu64 ")\n", __func__, request.seq);
++        return false;
++    }
++    const size_t size = entry.data.size();
++    LOG_DBG("[%s] seq: %" PRIu64 ", buffer: %p, data: %p, size: %zu\n",
++            __func__, request.seq, (void*)tensor->buffer, tensor->data, size);
++
++    {
++        const size_t p0 = (size_t) ggml_backend_buffer_get_base(tensor->buffer);
++        const size_t p1 = p0 + ggml_backend_buffer_get_size(tensor->buffer);
++        if (entry.dst.data < p0 || entry.dst.data >= p1 || size > (p1 - entry.dst.data)) {
++            GGML_LOG_ERROR("[%s] dst tensor region (data=0x%" PRIx64 ", size=%zu) out of buffer bounds [0x%zx, 0x%zx) (seq %" PRIu64 ")\n",
++                           __func__, entry.dst.data, size, p0, p1, request.seq);
++            return false;
++        }
++    }
++
++    ggml_backend_tensor_set(tensor, entry.data.data(), 0, size);
++    return true;
++}
++
+ bool rpc_server::copy_tensor(const rpc_msg_copy_tensor_req & request, rpc_msg_copy_tensor_rsp & response) {
+     struct ggml_init_params params {
+         /*.mem_size   =*/ 2*ggml_tensor_overhead(),
+@@ -1678,10 +2881,35 @@ ggml_tensor * rpc_server::create_node(uint64_t id,
+     return result;
+ }
+ 
++rpc_server::stored_graph * rpc_server::find_stored_graph(uint32_t device, uint64_t uid) {
++    auto & graphs = stored_graphs_per_device[device];
++    for (size_t i = 0; i < graphs.size(); i++) {
++        if (graphs[i].uid == uid) {
++            if (i + 1 != graphs.size()) {
++                // move to back (most recently used) -- keeps eviction order in sync with the
++                // client's rpc_graph_uid_lru, which does the same on a cache hit
++                stored_graph moved = std::move(graphs[i]);
++                graphs.erase(graphs.begin() + i);
++                graphs.push_back(std::move(moved));
++            }
++            return &graphs.back();
++        }
++    }
++    return nullptr;
++}
++
++void rpc_server::store_graph(uint32_t device, uint64_t uid, std::vector<uint8_t> && buffer, ggml_cgraph * graph) {
++    auto & graphs = stored_graphs_per_device[device];
++    if (graphs.size() >= RPC_GRAPH_UID_CACHE_SIZE) {
++        graphs.erase(graphs.begin()); // evict least recently used (front)
++    }
++    graphs.push_back(stored_graph{ uid, std::move(buffer), graph });
++}
++
+ bool rpc_server::graph_compute(const std::vector<uint8_t> & input) {
+     // serialization format:
+-    // | device (4 bytes) | n_nodes (4 bytes) | nodes (n_nodes * sizeof(uint64_t) | n_tensors (4 bytes) | tensors (n_tensors * sizeof(rpc_tensor)) |
+-    if (input.size() < 2*sizeof(uint32_t)) {
++    // | device (4 bytes) | graph_uid (8 bytes) | n_nodes (4 bytes) | nodes (n_nodes * sizeof(uint64_t) | n_tensors (4 bytes) | tensors (n_tensors * sizeof(rpc_tensor)) |
++    if (input.size() < sizeof(uint32_t) + sizeof(uint64_t) + sizeof(uint32_t)) {
+         return false;
+     }
+     const uint8_t * src = input.data();
+@@ -1691,10 +2919,13 @@ bool rpc_server::graph_compute(const std::vector<uint8_t> & input) {
+     if (device >= backends.size()) {
+         return false;
+     }
++    uint64_t graph_uid;
++    memcpy(&graph_uid, src, sizeof(graph_uid));
++    src += sizeof(graph_uid);
+     uint32_t n_nodes;
+     memcpy(&n_nodes, src, sizeof(n_nodes));
+     src += sizeof(n_nodes);
+-    if (input.size() < 2*sizeof(uint32_t) + n_nodes*sizeof(uint64_t) + sizeof(uint32_t)) {
++    if (input.size() < sizeof(uint32_t) + sizeof(uint64_t) + sizeof(uint32_t) + n_nodes*sizeof(uint64_t) + sizeof(uint32_t)) {
+         return false;
+     }
+     const uint64_t * nodes = (const uint64_t *)src;
+@@ -1702,19 +2933,20 @@ bool rpc_server::graph_compute(const std::vector<uint8_t> & input) {
+     uint32_t n_tensors;
+     memcpy(&n_tensors, src, sizeof(n_tensors));
+     src += sizeof(n_tensors);
+-    if (input.size() < 2*sizeof(uint32_t) + n_nodes*sizeof(uint64_t) + sizeof(uint32_t) + n_tensors*sizeof(rpc_tensor)) {
++    if (input.size() < sizeof(uint32_t) + sizeof(uint64_t) + sizeof(uint32_t) + n_nodes*sizeof(uint64_t) + sizeof(uint32_t) + n_tensors*sizeof(rpc_tensor)) {
+         return false;
+     }
+     const rpc_tensor * tensors = (const rpc_tensor *)src;
+-    LOG_DBG("[%s] device: %u, n_nodes: %u, n_tensors: %u\n", __func__, device, n_nodes, n_tensors);
++    LOG_DBG("[%s] device: %u, graph_uid: %" PRIu64 ", n_nodes: %u, n_tensors: %u\n", __func__, device, graph_uid, n_nodes, n_tensors);
+ 
+     size_t buf_size = ggml_tensor_overhead()*(n_nodes + n_tensors) + ggml_graph_overhead_custom(n_nodes, false);
+-    if (stored_graphs[device].buffer.size() < buf_size) {
+-        stored_graphs[device].buffer.resize(buf_size);
+-    }
++    // Each cached graph keeps its own buffer -- it backs live tensors/nodes that a later
++    // RPC_CMD_GRAPH_RECOMPUTE for that same uid must still find valid, so it can't be shared
++    // with (or overwritten by) any other graph_uid's storage while both are cached.
++    std::vector<uint8_t> buffer(buf_size);
+     struct ggml_init_params params = {
+         /*.mem_size   =*/ buf_size,
+-        /*.mem_buffer =*/ stored_graphs[device].buffer.data(),
++        /*.mem_buffer =*/ buffer.data(),
+         /*.no_alloc   =*/ true,
+     };
+     ggml_context_ptr ctx_ptr { ggml_init(params) };
+@@ -1746,9 +2978,21 @@ bool rpc_server::graph_compute(const std::vector<uint8_t> & input) {
+             graph->use_counts[hash_pos] = tensor_ptrs.at(id)->use_count;
+         }
+     }
++    STRACE_MSG("srv=%p graph_compute begin device=%u uid=%" PRIu64 " n_nodes=%u bytes=%zu\n", (void *) this, device, graph_uid, n_nodes, input.size());
++    const double t_compute0 = rpc_now_s();
+     ggml_status status = ggml_backend_graph_compute(backends[device], graph);
++    STRACE_MSG("srv=%p graph_compute end device=%u uid=%" PRIu64 " compute_ms=%.3f\n", (void *) this, device, graph_uid, (rpc_now_s() - t_compute0) * 1e3);
+     GGML_ASSERT(status == GGML_STATUS_SUCCESS && "Unsuccessful graph computations are not supported with RPC");
+-    stored_graphs[device].graph = graph;
++    // ctx_ptr (and the ggml_context it owns) is released at scope exit, which is fine: nothing
++    // above it -- graph->nodes[], visited_hash_set, etc. -- lives in the context's metadata
++    // pool, it lives in `buffer`, ownership of which we're moving into stored_graphs_per_device
++    // right here. Only store when the client gave a real (non-zero) uid: uid 0 means "don't
++    // bother caching this one for RECOMPUTE" and is never looked up (see rpc_graph_uid_lru and
++    // find_stored_graph's uid==0 never matching a stored entry, since store_graph is simply not
++    // called for it).
++    if (graph_uid != 0) {
++        store_graph(device, graph_uid, std::move(buffer), graph);
++    }
+     return true;
+ }
+ 
+@@ -1757,12 +3001,16 @@ bool rpc_server::graph_recompute(const rpc_msg_graph_recompute_req & request) {
+     if (device >= backends.size()) {
+         return false;
+     }
+-    if (stored_graphs[device].graph == nullptr) {
++    stored_graph * stored = find_stored_graph(device, request.graph_uid);
++    if (stored == nullptr) {
+         return false;
+     }
+-    ggml_cgraph * graph = stored_graphs[device].graph;
+-    LOG_DBG("[%s] device: %u\n", __func__, device);
++    ggml_cgraph * graph = stored->graph;
++    LOG_DBG("[%s] device: %u, graph_uid: %" PRIu64 "\n", __func__, device, request.graph_uid);
++    STRACE_MSG("srv=%p graph_recompute begin device=%u uid=%" PRIu64 " n_nodes=%d\n", (void *) this, device, request.graph_uid, graph->n_nodes);
++    const double t_compute0 = rpc_now_s();
+     ggml_status status = ggml_backend_graph_compute(backends[device], graph);
++    STRACE_MSG("srv=%p graph_recompute end device=%u uid=%" PRIu64 " compute_ms=%.3f\n", (void *) this, device, request.graph_uid, (rpc_now_s() - t_compute0) * 1e3);
+     GGML_ASSERT(status == GGML_STATUS_SUCCESS && "Unsuccessful graph computations are not supported with RPC");
+     return true;
+ }
+@@ -1775,6 +3023,11 @@ bool rpc_server::get_device_memory(const rpc_msg_get_device_memory_req & request
+     size_t free, total;
+     ggml_backend_dev_t dev = ggml_backend_get_device(backends[dev_id]);
+     ggml_backend_dev_memory(dev, &free, &total);
++    if (mem_cap_bytes != 0) {
++        size_t remaining = mem_cap_bytes > alloc_bytes[dev_id] ? mem_cap_bytes - alloc_bytes[dev_id] : 0;
++        total = std::min(total, mem_cap_bytes);
++        free  = std::min(free, remaining);
++    }
+     response.free_mem = free;
+     response.total_mem = total;
+     LOG_DBG("[%s] device: %u, free_mem: %" PRIu64 ", total_mem: %" PRIu64 "\n", __func__, dev_id, response.free_mem, response.total_mem);
+@@ -1788,8 +3041,8 @@ rpc_server::~rpc_server() {
+ }
+ 
+ static void rpc_serve_client(const std::vector<ggml_backend_t> & backends, const char * cache_dir,
+-                             socket_ptr sock) {
+-    rpc_server server(backends, cache_dir);
++                             socket_ptr sock, rpc_peer_hub * peer_hub) {
++    rpc_server server(backends, cache_dir, peer_hub);
+     uint8_t cmd;
+     if (!sock->recv_data(&cmd, 1)) {
+         return;
+@@ -1830,6 +3083,7 @@ static void rpc_serve_client(const std::vector<ggml_backend_t> & backends, const
+         if (!sock->recv_data(&cmd, 1)) {
+             break;
+         }
++        STRACE_MSG("conn=%p recv cmd=%d\n", (void *) sock.get(), (int) cmd);
+         if (cmd >= RPC_CMD_COUNT) {
+             // fail fast if the command is invalid
+             GGML_LOG_ERROR("Unknown command: %d\n", cmd);
+@@ -1956,6 +3210,9 @@ static void rpc_serve_client(const std::vector<ggml_backend_t> & backends, const
+                 if (!recv_msg(sock, input)) {
+                     return;
+                 }
++                if (rpc_server_trace_enabled() && input.size() >= sizeof(rpc_tensor)) {
++                    STRACE_MSG("conn=%p set_tensor recv bytes=%zu name=%.*s\n", (void *) sock.get(), input.size(), GGML_MAX_NAME, ((const rpc_tensor *) input.data())->name);
++                }
+                 if (!server.set_tensor(input)) {
+                     return;
+                 }
+@@ -1990,6 +3247,7 @@ static void rpc_serve_client(const std::vector<ggml_backend_t> & backends, const
+                 if (!recv_msg(sock, &request, sizeof(request))) {
+                     return;
+                 }
++                STRACE_MSG("conn=%p get_tensor recv name=%.*s bytes=%" PRIu64 "\n", (void *) sock.get(), GGML_MAX_NAME, request.tensor.name, request.size);
+                 std::vector<uint8_t> response;
+                 if (!server.get_tensor(request, response)) {
+                     return;
+@@ -1997,6 +3255,7 @@ static void rpc_serve_client(const std::vector<ggml_backend_t> & backends, const
+                 if (!send_msg(sock, response.data(), response.size())) {
+                     return;
+                 }
++                STRACE_MSG("conn=%p get_tensor reply_sent name=%.*s bytes=%zu\n", (void *) sock.get(), GGML_MAX_NAME, request.tensor.name, response.size());
+                 break;
+             }
+             case RPC_CMD_COPY_TENSOR: {
+@@ -2018,6 +3277,7 @@ static void rpc_serve_client(const std::vector<ggml_backend_t> & backends, const
+                 if (!recv_msg(sock, input)) {
+                     return;
+                 }
++                STRACE_MSG("conn=%p graph_compute recv bytes=%zu\n", (void *) sock.get(), input.size());
+                 if (!server.graph_compute(input)) {
+                     return;
+                 }
+@@ -2047,6 +3307,86 @@ static void rpc_serve_client(const std::vector<ggml_backend_t> & backends, const
+                 }
+                 break;
+             }
++            case RPC_CMD_FORWARD_TENSOR: {
++                rpc_msg_forward_tensor_req request;
++                if (!recv_msg(sock, &request, sizeof(request))) {
++                    return;
++                }
++                STRACE_MSG("conn=%p forward recv seq=%" PRIu64 " peer=%u name=%.*s\n", (void *) sock.get(), request.seq, request.peer, GGML_MAX_NAME, request.src.name);
++                // No reply: like SET_TENSOR/BUFFER_CLEAR/etc, the client moves straight on to its
++                // next queued command; a failure here (bad tensor, unreachable peer, ...) is
++                // reported by ending this connection, same as those.
++                if (!server.forward_tensor(request)) {
++                    return;
++                }
++                break;
++            }
++            case RPC_CMD_WAIT_INBOUND: {
++                rpc_msg_wait_inbound_req request;
++                if (!recv_msg(sock, &request, sizeof(request))) {
++                    return;
++                }
++                STRACE_MSG("conn=%p wait_inbound recv seq=%" PRIu64 "\n", (void *) sock.get(), request.seq);
++                // Blocks (inside wait_inbound(), via peer_hub->wait_and_take()) until the
++                // matching PUSH_TENSOR has arrived on the peer listener or the wait times out.
++                // No reply either way -- a successful wait's effect is simply that the tensor is
++                // now set, which is exactly what a client asking for this wanted; there is
++                // nothing to send back that GET_TENSOR-after-SET_TENSOR wouldn't already tell it
++                // some other way if it needed to check.
++                if (!server.wait_inbound(request)) {
++                    return;
++                }
++                break;
++            }
++            case RPC_CMD_PUSH_TENSOR:
++            case RPC_CMD_PUSH_TENSOR_WIRE: {
++                // Only ever valid on a PEER connection (see rpc_peer_conn_loop), never on a
++                // client connection -- a client sending this is a protocol violation.
++                GGML_LOG_ERROR("RPC_CMD_PUSH_TENSOR(_WIRE) received on a client connection (only valid on a peer connection)\n");
++                return;
++            }
++            case RPC_CMD_SET_TENSOR_WIRE: {
++                std::vector<uint8_t> input;
++                if (!recv_msg(sock, input)) {
++                    return;
++                }
++                if (rpc_server_trace_enabled() && input.size() >= RPC_SET_TENSOR_WIRE_HDR) {
++                    STRACE_MSG("conn=%p set_tensor_wire recv bytes=%zu wire=%s name=%.*s\n", (void *) sock.get(), input.size(),
++                               rpc_wire_name(input[sizeof(rpc_tensor) + sizeof(uint64_t)]), GGML_MAX_NAME, ((const rpc_tensor *) input.data())->name);
++                }
++                if (!server.set_tensor_wire(input)) {
++                    return;
++                }
++                break;
++            }
++            case RPC_CMD_GET_TENSOR_WIRE: {
++                rpc_msg_get_tensor_wire_req request;
++                if (!recv_msg(sock, &request, sizeof(request))) {
++                    return;
++                }
++                STRACE_MSG("conn=%p get_tensor_wire recv name=%.*s raw=%" PRIu64 " wire=%s\n", (void *) sock.get(), GGML_MAX_NAME, request.tensor.name, request.size, rpc_wire_name(request.wire));
++                std::vector<uint8_t> response;
++                if (!server.get_tensor_wire(request, response)) {
++                    return;
++                }
++                if (!send_msg(sock, response.data(), response.size())) {
++                    return;
++                }
++                STRACE_MSG("conn=%p get_tensor_wire reply_sent name=%.*s bytes=%zu\n", (void *) sock.get(), GGML_MAX_NAME, request.tensor.name, response.size());
++                break;
++            }
++            case RPC_CMD_FORWARD_TENSOR_WIRE: {
++                rpc_msg_forward_tensor_wire_req request;
++                if (!recv_msg(sock, &request, sizeof(request))) {
++                    return;
++                }
++                STRACE_MSG("conn=%p forward_wire recv seq=%" PRIu64 " peer=%u wire=%s name=%.*s\n", (void *) sock.get(), request.seq, request.peer, rpc_wire_name(request.wire), GGML_MAX_NAME, request.src.name);
++                // No reply, same as FORWARD_TENSOR.
++                if (!server.forward_tensor_wire(request)) {
++                    return;
++                }
++                break;
++            }
+             default: {
+                 GGML_LOG_ERROR("Unknown command: %d\n", cmd);
+                 return;
+@@ -2055,8 +3395,12 @@ static void rpc_serve_client(const std::vector<ggml_backend_t> & backends, const
+     }
+ }
+ 
+-void ggml_backend_rpc_start_server(const char * endpoint, const char * cache_dir,
+-                                   size_t n_threads, size_t n_devices, ggml_backend_dev_t * devices) {
++// Shared by ggml_backend_rpc_start_server (peer_hub == nullptr: byte-for-byte the original
++// behavior) and ggml_backend_rpc_start_server_ex (peer_hub set up by the caller, peer listener
++// already started if requested).
++static void rpc_start_server_impl(const char * endpoint, const char * cache_dir,
++                                  size_t n_threads, size_t n_devices, ggml_backend_dev_t * devices,
++                                  rpc_peer_hub * peer_hub) {
+     if (n_devices == 0 || devices == nullptr) {
+         fprintf(stderr, "Invalid arguments to ggml_backend_rpc_start_server\n");
+         return;
+@@ -2118,7 +3462,7 @@ void ggml_backend_rpc_start_server(const char * endpoint, const char * cache_dir
+         }
+         printf("Accepted client connection\n");
+         fflush(stdout);
+-        rpc_serve_client(backends, cache_dir, client_socket);
++        rpc_serve_client(backends, cache_dir, client_socket, peer_hub);
+         printf("Client connection closed\n");
+         fflush(stdout);
+     }
+@@ -2128,6 +3472,47 @@ void ggml_backend_rpc_start_server(const char * endpoint, const char * cache_dir
+     }
+ }
+ 
++void ggml_backend_rpc_start_server(const char * endpoint, const char * cache_dir,
++                                   size_t n_threads, size_t n_devices, ggml_backend_dev_t * devices) {
++    rpc_start_server_impl(endpoint, cache_dir, n_threads, n_devices, devices, /* peer_hub = */ nullptr);
++}
++
++void ggml_backend_rpc_start_server_ex(const char * endpoint, const char * cache_dir,
++                                      size_t n_threads, size_t n_devices, ggml_backend_dev_t * devices,
++                                      const struct ggml_backend_rpc_peer * peers, size_t n_peers,
++                                      int peer_port) {
++    // Leaked deliberately: this hub, like the server itself, lives for the process's lifetime --
++    // the peer listener thread (if started) and every future client connection's rpc_server hold
++    // a raw pointer to it for as long as the process runs, so there is no point at which freeing
++    // it would be safe short of process exit, which reclaims it anyway.
++    rpc_peer_hub * hub = new rpc_peer_hub();
++    for (size_t i = 0; i < n_peers; i++) {
++        hub->peer_endpoints[peers[i].index] = peers[i].endpoint;
++    }
++
++    if (peer_port != 0) {
++        std::string host;
++        int dummy_port;
++        // Peer listener binds to the same host as the client endpoint (matches how --peer-port
++        // is documented: "the port THIS server listens on for pushes", host implied to be the
++        // one the operator is already binding this server to).
++        if (!parse_endpoint(endpoint, host, dummy_port)) {
++            fprintf(stderr, "Failed to parse endpoint for peer listener host: %s\n", endpoint);
++            return;
++        }
++        if (!rpc_transport_init()) {
++            fprintf(stderr, "Failed to initialize RPC transport for peer listener\n");
++            return;
++        }
++        // Detached: runs for the process's lifetime, same as the peer connections it spawns (see
++        // start_peer_listener / rpc_peer_conn_loop) and the main accept loop below, which this
++        // thread runs alongside rather than blocking.
++        std::thread(start_peer_listener, hub, host, peer_port).detach();
++    }
++
++    rpc_start_server_impl(endpoint, cache_dir, n_threads, n_devices, devices, hub);
++}
++
+ static const char * ggml_backend_rpc_device_get_name(ggml_backend_dev_t dev) {
+     ggml_backend_rpc_device_context * ctx = (ggml_backend_rpc_device_context *)dev->context;
+ 
+@@ -2269,6 +3654,9 @@ static void * ggml_backend_rpc_get_proc_address(ggml_backend_reg_t reg, const ch
+     if (std::strcmp(name, "ggml_backend_rpc_start_server") == 0) {
+         return (void *)ggml_backend_rpc_start_server;
+     }
++    if (std::strcmp(name, "ggml_backend_rpc_start_server_ex") == 0) {
++        return (void *)ggml_backend_rpc_start_server_ex;
++    }
+     return NULL;
+ 
+     GGML_UNUSED(reg);
+@@ -2309,6 +3697,14 @@ ggml_backend_reg_t ggml_backend_rpc_add_server(const char * endpoint) {
+     static std::unordered_map<std::string, ggml_backend_reg_t> reg_map;
+     static std::mutex mutex;
+     static uint32_t dev_id = 0;
++    // Counts distinct ENDPOINTS added so far (not devices): this becomes ggml_backend_rpc_
++    // device_context::peer_index for every device that endpoint exposes. Kept separate from
++    // dev_id (which numbers devices process-wide and is what "RPCn" names are built from) because
++    // --peer IDX=host:port on a server names a PEER SERVER, i.e. an endpoint, and an operator
++    // assigns IDX to match that endpoint's position on the client's --rpc list -- for a
++    // multi-device server that position is not the same as the client-side device number of its
++    // first device once earlier --rpc endpoints have contributed more than one device each.
++    static uint32_t endpoint_id = 0;
+     std::lock_guard<std::mutex> lock(mutex);
+     if (reg_map.find(endpoint) != reg_map.end()) {
+         return reg_map[endpoint];
+@@ -2317,6 +3713,7 @@ ggml_backend_reg_t ggml_backend_rpc_add_server(const char * endpoint) {
+     if (dev_count == 0) {
+         return nullptr;
+     }
++    uint32_t this_endpoint_id = endpoint_id++;
+     ggml_backend_rpc_reg_context * ctx = new ggml_backend_rpc_reg_context;
+     ctx->name = "RPC[" + std::string(endpoint) + "]";
+     for (uint32_t ind = 0; ind < dev_count; ind++) {
+@@ -2327,8 +3724,15 @@ ggml_backend_reg_t ggml_backend_rpc_add_server(const char * endpoint) {
+             /* .device      = */    ind,
+             /* .name        = */    dev_name,
+             /* .description = */    dev_desc,
+-            /* .last_graph_uid = */ 0,
++            // graph_uid_mutex and graph_uid_cache default-construct (mutex unlocked, cache empty)
+         };
++        // Set separately, not via designated init above: this compiler (unlike the one the
++        // pre-existing 4-field designated-init list above was written against) requires
++        // designators to cover every member through the last one named, and peer_index sits
++        // after two non-designatable members (std::mutex has no copyable/movable value to name
++        // here), so a 5th designator for it doesn't compile. A plain assignment is equivalent --
++        // this constructor runs long before any other thread can see dev_ctx.
++        dev_ctx->peer_index = this_endpoint_id;
+ 
+         ggml_backend_dev_t dev = new ggml_backend_device {
+             /* .iface   = */ ggml_backend_rpc_device_i,
+diff --git a/src/llama-context.cpp b/src/llama-context.cpp
+index f286bd1..6d18191 100644
+--- a/src/llama-context.cpp
++++ b/src/llama-context.cpp
+@@ -232,6 +232,9 @@ llama_context::llama_context(
+     cparams.fused_gdn_ar = true;
+     cparams.fused_gdn_ch = true;
+     cparams.auto_fgdn    = false;
++    // lab toggle: LLAMA_FUSED_GDN_AR / LLAMA_FUSED_GDN_CH = 0 disables the fused gated-delta-net ops
++    if (const char * e = getenv("LLAMA_FUSED_GDN_AR")) { cparams.fused_gdn_ar = atoi(e) != 0; LLAMA_LOG_WARN("%s: LLAMA_FUSED_GDN_AR=%s\n", __func__, e); }
++    if (const char * e = getenv("LLAMA_FUSED_GDN_CH")) { cparams.fused_gdn_ch = atoi(e) != 0; LLAMA_LOG_WARN("%s: LLAMA_FUSED_GDN_CH=%s\n", __func__, e); }
+ 
+     cparams.fused_lid = true;
+     cparams.auto_flid = false;
+diff --git a/src/llama-model-loader.cpp b/src/llama-model-loader.cpp
+index 7663797..16eb99d 100644
+--- a/src/llama-model-loader.cpp
++++ b/src/llama-model-loader.cpp
+@@ -8,12 +8,54 @@
+ 
+ #include <algorithm>
+ #include <array>
++#include <functional>
+ #include <cinttypes>
+ #include <cstdint>
+ #include <cstring>
+ #include <future>
+ #include <regex>
+ 
++// --- compatibility shim (lab only): accept PR-era Qwen4Exp GGUF names produced by the local patch script ---
++// metadata keys: upstream name -> name present in the patched file
++static std::string llama_compat_kv_alias(const gguf_context * ctx, const std::string & key) {
++    if (gguf_find_key(ctx, key.c_str()) >= 0) return key;
++    static const std::pair<const char *, const char *> aliases[] = {
++        {".hyper_connection.low_rank", ".hyper_connection.lowrank"},
++        {".ple.layer_multipliers",     ".ple.ngram_multipliers"},
++        {".ple.head_offsets",          ".ple.ngram_offsets"},
++        {".ple.head_vocab_sizes",      ".ple.ngram_vocab_sizes"},
++    };
++    for (const auto & a : aliases) {
++        const std::string from = a.first;
++        if (key.size() > from.size() && key.compare(key.size() - from.size(), from.size(), from) == 0) {
++            const std::string alt = key.substr(0, key.size() - from.size()) + a.second;
++            if (gguf_find_key(ctx, alt.c_str()) >= 0) return alt;
++        }
++    }
++    return key;
++}
++// tensor names: upstream name -> name present in the patched file (PLE layer index is unknown here, so match by suffix)
++static std::string llama_compat_tensor_alias(const std::string & name, const std::function<bool(const std::string &)> & exists) {
++    if (exists(name)) return name;
++    // per_layer_token_embd.weight -> blk.N.ple_ngram_embd.weight (N = the single PLE layer)
++    if (name == "per_layer_token_embd.weight") {
++        for (int n = 0; n < 128; ++n) { const std::string alt = "blk." + std::to_string(n) + ".ple_ngram_embd.weight"; if (exists(alt)) return alt; }
++    }
++    static const std::pair<const char *, const char *> suffixes[] = {
++        {".ple_norm_key.weight",   ".ple_key_norm.weight"},
++        {".ple_norm_query.weight", ".ple_query_norm.weight"},
++        {".ple_norm_conv.weight",  ".ple_conv_norm.weight"},
++    };
++    for (const auto & a : suffixes) {
++        const std::string from = a.first;
++        if (name.size() > from.size() && name.compare(name.size() - from.size(), from.size(), from) == 0) {
++            const std::string alt = name.substr(0, name.size() - from.size()) + a.second;
++            if (exists(alt)) return alt;
++        }
++    }
++    return name;
++}
++
+ static const size_t kiB = 1024;
+ static const size_t MiB = 1024*kiB;
+ static const size_t GiB = 1024*MiB;
+@@ -273,7 +315,8 @@ namespace GGUFMeta {
+ 
+     template<typename T>
+     typename std::enable_if<std::is_integral<T>::value, bool>::type
+-    llama_model_loader::get_arr_n(const std::string & key, T & result, bool required) {
++    llama_model_loader::get_arr_n(const std::string & key_in, T & result, bool required) {
++        const std::string key = llama_compat_kv_alias(metadata, key_in);
+         const int kid = gguf_find_key(metadata, key.c_str());
+ 
+         if (kid < 0) {
+@@ -302,8 +345,9 @@ namespace GGUFMeta {
+     llama_model_loader::get_arr_n<uint32_t>(const std::string & key, uint32_t & result, bool required);
+ 
+     template<typename T>
+-    bool llama_model_loader::get_arr(const std::string & key, std::vector<T> & result, bool required) {
++    bool llama_model_loader::get_arr(const std::string & key_in, std::vector<T> & result, bool required) {
+         const gguf_context * ctx = metadata;
++        const std::string key = llama_compat_kv_alias(ctx, key_in);
+         const int kid = gguf_find_key(ctx, key.c_str());
+ 
+         if (kid < 0 || gguf_get_kv_type(ctx, kid) != GGUF_TYPE_ARRAY) {
+@@ -348,8 +392,9 @@ namespace GGUFMeta {
+     }
+ 
+     template<typename T, size_t N_MAX>
+-    bool llama_model_loader::get_arr(const std::string & key, std::array<T, N_MAX> & result, bool required) {
++    bool llama_model_loader::get_arr(const std::string & key_in, std::array<T, N_MAX> & result, bool required) {
+         const gguf_context * ctx = metadata;
++        const std::string key = llama_compat_kv_alias(ctx, key_in);
+         const int kid = gguf_find_key(ctx, key.c_str());
+ 
+         if (kid < 0 || gguf_get_kv_type(ctx, kid) != GGUF_TYPE_ARRAY) {
+@@ -416,8 +461,11 @@ namespace GGUFMeta {
+     template bool llama_model_loader::get_arr<std::array<uint64_t, LLAMA_MAX_PLE_NGRAM>>(enum llm_kv kid, std::array<uint64_t, LLAMA_MAX_PLE_NGRAM> & result, bool required);
+     template bool llama_model_loader::get_arr<std::array<uint64_t, LLAMA_MAX_PLE_HEADS>>(enum llm_kv kid, std::array<uint64_t, LLAMA_MAX_PLE_HEADS> & result, bool required);
+ 
+-    template<typename T>
+-    bool llama_model_loader::get_key(const std::string & key, T & result, bool required) {
++    
++
++template<typename T>
++    bool llama_model_loader::get_key(const std::string & key_in, T & result, bool required) {
++        const std::string key = llama_compat_kv_alias(metadata, key_in);
+         auto it = kv_overrides.find(key);
+ 
+         const struct llama_model_kv_override * override =
+@@ -456,7 +504,8 @@ namespace GGUFMeta {
+ 
+     // get array of n <= N_MAX elements, or a single element repeated n times
+     template<typename T, size_t N_MAX>
+-    bool llama_model_loader::get_key_or_arr(const std::string & key, std::array<T, N_MAX> & result, uint32_t n, bool required) {
++    bool llama_model_loader::get_key_or_arr(const std::string & key_in, std::array<T, N_MAX> & result, uint32_t n, bool required) {
++        const std::string key = llama_compat_kv_alias(metadata, key_in);
+         const int kid = gguf_find_key(metadata, key.c_str());
+ 
+         if (kid < 0) {
+@@ -837,7 +886,8 @@ enum llm_arch llama_model_loader::get_arch() const {
+     return llm_kv.arch;
+ }
+ 
+-const llama_model_loader::llama_tensor_weight * llama_model_loader::get_weight(const char * name) const {
++const llama_model_loader::llama_tensor_weight * llama_model_loader::get_weight(const char * name_in) const {
++    const std::string name = llama_compat_tensor_alias(name_in, [this](const std::string & n) { return weights_map.find(n) != weights_map.end(); });
+     auto pos = weights_map.find(name);
+     if (pos != weights_map.end()) {
+         return &pos->second;
+diff --git a/src/llama-model.cpp b/src/llama-model.cpp
+index bfce09d..c28ae26 100644
+--- a/src/llama-model.cpp
++++ b/src/llama-model.cpp
+@@ -2436,7 +2436,7 @@ llama_memory_i * llama_model::create_memory(const llama_memory_params & params,
+                 const bool mtp_on_hybrid_qwen =
+                     params.ctx_type == LLAMA_CONTEXT_TYPE_MTP &&
+                     (arch == LLM_ARCH_QWEN3NEXT || arch == LLM_ARCH_QWEN35 || arch == LLM_ARCH_QWEN35MOE ||
+-                     arch == LLM_ARCH_BAILINGMOE3);
++                     arch == LLM_ARCH_QWEN4EXP || arch == LLM_ARCH_BAILINGMOE3);
+ 
+                 const bool mtp_on_hybrid_nemotron =
+                     params.ctx_type == LLAMA_CONTEXT_TYPE_MTP && arch == LLM_ARCH_NEMOTRON_H_MOE;
+diff --git a/src/models/models.h b/src/models/models.h
+index 9b87a40..294092b 100644
+--- a/src/models/models.h
++++ b/src/models/models.h
+@@ -2285,7 +2285,10 @@ struct llama_model_qwen4exp : public llama_model_base {
+ 
+     struct graph : public llm_build_delta_net_base {
+         graph(const llama_model & model, const llm_graph_params & params);
+-    private:
++    protected:
++        // members only: graph_mtp builds the nextn block on its own
++        graph(const llama_model & model, const llm_graph_params & params, bool no_build);
++
+         // HC replaces every layer norm: residual is [n_embd, hc, n_tokens]
+         ggml_tensor * build_hc_mix(
+                     ggml_tensor * x,
+@@ -2302,6 +2305,7 @@ struct llama_model_qwen4exp : public llama_model_base {
+                     ggml_tensor * inject,
+                             int   il);
+ 
++        // a null mctx_hyb runs the layer dense: the MTP context has no indexer cache
+         ggml_tensor * build_layer_attn(
+               llm_graph_input_attn_kv * inp_attn,
+   const llama_memory_hybrid_idx_context * mctx_hyb,
+@@ -2377,6 +2381,11 @@ struct llama_model_qwen4exp : public llama_model_base {
+         const llama_model & model;
+     };
+ 
++    // LLM_GRAPH_TYPE_DECODER_MTP draft head: the single nextn block on the trunk's streams
++    struct graph_mtp : public graph {
++        graph_mtp(const llama_model & model, const llm_graph_params & params);
++    };
++
+     std::unique_ptr<llm_graph_context> build_arch_graph(const llm_graph_params & params) const override;
+ };
+ 
+diff --git a/src/models/qwen4exp.cpp b/src/models/qwen4exp.cpp
+index 8f0e47b..c7e87f9 100644
+--- a/src/models/qwen4exp.cpp
++++ b/src/models/qwen4exp.cpp
+@@ -134,6 +134,12 @@ void llama_model_qwen4exp::load_arch_hparams(llama_model_loader & ml) {
+         }
+     }
+ 
++    // the MTP block is a dense-attention layer whatever the recurrent-layer list says of it:
++    // nothing reads it there today, so say the truth before something does
++    for (uint32_t i = hparams.n_layer(); i < hparams.n_layer_all; ++i) {
++        hparams.is_recr_impl[i] = false;
++    }
++
+     // the PLE conv history is a row of the recurrent cache, which linear layers alone have
+     for (uint32_t i = 0; i < hparams.n_layer_all; ++i) {
+         if (hparams.is_ple(i) && !hparams.is_recr(i)) {
+@@ -188,7 +194,10 @@ void llama_model_qwen4exp::load_arch_tensors(llama_model_loader & ml) {
+                                            { hparams.ple_head_dim, ple_rows }, TENSOR_READ_LAZY);
+     }
+ 
+-    for (int il = 0; il < n_layer; ++il) {
++    // an MTP-only file carries just the MTP block, see the --mtp conversion
++    const bool mtp_only = hparams.n_layer_nextn > 0 && ml.get_weight("blk.0.hc_attn_norm.weight") == nullptr;
++
++    for (int il = 0; il < (mtp_only ? 0 : n_layer); ++il) {
+         auto & layer = layers[il];
+ 
+         const int64_t n_ff_exp   = hparams.n_ff_exp   ? hparams.n_ff_exp   : n_ff / n_expert_used;
+@@ -255,12 +264,67 @@ void llama_model_qwen4exp::load_arch_tensors(llama_model_loader & ml) {
+         layer.ffn_up_shexp       = create_tensor(tn(LLM_TENSOR_FFN_UP_SHEXP,       "weight", il), { n_embd, n_ff_shexp }, 0);
+         layer.ffn_down_shexp     = create_tensor(tn(LLM_TENSOR_FFN_DOWN_SHEXP,     "weight", il), { n_ff_shexp, n_embd }, 0);
+     }
++
++    // the MTP block is one dense-attention layer with its own input fusion. It has no PLE and no
++    // linear attention, so it is built here instead of in the loop above
++    for (int il = n_layer; il < n_layer + n_layer_nextn; ++il) {
++        auto & layer = layers[il];
++
++        const int flags = ml.load_mtp ? 0 : TENSOR_SKIP;
++
++        const int64_t n_ff_exp   = hparams.n_ff_exp   ? hparams.n_ff_exp   : n_ff / n_expert_used;
++        const int64_t n_ff_shexp = hparams.n_ff_shexp ? hparams.n_ff_shexp : n_ff;
++
++        layer.hc_attn_norm   = create_tensor(tn(LLM_TENSOR_HC_ATTN_NORM,   "weight", il), { hc_dim }, flags);
++        layer.hc_attn_down   = create_tensor(tn(LLM_TENSOR_HC_ATTN_DOWN,   "weight", il), { hc_dim, hc_lr }, flags);
++        layer.hc_attn_up     = create_tensor(tn(LLM_TENSOR_HC_ATTN_UP,     "weight", il), { hc_lr, hc_dim }, flags);
++        layer.hc_attn_inject = create_tensor(tn(LLM_TENSOR_HC_ATTN_INJECT, "weight", il), { hc_dim, hc }, flags);
++        layer.hc_ffn_norm    = create_tensor(tn(LLM_TENSOR_HC_FFN_NORM,    "weight", il), { hc_dim }, flags);
++        layer.hc_ffn_down    = create_tensor(tn(LLM_TENSOR_HC_FFN_DOWN,    "weight", il), { hc_dim, hc_lr }, flags);
++        layer.hc_ffn_up      = create_tensor(tn(LLM_TENSOR_HC_FFN_UP,      "weight", il), { hc_lr, hc_dim }, flags);
++        layer.hc_ffn_inject  = create_tensor(tn(LLM_TENSOR_HC_FFN_INJECT,  "weight", il), { hc_dim, hc }, flags);
++
++        create_tensor_qkv(layer, il, n_embd, n_embd_head_k * n_head * 2, n_embd_k_gqa, n_embd_v_gqa, flags);
++        layer.wo          = create_tensor(tn(LLM_TENSOR_ATTN_OUT,    "weight", il), { n_embd_head_k * n_head, n_embd }, flags);
++        layer.attn_q_norm = create_tensor(tn(LLM_TENSOR_ATTN_Q_NORM, "weight", il), { n_embd_head_k }, flags);
++        layer.attn_k_norm = create_tensor(tn(LLM_TENSOR_ATTN_K_NORM, "weight", il), { n_embd_head_k }, flags);
++
++        // the MTP attention runs dense, so the indexer tensors are in the file but never read
++        const int64_t idx_dim   = hparams.indexer_head_size;
++        const int     idx_flags = TENSOR_NOT_REQUIRED | TENSOR_SKIP;
++        layer.index_q_proj = create_tensor(tn(LLM_TENSOR_INDEXER_Q_PROJ, "weight", il), { n_embd, hparams.indexer_n_head * idx_dim }, idx_flags);
++        layer.index_k_proj = create_tensor(tn(LLM_TENSOR_INDEXER_K_PROJ, "weight", il), { n_embd, idx_dim }, idx_flags);
++        layer.index_q_norm = create_tensor(tn(LLM_TENSOR_INDEXER_Q_NORM, "weight", il), { idx_dim }, idx_flags);
++        layer.index_k_norm = create_tensor(tn(LLM_TENSOR_INDEXER_K_NORM, "weight", il), { idx_dim }, idx_flags);
++
++        layer.ffn_gate_inp  = create_tensor(tn(LLM_TENSOR_FFN_GATE_INP,  "weight", il), { n_embd, n_expert }, flags);
++        layer.ffn_down_exps = create_tensor(tn(LLM_TENSOR_FFN_DOWN_EXPS, "weight", il), { n_ff_exp, n_embd, n_expert }, flags);
++        create_tensor_gate_up_exps(layer, il, n_embd, n_ff_exp, n_expert, flags);
++
++        layer.ffn_gate_inp_shexp = create_tensor(tn(LLM_TENSOR_FFN_GATE_INP_SHEXP, "weight", il), { n_embd }, flags);
++        layer.ffn_gate_shexp     = create_tensor(tn(LLM_TENSOR_FFN_GATE_SHEXP,     "weight", il), { n_embd, n_ff_shexp }, flags);
++        layer.ffn_up_shexp       = create_tensor(tn(LLM_TENSOR_FFN_UP_SHEXP,       "weight", il), { n_embd, n_ff_shexp }, flags);
++        layer.ffn_down_shexp     = create_tensor(tn(LLM_TENSOR_FFN_DOWN_SHEXP,     "weight", il), { n_ff_shexp, n_embd }, flags);
++
++        // hnorm is over the whole hyper-connection row, not per stream
++        layer.nextn.enorm   = create_tensor(tn(LLM_TENSOR_NEXTN_ENORM,   "weight", il), { n_embd }, flags);
++        layer.nextn.hnorm   = create_tensor(tn(LLM_TENSOR_NEXTN_HNORM,   "weight", il), { hc_dim }, flags);
++        layer.nextn.eh_proj = create_tensor(tn(LLM_TENSOR_NEXTN_EH_PROJ, "weight", il), { 2 * n_embd, n_embd }, flags);
++    }
+ }
+ 
+ std::unique_ptr<llm_graph_context> llama_model_qwen4exp::build_arch_graph(const llm_graph_params & params) const {
++    if (params.gtype == LLM_GRAPH_TYPE_DECODER_MTP) {
++        return std::make_unique<graph_mtp>(*this, params);
++    }
+     return std::make_unique<graph>(*this, params);
+ }
+ 
++// members only: graph_mtp builds the nextn block on its own
++llama_model_qwen4exp::graph::graph(const llama_model & model, const llm_graph_params & params, bool /*no_build*/) :
++    llm_build_delta_net_base(params), model(model) {
++}
++
+ // Hyper-connections keep hc parallel residual streams [n_embd, hc, T] in place of layer norms.
+ // Returns the mixed [n_embd, T] stream; `inject` gets the [hc, T] scatter weights.
+ ggml_tensor * llama_model_qwen4exp::graph::build_hc_mix(
+@@ -374,6 +438,9 @@ llama_model_qwen4exp::graph::graph(const llama_model & model, const llm_graph_pa
+             n_embd, hc, n_tokens, 1);
+     cb(res_hc, "hc_init", -1);
+ 
++    // an unmasked nextn read-back wants the streams of every token, so the row drop waits for the head
++    const bool keep_all_rows = cparams.embeddings_nextn && !cparams.embeddings_nextn_masked;
++
+     for (int il = 0; il < n_layer; ++il) {
+         res->t_layer_inp[il] = res_hc;
+ 
+@@ -397,7 +464,7 @@ llama_model_qwen4exp::graph::graph(const llama_model & model, const llm_graph_pa
+             cur = build_layer_attn(inp->get_attn(), mctx_hyb, cur, inp_pos, sections, il);
+         }
+ 
+-        if (il == n_layer - 1 && inp_out_ids) {
++        if (il == n_layer - 1 && inp_out_ids && !keep_all_rows) {
+             // everything below is per token, so drop the rows that produce no output
+             cur    = ggml_get_rows(ctx0, cur,    inp_out_ids);
+             inject = ggml_get_rows(ctx0, inject, inp_out_ids);
+@@ -425,6 +492,20 @@ llama_model_qwen4exp::graph::graph(const llama_model & model, const llm_graph_pa
+         cb(res_hc, "l_last", il);
+     }
+ 
++    // the MTP block consumes the streams, so hand them over before the mixer collapses them. The
++    // [n_embd, hc, rows] block is laid out exactly as the [hc*n_embd, rows] the read-back copies, and
++    // it feeds the head below, so the scheduler places it - a detached view of it would get no backend
++    if (cparams.embeddings_nextn) {
++        cb(res_hc, "h_nextn", -1);
++        res->t_h_nextn = res_hc;
++    }
++
++    if (keep_all_rows && inp_out_ids) {
++        ggml_tensor * flat = ggml_reshape_2d(ctx0, res_hc, n_embd*hc, res_hc->ne[2]);
++        flat   = ggml_get_rows(ctx0, flat, inp_out_ids);
++        res_hc = ggml_reshape_3d(ctx0, flat, n_embd, hc, flat->ne[1]);
++    }
++
+     // the final mixer is the output norm: there is no separate one
+     ggml_tensor * cur = build_hc_mix(res_hc,
+             model.hc_head_norm, model.hc_head_down, model.hc_head_up,
+@@ -765,8 +846,8 @@ ggml_tensor * llama_model_qwen4exp::graph::build_layer_attn(
+     const int64_t n_embd_head = hparams.n_embd_head_v();
+     GGML_ASSERT(n_embd_head == hparams.n_embd_head_k());
+ 
+-    // indexer reads the same block input as q/k/v; no cache or no ratio means dense
+-    const bool qsa = mctx_hyb->get_idx() != nullptr && hparams.dsv4_compress_ratios[il] > 0;
++    // indexer reads the same block input as q/k/v; no memory, no cache or no ratio means dense
++    const bool qsa = mctx_hyb != nullptr && mctx_hyb->get_idx() != nullptr && hparams.dsv4_compress_ratios[il] > 0;
+ 
+     ggml_tensor * top_k = qsa ? build_qsa_top_k(mctx_hyb, cur, inp_pos, inp->get_kq_mask(), sections, il) : nullptr;
+ 
+@@ -1277,3 +1358,119 @@ ggml_tensor * llama_model_qwen4exp::graph::build_ple(
+ 
+     return ggml_add(ctx0, hidden, ggml_add(ctx0, gated, conv_out));
+ }
++
++// LLM_GRAPH_TYPE_DECODER_MTP draft head. The MTP block predicts the next-next token from the
++// target's hyper-connection streams and the embedding of the token the target just produced:
++// one dense-attention layer with its own input fusion, no PLE, no linear attention.
++// ref: sglang qwen4_exp_mtp.py, and src/models/deepseek4.cpp for the same shape of MTP block
++llama_model_qwen4exp::graph_mtp::graph_mtp(const llama_model & model, const llm_graph_params & params)
++    : graph(model, params, /*no_build=*/ true) {
++    GGML_ASSERT(hparams.n_layer_nextn > 0 && "QWEN4EXP MTP requires n_layer_nextn > 0");
++    GGML_ASSERT(hparams.n_layer_nextn == 1 && "QWEN4EXP MTP currently only supports a single MTP block");
++    GGML_ASSERT(ubatch.token && "QWEN4EXP MTP requires token input");
++    GGML_ASSERT(hparams.n_embd_head_v() == hparams.n_embd_head_k());
++
++    const int64_t hc = hparams.dsv4_hc_mult;
++    GGML_ASSERT(hparams.n_embd_out() == (uint32_t) (n_embd*hc) && "QWEN4EXP MTP hidden width mismatch");
++
++    const int il = hparams.n_layer();
++    const auto & layer = model.layers[il];
++
++    GGML_ASSERT(layer.nextn.eh_proj && "MTP block missing nextn.eh_proj");
++    GGML_ASSERT(layer.nextn.enorm   && "MTP block missing nextn.enorm");
++    GGML_ASSERT(layer.nextn.hnorm   && "MTP block missing nextn.hnorm");
++
++    int sections[4];
++    std::copy(std::begin(hparams.rope_sections), std::begin(hparams.rope_sections) + 4, sections);
++
++    auto inp = std::make_unique<llm_graph_input_embd_h>(hparams.n_embd_out());
++
++    inp->tokens = ggml_new_tensor_1d(ctx0, GGML_TYPE_I32, n_tokens);
++    ggml_set_input(inp->tokens);
++
++    inp->embd = ggml_new_tensor_2d(ctx0, GGML_TYPE_F32, hparams.n_embd_out(), n_tokens);
++    ggml_set_input(inp->embd);
++
++    inp->h = ggml_new_tensor_2d(ctx0, GGML_TYPE_F32, hparams.n_embd_out(), n_tokens);
++    ggml_set_input(inp->h);
++    ggml_set_name(inp->h, "mtp_h_input");
++
++    // the head-only file carries the trunk's token_embd; a nextn.embed_tokens would take precedence
++    ggml_tensor * tok_embd_w = layer.nextn.embed_tokens ? layer.nextn.embed_tokens : model.tok_embd;
++    ggml_tensor * tok_embd = ggml_get_rows(ctx0, tok_embd_w, inp->tokens);
++    cb(tok_embd, "mtp_tok_embd", il);
++
++    ggml_tensor * h = inp->h;
++
++    res->add_input(std::move(inp));
++
++    ggml_tensor * inp_pos     = build_inp_pos();
++    ggml_tensor * inp_out_ids = build_inp_out_ids();
++
++    auto * inp_attn = build_attn_inp_kv();
++
++    // the reference norms the whole hyper-connection row and only then splits it into streams,
++    // so hnorm is hc*n_embd wide - unlike deepseek4, which norms each stream
++    ggml_tensor * h_norm = build_norm(h, layer.nextn.hnorm, nullptr, LLM_NORM_RMS, il);
++    h_norm = ggml_reshape_3d(ctx0, h_norm, n_embd, hc, n_tokens);
++    cb(h_norm, "mtp_hnorm", il);
++
++    // the embedding term is shared by every stream
++    ggml_tensor * e_norm = build_norm(tok_embd, layer.nextn.enorm, nullptr, LLM_NORM_RMS, il);
++    e_norm = ggml_reshape_3d(ctx0, e_norm, n_embd, 1, n_tokens);
++    e_norm = ggml_repeat_4d(ctx0, e_norm, n_embd, hc, n_tokens, 1);
++    cb(e_norm, "mtp_enorm", il);
++
++    // fc_embedding(e) + fc_hidden(h) is one projection of the concatenation, see the conversion
++    ggml_tensor * concat = ggml_concat(ctx0, e_norm, h_norm, 0);
++    cb(concat, "mtp_concat", il);
++
++    ggml_tensor * res_hc = build_lora_mm(layer.nextn.eh_proj, concat, layer.nextn.eh_proj_s);
++    cb(res_hc, "mtp_eh_proj", il);
++
++    ggml_tensor * inject = nullptr;
++    ggml_tensor * cur = build_hc_mix(res_hc,
++            layer.hc_attn_norm, layer.hc_attn_down, layer.hc_attn_up, layer.hc_attn_inject,
++            &inject, il);
++    cb(cur, "mtp_hc_attn_pre", il);
++
++    // the draft runs the attention dense: the MTP context is a plain KV cache without an indexer
++    cur = build_layer_attn(inp_attn, nullptr, cur, inp_pos, sections, il);
++
++    res_hc = build_hc_combine(res_hc, cur, inject, il);
++    cb(res_hc, "mtp_hc_attn_post", il);
++
++    cur = build_hc_mix(res_hc,
++            layer.hc_ffn_norm, layer.hc_ffn_down, layer.hc_ffn_up, layer.hc_ffn_inject,
++            &inject, il);
++    cb(cur, "mtp_hc_ffn_pre", il);
++
++    cur = build_layer_ffn(cur, il);
++    cb(cur, "mtp_ffn_out", il);
++
++    res_hc = build_hc_combine(res_hc, cur, inject, il);
++    cb(res_hc, "mtp_l_out", il);
++
++    // the draft context reads the streams masked, so only the output rows are handed over
++    ggml_tensor * flat = ggml_reshape_2d(ctx0, res_hc, n_embd*hc, n_tokens);
++    if (inp_out_ids) {
++        flat = ggml_get_rows(ctx0, flat, inp_out_ids);
++    }
++    cb(flat, "h_nextn", -1);
++    res->t_h_nextn = flat;
++
++    res_hc = ggml_reshape_3d(ctx0, flat, n_embd, hc, flat->ne[1]);
++
++    // the final mixer is the output norm, as in the trunk
++    cur = build_hc_mix(res_hc,
++            model.hc_head_norm, model.hc_head_down, model.hc_head_up,
++            nullptr, nullptr, -1);
++    cb(cur, "result_norm", -1);
++    res->t_embd = cur;
++
++    cur = build_lora_mm(model.output, cur, model.output_s);
++    cb(cur, "result_output", -1);
++    res->t_logits = cur;
++
++    ggml_build_forward_expand(gf, cur);
++}
+diff --git a/tools/CMakeLists.txt b/tools/CMakeLists.txt
+index c8ad1db..9c5b188 100644
+--- a/tools/CMakeLists.txt
++++ b/tools/CMakeLists.txt
+@@ -29,6 +29,7 @@ else()
+     add_subdirectory(tokenize)
+     add_subdirectory(tts)
+     add_subdirectory(mtmd)
++    add_subdirectory(ring-bench)
+     if (GGML_RPC)
+         add_subdirectory(rpc)
+     endif()
+diff --git a/tools/ring-bench/CMakeLists.txt b/tools/ring-bench/CMakeLists.txt
+new file mode 100644
+index 0000000..6f4eec3
+--- /dev/null
++++ b/tools/ring-bench/CMakeLists.txt
+@@ -0,0 +1,7 @@
++set(TARGET llama-ring-bench)
++add_executable(${TARGET} ring-bench.cpp)
++if(LLAMA_TOOLS_INSTALL)
++    install(TARGETS ${TARGET} RUNTIME)
++endif()
++target_link_libraries(${TARGET} PRIVATE llama-common llama ${CMAKE_THREAD_LIBS_INIT})
++target_compile_features(${TARGET} PRIVATE cxx_std_17)
+diff --git a/tools/ring-bench/ring-bench.cpp b/tools/ring-bench/ring-bench.cpp
+new file mode 100644
+index 0000000..7bbc431
+--- /dev/null
++++ b/tools/ring-bench/ring-bench.cpp
+@@ -0,0 +1,322 @@
++// llama-ring-bench: multi-stream benchmark for the RPC dispatcher.
++//
++// Loads one model, opens `--streams N` separate llama_context objects against it (context 0 via
++// common_init_from_params, 1..N-1 via llama_init_from_model with the same params), and runs each
++// stream's prompt + greedy generation on its own std::thread, started together via a barrier.
++// All streams that touch the same --rpc endpoint share ggml-rpc's per-process rpc_dispatcher
++// (see get_dispatcher() in ggml-rpc.cpp) and its one TCP connection per endpoint, so this is the
++// tool that can actually show whether GGML_RPC_PIPELINE=1 (writer/reader split, no head-of-line
++// blocking on the shared socket) beats the default single-threaded dispatcher when multiple
++// contexts contend for it, as opposed to the single-stream case where there's nothing to overlap.
++
++#include "arg.h"
++#include "common.h"
++#include "log.h"
++#include "llama.h"
++
++#define JSON_ASSERT GGML_ASSERT
++#include <nlohmann/json.hpp>
++
++#include <algorithm>
++#include <atomic>
++#include <chrono>
++#include <cstdio>
++#include <fstream>
++#include <mutex>
++#include <string>
++#include <thread>
++#include <vector>
++
++using json = nlohmann::ordered_json;
++using clock_type = std::chrono::steady_clock;
++
++static double ms_since(clock_type::time_point t0) {
++    return std::chrono::duration<double, std::milli>(clock_type::now() - t0).count();
++}
++
++// fixed prompt list, cycled if --streams > 8
++static const std::vector<std::string> kPrompts = {
++    "Write a Python binary search function and one test.",
++    "Explain speculative decoding in four sentences.",
++    "Solve: 17*23. Explain briefly.",
++    "Return minified JSON: country of Zagreb and confidence.",
++    "List three prime numbers above 100 and why they are prime.",
++    "Describe a Wi-Fi power-save bug in two sentences.",
++    "Write a haiku about latency.",
++    "Give the SI unit of inductance and one use.",
++};
++
++struct stream_result {
++    int                      stream_id = 0;
++    std::string              prompt;
++    std::vector<llama_token> prompt_tokens;
++    std::vector<llama_token> gen_tokens;
++    std::string              gen_text;
++    double                   prompt_ms = 0.0;   // time to decode the prompt batch
++    std::vector<double>      per_token_ms;       // wall time for each generated token
++    bool                     ok = true;
++    std::string              error;
++};
++
++static void print_usage(int, char ** argv) {
++    LOG("\nexample usage:\n");
++    LOG("\n    %s -m model.gguf --rpc host:port[,host:port...] --device RPC0,RPC1,MTL0 --tensor-split 1,1,2 "
++        "-ngl 999 -c 2048 -t 4 -n 48 --streams 4 --out results.json\n", argv[0]);
++    LOG("\n    --streams N   number of concurrent llama_context streams sharing the model (default 1)\n");
++    LOG("    --out FILE    path to write the JSON results (default: none, stdout summary only)\n");
++    LOG("\n");
++}
++
++// Runs one stream end to end: tokenize -> decode prompt in one batch -> greedy-argmax generate
++// -n tokens one at a time via llama_get_logits_ith(ctx, -1). No sampler, no randomness, so output
++// is directly comparable across runs (dispatcher on/off, delay on/off) byte for byte.
++static void run_stream(llama_context * ctx, const llama_vocab * vocab, int stream_id, int n_predict,
++                        std::atomic<int> * ready, int n_total, std::atomic<bool> * go, stream_result * out) {
++    out->stream_id = stream_id;
++    out->prompt    = kPrompts[stream_id % kPrompts.size()];
++
++    // tokenize before the barrier: this is local CPU work, not part of what we're timing, and
++    // doing it up front means every thread hits llama_decode() as close to "go" as possible.
++    out->prompt_tokens = common_tokenize(vocab, out->prompt, /*add_special=*/true, /*parse_special=*/true);
++    if (out->prompt_tokens.empty()) {
++        out->ok    = false;
++        out->error = "empty tokenization";
++        ready->fetch_add(1);
++        return;
++    }
++
++    // barrier: wait for every stream's thread to be ready and tokenized, then all release together
++    ready->fetch_add(1);
++    while (ready->load() < n_total) {
++        std::this_thread::yield();
++    }
++    while (!go->load()) {
++        std::this_thread::yield();
++    }
++
++    auto t_prompt0 = clock_type::now();
++    {
++        llama_batch batch = llama_batch_get_one(out->prompt_tokens.data(), (int32_t) out->prompt_tokens.size());
++        int ret = llama_decode(ctx, batch);
++        if (ret != 0) {
++            out->ok    = false;
++            out->error = "llama_decode(prompt) failed, ret=" + std::to_string(ret);
++            return;
++        }
++    }
++    out->prompt_ms = ms_since(t_prompt0);
++
++    out->gen_tokens.reserve(n_predict);
++    out->per_token_ms.reserve(n_predict);
++
++    for (int i = 0; i < n_predict; i++) {
++        auto t0 = clock_type::now();
++
++        float * logits = llama_get_logits_ith(ctx, -1);
++        if (logits == nullptr) {
++            out->ok    = false;
++            out->error = "llama_get_logits_ith returned null at step " + std::to_string(i);
++            return;
++        }
++
++        const int32_t n_vocab = llama_vocab_n_tokens(vocab);
++        int32_t       best_id = 0;
++        float         best_v  = logits[0];
++        for (int32_t v = 1; v < n_vocab; v++) {
++            if (logits[v] > best_v) {
++                best_v  = logits[v];
++                best_id = v;
++            }
++        }
++        llama_token next = (llama_token) best_id;
++
++        out->gen_tokens.push_back(next);
++        out->gen_text += common_token_to_piece(vocab, next, /*special=*/false);
++
++        llama_batch batch = llama_batch_get_one(&next, 1);
++        int ret = llama_decode(ctx, batch);
++        if (ret != 0) {
++            out->ok    = false;
++            out->error = "llama_decode(gen) failed at step " + std::to_string(i) + ", ret=" + std::to_string(ret);
++            return;
++        }
++
++        out->per_token_ms.push_back(ms_since(t0));
++    }
++}
++
++static double median(std::vector<double> v) {
++    if (v.empty()) {
++        return 0.0;
++    }
++    std::sort(v.begin(), v.end());
++    size_t n = v.size();
++    return (n % 2 == 1) ? v[n / 2] : (v[n / 2 - 1] + v[n / 2]) / 2.0;
++}
++
++int main(int argc, char ** argv) {
++    // custom args, stripped from argv before common_params_parse sees it (it doesn't know them).
++    // `filtered` must outlive the common_params_parse() call below since argv is repointed at
++    // its buffer -- keep it at function scope, not a nested block, or argv dangles.
++    int                  streams = 1;
++    std::string          out_path;
++    std::vector<char *>  filtered;
++    filtered.push_back(argv[0]);
++    for (int i = 1; i < argc; i++) {
++        std::string a = argv[i];
++        if (a == "--streams" && i + 1 < argc) {
++            streams = std::max(1, atoi(argv[++i]));
++            continue;
++        }
++        if (a == "--out" && i + 1 < argc) {
++            out_path = argv[++i];
++            continue;
++        }
++        filtered.push_back(argv[i]);
++    }
++    argc = (int) filtered.size();
++    argv = filtered.data();
++
++    common_params params;
++    common_init();
++
++    if (!common_params_parse(argc, argv, params, LLAMA_EXAMPLE_COMMON, print_usage)) {
++        return 1;
++    }
++
++    const int n_predict = params.n_predict > 0 ? params.n_predict : 32;
++
++    llama_backend_init();
++    llama_numa_init(params.numa);
++
++    LOG("%s: loading model, then opening %d stream%s\n", __func__, streams, streams == 1 ? "" : "s");
++
++    auto llama_init = common_init_from_params(params);
++    llama_model *   model = llama_init->model();
++    llama_context * ctx0  = llama_init->context();
++
++    if (model == nullptr || ctx0 == nullptr) {
++        LOG_ERR("%s: failed to load model / create context 0\n", __func__);
++        return 1;
++    }
++
++    const llama_vocab * vocab = llama_model_get_vocab(model);
++
++    std::vector<llama_context *> ctxs;
++    ctxs.push_back(ctx0);
++
++    llama_context_params ctx_params = common_context_params_to_llama(params);
++    for (int i = 1; i < streams; i++) {
++        llama_context * c = llama_init_from_model(model, ctx_params);
++        if (c == nullptr) {
++            LOG_ERR("%s: failed to create context for stream %d\n", __func__, i);
++            // ctx0 is owned by llama_init (RAII); only free the ones we created ourselves
++            for (size_t j = 1; j < ctxs.size(); j++) {
++                llama_free(ctxs[j]);
++            }
++            return 1;
++        }
++        ctxs.push_back(c);
++    }
++
++    std::vector<stream_result> results(streams);
++    std::vector<std::thread>   threads;
++    threads.reserve(streams);
++
++    std::atomic<int>  ready(0);
++    std::atomic<bool> go(false);
++
++    for (int i = 0; i < streams; i++) {
++        threads.emplace_back(run_stream, ctxs[i], vocab, i, n_predict, &ready, streams, &go, &results[i]);
++    }
++
++    // wait until every stream has tokenized and is parked at the barrier, then release all at once
++    while (ready.load() < streams) {
++        std::this_thread::sleep_for(std::chrono::milliseconds(1));
++    }
++    auto t_wall0 = clock_type::now();
++    go.store(true);
++
++    for (auto & t : threads) {
++        t.join();
++    }
++    double wall_s = ms_since(t_wall0) / 1000.0;
++
++    bool all_ok = true;
++    for (auto & r : results) {
++        if (!r.ok) {
++            all_ok = false;
++            LOG_ERR("%s: stream %d FAILED: %s\n", __func__, r.stream_id, r.error.c_str());
++        }
++    }
++
++    int64_t total_gen_tokens = 0;
++    std::vector<double> stream_median_ms;
++    for (auto & r : results) {
++        total_gen_tokens += (int64_t) r.gen_tokens.size();
++        double med = median(r.per_token_ms);
++        stream_median_ms.push_back(med);
++        double mean_ms = 0.0;
++        for (double v : r.per_token_ms) {
++            mean_ms += v;
++        }
++        mean_ms = r.per_token_ms.empty() ? 0.0 : mean_ms / r.per_token_ms.size();
++        LOG("STREAM %d: prompt_ms %.1f, gen ms/token %.2f (%zu tokens)\n",
++            r.stream_id, r.prompt_ms, mean_ms, r.per_token_ms.size());
++    }
++
++    double aggregate_tps = wall_s > 0.0 ? (double) total_gen_tokens / wall_s : 0.0;
++    double per_stream_median_ms = median(stream_median_ms);
++
++    LOG("RESULT streams=%d aggregate_tps=%.3f per_stream_median_ms_per_token=%.3f wall_s=%.3f\n",
++        streams, aggregate_tps, per_stream_median_ms, wall_s);
++
++    if (!out_path.empty()) {
++        json j;
++        j["streams"]                          = streams;
++        j["n_predict"]                         = n_predict;
++        j["wall_s"]                            = wall_s;
++        j["aggregate_tps"]                     = aggregate_tps;
++        j["per_stream_median_ms_per_token"]    = per_stream_median_ms;
++        j["all_ok"]                            = all_ok;
++        j["pipeline_env"]                      = std::getenv("GGML_RPC_PIPELINE") ? std::getenv("GGML_RPC_PIPELINE") : "";
++        j["sched_pipelined_copy_env"]          = std::getenv("GGML_SCHED_PIPELINED_COPY") ? std::getenv("GGML_SCHED_PIPELINED_COPY") : "";
++
++        json streams_j = json::array();
++        for (auto & r : results) {
++            json sj;
++            sj["stream_id"]      = r.stream_id;
++            sj["prompt"]         = r.prompt;
++            sj["prompt_tokens"]  = r.prompt_tokens;
++            sj["prompt_ms"]      = r.prompt_ms;
++            sj["gen_tokens"]     = r.gen_tokens;
++            sj["gen_text"]       = r.gen_text;
++            sj["per_token_ms"]   = r.per_token_ms;
++            sj["ok"]             = r.ok;
++            sj["error"]          = r.error;
++            streams_j.push_back(sj);
++        }
++        j["streams_detail"] = streams_j;
++
++        std::ofstream f(out_path);
++        if (!f) {
++            LOG_ERR("%s: failed to open --out path '%s' for writing\n", __func__, out_path.c_str());
++        } else {
++            f << j.dump(1);
++            f.close();
++            LOG("%s: wrote results to %s\n", __func__, out_path.c_str());
++        }
++    }
++
++    // ctxs[0] == ctx0 is owned by llama_init (a common_init_result_ptr, RAII-wraps model + ctx 0
++    // in llama_model_ptr/llama_context_ptr unique_ptrs) -- only free the contexts we created
++    // ourselves via llama_init_from_model. Destroying llama_init frees ctx0 and the model.
++    for (size_t i = 1; i < ctxs.size(); i++) {
++        llama_free(ctxs[i]);
++    }
++    llama_init.reset();
++
++    llama_backend_free();
++
++    return all_ok ? 0 : 1;
++}
+diff --git a/tools/rpc/rpc-server.cpp b/tools/rpc/rpc-server.cpp
+index 08e6803..68ef11c 100644
+--- a/tools/rpc/rpc-server.cpp
++++ b/tools/rpc/rpc-server.cpp
+@@ -16,6 +16,7 @@
+ #include <filesystem>
+ #include <regex>
+ #include <stdio.h>
++#include <cstdlib>
+ #include <string>
+ #include <thread>
+ #include <vector>
+@@ -175,6 +176,24 @@ struct rpc_server_params {
+     bool                     use_cache   = false;
+     int                      n_threads   = std::max(1U, std::thread::hardware_concurrency()/2);
+     std::vector<std::string> devices;
++    // --peer IDX=host:port (repeatable): peer servers this server can push forwarded tensors to
++    // (see RPC_CMD_FORWARD_TENSOR / RPC_CMD_PUSH_TENSOR in ggml-rpc.cpp). IDX is the client's RPC
++    // device index of that peer, i.e. its position in the client's --rpc endpoint list. Parsed
++    // into (index, endpoint) pairs here -- not directly into ggml_backend_rpc_peer, whose
++    // .endpoint is a raw const char* into storage that must outlive the call, which a
++    // std::vector<std::string> growing across multiple --peer flags cannot promise (a later
++    // push_back can reallocate and invalidate every earlier .c_str()). main() builds the actual
++    // ggml_backend_rpc_peer array right before the (never-returning) start call, once this vector
++    // is done growing.
++    std::vector<std::pair<uint32_t, std::string>> peers;
++    // --peer-port PORT: port this server listens on for inbound pushes from other servers. 0 (the
++    // default) means "no peer listener" -- forwarding INTO this server is then unavailable, same
++    // as if it had no --peer entries pointed at it, though it can still push OUT to peers it does
++    // have --peer entries for.
++    int                      peer_port   = 0;
++    // --mem-cap-mib N: per-device ceiling on what clients may allocate here and on the memory
++    // reported to them (exported as GGML_RPC_MEM_CAP_MIB for the RPC backend). 0 = off.
++    int                      mem_cap_mib = 0;
+ };
+ 
+ static void print_usage(int /*argc*/, char ** argv, rpc_server_params params) {
+@@ -186,6 +205,12 @@ static void print_usage(int /*argc*/, char ** argv, rpc_server_params params) {
+     fprintf(stderr, "  -H, --host HOST                  host to bind to (default: %s)\n", params.host.c_str());
+     fprintf(stderr, "  -p, --port PORT                  port to bind to (default: %d)\n", params.port);
+     fprintf(stderr, "  -c, --cache                      enable local file cache\n");
++    fprintf(stderr, "  --peer IDX=HOST:PORT             a peer server this server can push forwarded tensors to\n");
++    fprintf(stderr, "                                    (repeatable). IDX is that peer's position in the\n");
++    fprintf(stderr, "                                    client's --rpc endpoint list.\n");
++    fprintf(stderr, "  --mem-cap-mib N                  cap per device, in MiB, on client allocations and reported memory (default: off)\n");
++    fprintf(stderr, "  --peer-port PORT                 port to listen on for inbound pushes from other servers\n");
++    fprintf(stderr, "                                    (default: off -- no peer listener)\n");
+     fprintf(stderr, "\n");
+ }
+ 
+@@ -233,6 +258,42 @@ static bool rpc_server_params_parse(int argc, char ** argv, rpc_server_params &
+             }
+         } else if (arg == "-c" || arg == "--cache") {
+             params.use_cache = true;
++        } else if (arg == "--peer") {
++            if (++i >= argc) {
++                return false;
++            }
++            std::string spec = argv[i];
++            size_t eq = spec.find('=');
++            if (eq == std::string::npos || eq == 0 || eq + 1 >= spec.size()) {
++                fprintf(stderr, "error: invalid --peer (expected IDX=HOST:PORT): %s\n", spec.c_str());
++                return false;
++            }
++            uint32_t idx;
++            try {
++                idx = (uint32_t) std::stoul(spec.substr(0, eq));
++            } catch (const std::exception &) {
++                fprintf(stderr, "error: invalid --peer index: %s\n", spec.c_str());
++                return false;
++            }
++            params.peers.emplace_back(idx, spec.substr(eq + 1));
++        } else if (arg == "--mem-cap-mib") {
++            if (++i >= argc) {
++                return false;
++            }
++            params.mem_cap_mib = std::stoi(argv[i]);
++            if (params.mem_cap_mib <= 0) {
++                fprintf(stderr, "error: invalid --mem-cap-mib: %s\n", argv[i]);
++                return false;
++            }
++        } else if (arg == "--peer-port") {
++            if (++i >= argc) {
++                return false;
++            }
++            params.peer_port = std::stoi(argv[i]);
++            if (params.peer_port <= 0 || params.peer_port > 65535) {
++                fprintf(stderr, "error: invalid --peer-port: %s\n", argv[i]);
++                return false;
++            }
+         } else if (arg == "-h" || arg == "--help") {
+             print_usage(argc, argv, params);
+             exit(0);
+@@ -331,6 +392,35 @@ int main(int argc, char * argv[]) {
+         return 1;
+     }
+ 
++    if (params.mem_cap_mib > 0) {
++        std::string cap = std::to_string(params.mem_cap_mib);
++#ifdef _WIN32
++        _putenv_s("GGML_RPC_MEM_CAP_MIB", cap.c_str());
++#else
++        setenv("GGML_RPC_MEM_CAP_MIB", cap.c_str(), 1);
++#endif
++        fprintf(stderr, "memory cap: %d MiB per device (GGML_RPC_MEM_CAP_MIB)\n", params.mem_cap_mib);
++    }
++
++    if (!params.peers.empty() || params.peer_port != 0) {
++        auto start_server_ex_fn = (decltype(ggml_backend_rpc_start_server_ex)*) ggml_backend_reg_get_proc_address(reg, "ggml_backend_rpc_start_server_ex");
++        if (!start_server_ex_fn) {
++            fprintf(stderr, "Failed to obtain RPC backend start_server_ex function (--peer/--peer-port need protocol v8+)\n");
++            return 1;
++        }
++        // params.peers is done growing now (arg parsing is finished), so it's safe to point
++        // ggml_backend_rpc_peer::endpoint at its strings' storage -- see the comment on
++        // rpc_server_params::peers for why this can't be built incrementally during parsing.
++        std::vector<ggml_backend_rpc_peer> peers;
++        peers.reserve(params.peers.size());
++        for (const auto & p : params.peers) {
++            peers.push_back(ggml_backend_rpc_peer{ p.first, p.second.c_str() });
++        }
++        start_server_ex_fn(endpoint.c_str(), cache_dir, params.n_threads, devices.size(), devices.data(),
++                            peers.data(), peers.size(), params.peer_port);
++        return 0;
++    }
++
+     auto start_server_fn = (decltype(ggml_backend_rpc_start_server)*) ggml_backend_reg_get_proc_address(reg, "ggml_backend_rpc_start_server");
+     if (!start_server_fn) {
+         fprintf(stderr, "Failed to obtain RPC backend start server function\n");

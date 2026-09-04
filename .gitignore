@@ -23,3 +23,8 @@ sin-harness/knowledge/
 # dockerized-node runtime artifacts (per-node sqlite/knowledge clones)
 sin-harness/data-docker/
 .gstack/
+
+# swarmlet product surface: engine checkouts/builds and build logs are regenerable
+swarmlet/engine/.build/
+swarmlet/engine/build-*.log
+swarmlet/**/*.log

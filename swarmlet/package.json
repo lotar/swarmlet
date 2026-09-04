@@ -1,0 +1,25 @@
+{
+  "name": "swarmlet",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Swarmlet product surface: node agent, control plane, shared protocol, engine build",
+  "license": "SEE LICENSE IN ../LICENSE",
+  "engines": {
+    "bun": "1.3.14"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "bun run typecheck && bun test protocol control node-agent",
+    "test:protocol": "bun test protocol",
+    "test:control": "bun test control",
+    "test:agent": "bun test node-agent",
+    "control": "bun run control/main.ts",
+    "agent": "bun run node-agent/main.ts",
+    "build:agent": "bun run node-agent/build.ts"
+  },
+  "devDependencies": {
+    "@types/bun": "1.3.14",
+    "typescript": "5.9.2"
+  }
+}
