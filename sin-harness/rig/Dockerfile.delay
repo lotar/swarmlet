@@ -1,0 +1,17 @@
+# syntax=docker/dockerfile:1
+#
+# swarmlet-rig-delay: userspace TCP delay-line proxy, symmetric one-way
+# delay in both directions (unlike node netem, which is egress-only and
+# doubles delay on one direction to compensate — see entrypoint.sh).
+# One instance fronts a node's client port and peer port so pushes
+# between nodes pay the same one-way cost as client<->node calls.
+#
+# Small on purpose: pure-stdlib asyncio script, no deps beyond the
+# python:3.12-slim base.
+
+FROM --platform=linux/arm64 python:3.12-slim
+
+COPY delay-proxy.py /usr/local/bin/delay-proxy.py
+RUN chmod +x /usr/local/bin/delay-proxy.py
+
+ENTRYPOINT ["python3", "/usr/local/bin/delay-proxy.py"]

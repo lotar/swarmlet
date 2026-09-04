@@ -1,0 +1,53 @@
+diff --git a/examples/CMakeLists.txt b/examples/CMakeLists.txt
+index 39f802d..cc9270e 100644
+--- a/examples/CMakeLists.txt
++++ b/examples/CMakeLists.txt
+@@ -27,6 +27,7 @@ else()
+     add_subdirectory(parallel)
+     add_subdirectory(passkey)
+     add_subdirectory(retrieval)
++    add_subdirectory(remote-mtp)
+     add_subdirectory(simple)
+     add_subdirectory(simple-chat)
+     add_subdirectory(speculative)
+diff --git a/src/llama-arch.cpp b/src/llama-arch.cpp
+index 07bf881..416ab2c 100644
+--- a/src/llama-arch.cpp
++++ b/src/llama-arch.cpp
+@@ -1076,6 +1076,7 @@ bool llm_arch_is_diffusion(const llm_arch & arch) {
+ 
+ bool llm_arch_supports_rs_rollback(const llm_arch & arch) {
+     switch (arch) {
++        case LLM_ARCH_QWEN4EXP:
+         case LLM_ARCH_QWEN35:
+         case LLM_ARCH_QWEN35MOE:
+         case LLM_ARCH_DEEPSEEK4:
+diff --git a/src/llama-memory-hybrid.cpp b/src/llama-memory-hybrid.cpp
+index 24ce93d..c15cd9c 100644
+--- a/src/llama-memory-hybrid.cpp
++++ b/src/llama-memory-hybrid.cpp
+@@ -199,13 +199,19 @@ bool llama_memory_hybrid::seq_rm(llama_seq_id seq_id, llama_pos p0, llama_pos p1
+     if (!mem_recr->seq_rm(seq_id, p0, p1)) {
+         return false;
+     }
+-    if (mem_lid) {
+-        mem_lid->seq_rm(seq_id, p0, p1);
++    if (mem_lid && !mem_lid->seq_rm(seq_id, p0, p1)) {
++        LLAMA_LOG_ERROR("%s: lightning-indexer recurrent rollback failed for seq %d range [%d, %d)\n", __func__, seq_id, p0, p1);
++        return false;
+     }
+-    if (mem_ple) {
+-        mem_ple->seq_rm(seq_id, p0, p1);
++    if (mem_ple && !mem_ple->seq_rm(seq_id, p0, p1)) {
++        LLAMA_LOG_ERROR("%s: PLE recurrent rollback failed for seq %d range [%d, %d)\n", __func__, seq_id, p0, p1);
++        return false;
+     }
+-    return mem_attn->seq_rm(seq_id, p0, p1);
++    if (!mem_attn->seq_rm(seq_id, p0, p1)) {
++        LLAMA_LOG_ERROR("%s: attention rollback failed for seq %d range [%d, %d)\n", __func__, seq_id, p0, p1);
++        return false;
++    }
++    return true;
+ }
+ 
+ void llama_memory_hybrid::seq_cp(llama_seq_id seq_id_src, llama_seq_id seq_id_dst, llama_pos p0, llama_pos p1) {

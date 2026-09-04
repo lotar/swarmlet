@@ -1,0 +1,24 @@
+diff --git a/examples/CMakeLists.txt b/examples/CMakeLists.txt
+index 39f802d..627ef53 100644
+--- a/examples/CMakeLists.txt
++++ b/examples/CMakeLists.txt
+@@ -31,6 +31,7 @@ else()
+     add_subdirectory(simple-chat)
+     add_subdirectory(speculative)
+     add_subdirectory(speculative-simple)
++    add_subdirectory(target-verify-bench)
+     add_subdirectory(gen-docs)
+     add_subdirectory(training)
+     add_subdirectory(diffusion)
+diff --git a/src/llama-arch.cpp b/src/llama-arch.cpp
+index 07bf881..416ab2c 100644
+--- a/src/llama-arch.cpp
++++ b/src/llama-arch.cpp
+@@ -1076,6 +1076,7 @@ bool llm_arch_is_diffusion(const llm_arch & arch) {
+ 
+ bool llm_arch_supports_rs_rollback(const llm_arch & arch) {
+     switch (arch) {
++        case LLM_ARCH_QWEN4EXP:
+         case LLM_ARCH_QWEN35:
+         case LLM_ARCH_QWEN35MOE:
+         case LLM_ARCH_DEEPSEEK4:

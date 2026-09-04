@@ -100,6 +100,31 @@ recomputes the bundle digest before serving. `external_poc.py` connects through
 loopback endpoints (normally SSH forwards) and compares routed plus shared FFN
 output against the independent GGUF reference. This path is NumPy/CPU, not CUDA.
 
+## Physical placement matrix
+
+`physical_matrix.py` runs the same content-addressed top-10 expert bundles as
+parallel owners on the Mac, either Legion alone, and all four meaningful 4/6
+or 7/3 two-Legion placements. It measures batch 1/4/16 with exact GGUF parity,
+records worker manifests and source/model hashes, and verifies that the
+production Qwen listener is unchanged after cleanup.
+
+```bash
+python3 proofs/qwen-flash-experts/physical_matrix.py \
+  --shard /path/to/Qwen3.8-Flash-Next-UD-Q4_K_XL-00002-of-00005.gguf \
+  --gguf-py /path/to/llama.cpp/gguf-py \
+  --out data/physical-expert-matrix-$(date -u +%Y%m%dT%H%M%SZ)
+```
+
+The matrix is a layer-0 FFN topology test. It does not claim full-model token
+throughput and intentionally uses portable CPU owners, not a CUDA expert kernel.
+
+The accepted 2026-09-01 physical run measured Legion 2 alone at `12.49 / 43.47
+/ 123.22` layer-0 calls/s for batch 1/4/16. The best two-Legion splits reached
+`14.03 / 27.26 / 88.82`; the batch-1 win flipped across repeat campaigns, while
+the batch-4/16 losses repeated. See `docs/PHYSICAL_SPLIT_MATRIX.md` for the
+complete topology table, repeatability analysis, cross-scope evidence,
+rejected-run notes, and the next decision.
+
 ## Scope
 
 This is the complete layer-0 FFN branch (routed + shared expert/gate). It still

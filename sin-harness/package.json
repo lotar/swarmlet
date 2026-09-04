@@ -10,7 +10,7 @@
   },
   "scripts": {
     "model": "./scripts/start-model.sh",
-    "test": "bun run typecheck && bun run test:unit && bun run test:proofs-portable",
+    "test": "bun run typecheck && bun run test:unit && bun run test:strict-ab-harness && bun run test:proofs-portable",
     "typecheck": "tsc --noEmit",
     "test:unit": "bun test test/l0.test.ts test/loop.test.ts test/graduate.test.ts test/mesh.test.ts test/tiny-moe-distributed.test.ts test/tiny-moe-physical.test.ts test/evals.test.ts",
     "test:integration": "bun test test/e2e.test.ts",
@@ -25,6 +25,7 @@
     "export:qwen-expert-bundles": "python3 proofs/qwen-flash-experts/export_bundles.py",
     "test:qwen-external": "python3 proofs/qwen-flash-experts/external_poc.py",
     "test:dflash-pipeline": "python3 proofs/dflash-pipeline/simulator.py",
+    "test:strict-ab-harness": "python3 proofs/dflash-pipeline/test_strict_ab_harness.py",
     "test:dflash-compat": "python3 proofs/dflash-pipeline/check_compat.py --expect-incompatible",
     "inspect:flashnext-mtp": "python3 proofs/dflash-pipeline/inspect_flashnext_mtp.py",
     "extract:flashnext-mtp:plan": "python3 proofs/dflash-pipeline/extract_flashnext_mtp.py --plan",

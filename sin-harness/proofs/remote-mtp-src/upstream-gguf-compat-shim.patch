@@ -1,0 +1,125 @@
+diff --git a/src/llama-model-loader.cpp b/src/llama-model-loader.cpp
+index 7663797..16eb99d 100644
+--- a/src/llama-model-loader.cpp
++++ b/src/llama-model-loader.cpp
+@@ -8,12 +8,54 @@
+ 
+ #include <algorithm>
+ #include <array>
++#include <functional>
+ #include <cinttypes>
+ #include <cstdint>
+ #include <cstring>
+ #include <future>
+ #include <regex>
+ 
++// --- compatibility shim (lab only): accept PR-era Qwen4Exp GGUF names produced by the local patch script ---
++// metadata keys: upstream name -> name present in the patched file
++static std::string llama_compat_kv_alias(const gguf_context * ctx, const std::string & key) {
++    if (gguf_find_key(ctx, key.c_str()) >= 0) return key;
++    static const std::pair<const char *, const char *> aliases[] = {
++        {".hyper_connection.low_rank", ".hyper_connection.lowrank"},
++        {".ple.layer_multipliers",     ".ple.ngram_multipliers"},
++        {".ple.head_offsets",          ".ple.ngram_offsets"},
++        {".ple.head_vocab_sizes",      ".ple.ngram_vocab_sizes"},
++    };
++    for (const auto & a : aliases) {
++        const std::string from = a.first;
++        if (key.size() > from.size() && key.compare(key.size() - from.size(), from.size(), from) == 0) {
++            const std::string alt = key.substr(0, key.size() - from.size()) + a.second;
++            if (gguf_find_key(ctx, alt.c_str()) >= 0) return alt;
++        }
++    }
++    return key;
++}
++// tensor names: upstream name -> name present in the patched file (PLE layer index is unknown here, so match by suffix)
++static std::string llama_compat_tensor_alias(const std::string & name, const std::function<bool(const std::string &)> & exists) {
++    if (exists(name)) return name;
++    // per_layer_token_embd.weight -> blk.N.ple_ngram_embd.weight (N = the single PLE layer)
++    if (name == "per_layer_token_embd.weight") {
++        for (int n = 0; n < 128; ++n) { const std::string alt = "blk." + std::to_string(n) + ".ple_ngram_embd.weight"; if (exists(alt)) return alt; }
++    }
++    static const std::pair<const char *, const char *> suffixes[] = {
++        {".ple_norm_key.weight",   ".ple_key_norm.weight"},
++        {".ple_norm_query.weight", ".ple_query_norm.weight"},
++        {".ple_norm_conv.weight",  ".ple_conv_norm.weight"},
++    };
++    for (const auto & a : suffixes) {
++        const std::string from = a.first;
++        if (name.size() > from.size() && name.compare(name.size() - from.size(), from.size(), from) == 0) {
++            const std::string alt = name.substr(0, name.size() - from.size()) + a.second;
++            if (exists(alt)) return alt;
++        }
++    }
++    return name;
++}
++
+ static const size_t kiB = 1024;
+ static const size_t MiB = 1024*kiB;
+ static const size_t GiB = 1024*MiB;
+@@ -273,7 +315,8 @@ namespace GGUFMeta {
+ 
+     template<typename T>
+     typename std::enable_if<std::is_integral<T>::value, bool>::type
+-    llama_model_loader::get_arr_n(const std::string & key, T & result, bool required) {
++    llama_model_loader::get_arr_n(const std::string & key_in, T & result, bool required) {
++        const std::string key = llama_compat_kv_alias(metadata, key_in);
+         const int kid = gguf_find_key(metadata, key.c_str());
+ 
+         if (kid < 0) {
+@@ -302,8 +345,9 @@ namespace GGUFMeta {
+     llama_model_loader::get_arr_n<uint32_t>(const std::string & key, uint32_t & result, bool required);
+ 
+     template<typename T>
+-    bool llama_model_loader::get_arr(const std::string & key, std::vector<T> & result, bool required) {
++    bool llama_model_loader::get_arr(const std::string & key_in, std::vector<T> & result, bool required) {
+         const gguf_context * ctx = metadata;
++        const std::string key = llama_compat_kv_alias(ctx, key_in);
+         const int kid = gguf_find_key(ctx, key.c_str());
+ 
+         if (kid < 0 || gguf_get_kv_type(ctx, kid) != GGUF_TYPE_ARRAY) {
+@@ -348,8 +392,9 @@ namespace GGUFMeta {
+     }
+ 
+     template<typename T, size_t N_MAX>
+-    bool llama_model_loader::get_arr(const std::string & key, std::array<T, N_MAX> & result, bool required) {
++    bool llama_model_loader::get_arr(const std::string & key_in, std::array<T, N_MAX> & result, bool required) {
+         const gguf_context * ctx = metadata;
++        const std::string key = llama_compat_kv_alias(ctx, key_in);
+         const int kid = gguf_find_key(ctx, key.c_str());
+ 
+         if (kid < 0 || gguf_get_kv_type(ctx, kid) != GGUF_TYPE_ARRAY) {
+@@ -416,8 +461,11 @@ namespace GGUFMeta {
+     template bool llama_model_loader::get_arr<std::array<uint64_t, LLAMA_MAX_PLE_NGRAM>>(enum llm_kv kid, std::array<uint64_t, LLAMA_MAX_PLE_NGRAM> & result, bool required);
+     template bool llama_model_loader::get_arr<std::array<uint64_t, LLAMA_MAX_PLE_HEADS>>(enum llm_kv kid, std::array<uint64_t, LLAMA_MAX_PLE_HEADS> & result, bool required);
+ 
+-    template<typename T>
+-    bool llama_model_loader::get_key(const std::string & key, T & result, bool required) {
++    
++
++template<typename T>
++    bool llama_model_loader::get_key(const std::string & key_in, T & result, bool required) {
++        const std::string key = llama_compat_kv_alias(metadata, key_in);
+         auto it = kv_overrides.find(key);
+ 
+         const struct llama_model_kv_override * override =
+@@ -456,7 +504,8 @@ namespace GGUFMeta {
+ 
+     // get array of n <= N_MAX elements, or a single element repeated n times
+     template<typename T, size_t N_MAX>
+-    bool llama_model_loader::get_key_or_arr(const std::string & key, std::array<T, N_MAX> & result, uint32_t n, bool required) {
++    bool llama_model_loader::get_key_or_arr(const std::string & key_in, std::array<T, N_MAX> & result, uint32_t n, bool required) {
++        const std::string key = llama_compat_kv_alias(metadata, key_in);
+         const int kid = gguf_find_key(metadata, key.c_str());
+ 
+         if (kid < 0) {
+@@ -837,7 +886,8 @@ enum llm_arch llama_model_loader::get_arch() const {
+     return llm_kv.arch;
+ }
+ 
+-const llama_model_loader::llama_tensor_weight * llama_model_loader::get_weight(const char * name) const {
++const llama_model_loader::llama_tensor_weight * llama_model_loader::get_weight(const char * name_in) const {
++    const std::string name = llama_compat_tensor_alias(name_in, [this](const std::string & n) { return weights_map.find(n) != weights_map.end(); });
+     auto pos = weights_map.find(name);
+     if (pos != weights_map.end()) {
+         return &pos->second;

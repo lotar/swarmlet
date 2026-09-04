@@ -1,0 +1,20 @@
+diff --git a/examples/CMakeLists.txt b/examples/CMakeLists.txt
+index 39f802d..5e6f984 100644
+--- a/examples/CMakeLists.txt
++++ b/examples/CMakeLists.txt
+@@ -24,6 +24,7 @@ else()
+     add_subdirectory(idle)
+     add_subdirectory(lookahead)
+     add_subdirectory(lookup)
++    add_subdirectory(mtp-worker-bench)
+     add_subdirectory(parallel)
+     add_subdirectory(passkey)
+     add_subdirectory(retrieval)
+@@ -31,6 +32,7 @@ else()
+     add_subdirectory(simple-chat)
+     add_subdirectory(speculative)
+     add_subdirectory(speculative-simple)
++    add_subdirectory(target-verify-bench)
+     add_subdirectory(gen-docs)
+     add_subdirectory(training)
+     add_subdirectory(diffusion)

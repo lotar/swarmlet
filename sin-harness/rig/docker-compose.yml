@@ -1,0 +1,220 @@
+# swarmlet-rig: emulated 6-node ggml-rpc ring for distributed-inference
+# testing at scale on a single Mac. Each service is one emulated 16GB
+# remote node (CPU-only compute), fronted by a `delayN` sidecar that
+# applies SYMMETRIC one-way delay in both directions (client<->node and
+# node<->node), unlike the node's own netem (egress-only, see
+# entrypoint.sh) which is now OFF by default and reserved for the old
+# reply-only-cost measurement.
+#
+# Start a subset explicitly, e.g.:
+#   docker compose up -d node1 delay1 node2 delay2
+# ...or just use rig.sh, which does this for you:
+#   ./rig.sh up 2 --profile small
+#
+# Topology:
+#   host:5006N -> delayN:50052 -> nodeN:50052   (client/driver RPC calls)
+#   nodeN peer pushes -> delayN:50053 -> nodeN:50053  (node -> node,
+#     reached only through the OTHER node's delay sidecar, i.e. nodeN
+#     never talks to nodeM directly — always via delayM)
+#
+# Two profiles select the model/topology this rig emulates. Node/delay
+# CONTAINERS are identical either way (same ports, same volumes, so
+# `rig.sh baseline` and published host ports never change) — only the
+# env each node receives (peer wiring, layer count) branches on
+# RIG_PROFILE, which rig.sh sets from `--profile small|q4`:
+#   small  - 2B Q8_0 model, 3 layers/node, 6 containerized nodes,
+#            fits the default 6 GB Docker Desktop VM.
+#   q4     - Qwen3.6-35B-A3B Q4_K_M, 5 layers/node, 6 containerized
+#            nodes + 2 external Legion peers reached at
+#            host.docker.internal:52251 / :52252 (bridged by the
+#            orchestrator on the Mac; no containers for these two —
+#            they're just addresses in PEERS). Needs the `rig`
+#            colima profile (28 GB VM), NOT Docker Desktop's default.
+#
+# Per-node one-way delay (both directions, applied by delayN):
+#   DELAY_MS_1..4 default 8, DELAY_MS_5..6 default 20 (same profile
+#   shape as the old NETEM_DELAY_MS default). Override per-run, e.g.:
+#     DELAY_MS_1=20 DELAY_MS_2=20 ./rig.sh up 2 --profile small
+#
+# Node egress netem (the OLD egress-only mechanism) stays available for
+# comparison runs but defaults OFF (0) now that delayN provides the
+# real symmetric shaping:
+#     NETEM_DELAY_MS=8 ./rig.sh up 2 --profile small   # old mechanism, for A/B only
+#
+# (The x-node/x-delay anchors below share config across services;
+# per-service blocks only set what differs.)
+
+x-node: &node-defaults
+  image: swarmlet-rig-node
+  cap_add:
+    - NET_ADMIN
+  mem_limit: "16g"
+  cpus: 3
+  environment:
+    NETEM_DELAY_MS: "${NETEM_DELAY_MS:-0}"
+    NETEM_JITTER_MS: "2"
+    NETEM_LOSS: "0.1"
+    THREADS: "3"
+    PEER_PORT: "50053"
+  restart: "no"
+  profiles: ["small", "q4"]
+
+x-delay: &delay-defaults
+  image: swarmlet-rig-delay
+  cpus: 1
+  mem_limit: "128m"
+  restart: "no"
+  profiles: ["small", "q4"]
+
+services:
+  # ---------------------------------------------------------------
+  # Node containers (compute). No published ports here — delayN
+  # publishes to the host now; nodes are reached only through their
+  # own delay sidecar, from both the driver and from other nodes.
+  # ---------------------------------------------------------------
+  node1:
+    <<: *node-defaults
+    container_name: node1
+    environment:
+      NETEM_DELAY_MS: "${NETEM_DELAY_MS:-0}"
+      NETEM_JITTER_MS: "2"
+      NETEM_LOSS: "0.1"
+      THREADS: "3"
+      PEER_PORT: "50053"
+      PEERS: "${PEERS_1:-1=delay2:50053 2=delay3:50053 3=delay4:50053 4=delay5:50053 5=delay6:50053}"
+    volumes:
+      - node1-cache:/cache
+
+  node2:
+    <<: *node-defaults
+    container_name: node2
+    environment:
+      NETEM_DELAY_MS: "${NETEM_DELAY_MS:-0}"
+      NETEM_JITTER_MS: "2"
+      NETEM_LOSS: "0.1"
+      THREADS: "3"
+      PEER_PORT: "50053"
+      PEERS: "${PEERS_2:-0=delay1:50053 2=delay3:50053 3=delay4:50053 4=delay5:50053 5=delay6:50053}"
+    volumes:
+      - node2-cache:/cache
+
+  node3:
+    <<: *node-defaults
+    container_name: node3
+    environment:
+      NETEM_DELAY_MS: "${NETEM_DELAY_MS:-0}"
+      NETEM_JITTER_MS: "2"
+      NETEM_LOSS: "0.1"
+      THREADS: "3"
+      PEER_PORT: "50053"
+      PEERS: "${PEERS_3:-0=delay1:50053 1=delay2:50053 3=delay4:50053 4=delay5:50053 5=delay6:50053}"
+    volumes:
+      - node3-cache:/cache
+
+  node4:
+    <<: *node-defaults
+    container_name: node4
+    environment:
+      NETEM_DELAY_MS: "${NETEM_DELAY_MS:-0}"
+      NETEM_JITTER_MS: "2"
+      NETEM_LOSS: "0.1"
+      THREADS: "3"
+      PEER_PORT: "50053"
+      PEERS: "${PEERS_4:-0=delay1:50053 1=delay2:50053 2=delay3:50053 4=delay5:50053 5=delay6:50053}"
+    volumes:
+      - node4-cache:/cache
+
+  node5:
+    <<: *node-defaults
+    container_name: node5
+    environment:
+      NETEM_DELAY_MS: "${NETEM_DELAY_MS:-0}"
+      NETEM_JITTER_MS: "2"
+      NETEM_LOSS: "0.1"
+      THREADS: "3"
+      PEER_PORT: "50053"
+      PEERS: "${PEERS_5:-0=delay1:50053 1=delay2:50053 2=delay3:50053 3=delay4:50053 5=delay6:50053}"
+    volumes:
+      - node5-cache:/cache
+
+  node6:
+    <<: *node-defaults
+    container_name: node6
+    environment:
+      NETEM_DELAY_MS: "${NETEM_DELAY_MS:-0}"
+      NETEM_JITTER_MS: "2"
+      NETEM_LOSS: "0.1"
+      THREADS: "3"
+      PEER_PORT: "50053"
+      PEERS: "${PEERS_6:-0=delay1:50053 1=delay2:50053 2=delay3:50053 3=delay4:50053 4=delay5:50053}"
+    volumes:
+      - node6-cache:/cache
+
+  # ---------------------------------------------------------------
+  # Delay sidecars (symmetric one-way shaping). Each fronts its
+  # node's client port (50052, published to the host) and peer port
+  # (50053, reached by other nodes' PEERS entries — not published to
+  # the host). DELAY_MS_N is the one-way delay applied to BOTH
+  # directions on BOTH ports.
+  # ---------------------------------------------------------------
+  delay1:
+    <<: *delay-defaults
+    container_name: delay1
+    ports:
+      - "50061:50052"
+    command: ["--delay-ms", "${DELAY_MS_1:-8}", "--target-host", "node1", "50052:50052", "50053:50053"]
+    depends_on:
+      - node1
+
+  delay2:
+    <<: *delay-defaults
+    container_name: delay2
+    ports:
+      - "50062:50052"
+    command: ["--delay-ms", "${DELAY_MS_2:-8}", "--target-host", "node2", "50052:50052", "50053:50053"]
+    depends_on:
+      - node2
+
+  delay3:
+    <<: *delay-defaults
+    container_name: delay3
+    ports:
+      - "50063:50052"
+    command: ["--delay-ms", "${DELAY_MS_3:-8}", "--target-host", "node3", "50052:50052", "50053:50053"]
+    depends_on:
+      - node3
+
+  delay4:
+    <<: *delay-defaults
+    container_name: delay4
+    ports:
+      - "50064:50052"
+    command: ["--delay-ms", "${DELAY_MS_4:-8}", "--target-host", "node4", "50052:50052", "50053:50053"]
+    depends_on:
+      - node4
+
+  delay5:
+    <<: *delay-defaults
+    container_name: delay5
+    ports:
+      - "50065:50052"
+    command: ["--delay-ms", "${DELAY_MS_5:-20}", "--target-host", "node5", "50052:50052", "50053:50053"]
+    depends_on:
+      - node5
+
+  delay6:
+    <<: *delay-defaults
+    container_name: delay6
+    ports:
+      - "50066:50052"
+    command: ["--delay-ms", "${DELAY_MS_6:-20}", "--target-host", "node6", "50052:50052", "50053:50053"]
+    depends_on:
+      - node6
+
+volumes:
+  node1-cache:
+  node2-cache:
+  node3-cache:
+  node4-cache:
+  node5-cache:
+  node6-cache:
