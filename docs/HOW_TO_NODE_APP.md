@@ -71,8 +71,10 @@ maintenance script:
                 "healthPath": "/health", "maintenance": "/Users/lotar/projects/ai-mesh/sin-harness/scripts/flashnext-maintenance.sh" }]
 ```
 
-The agent runs `stop` through that script (which refuses while clients are connected), waits for the
-memory, and always runs `start` again when the deployment ends or fails.
+The agent runs `stop` through that script, which refuses while any client holds a connection to :8099;
+the agent then retries every 20 s for up to 20 minutes (the deployment shows "waiting for flashnext-prod
+clients to disconnect" with the PIDs), waits for the memory, and always runs `start` again when the
+deployment ends or fails. Idle keep-alive connections count as clients: close them on the calling side.
 
 ## 6. Security in one paragraph
 
