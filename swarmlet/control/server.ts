@@ -72,7 +72,7 @@ export function createControlServer(deps: ControlDeps): Server<ConnData> {
     if (seg[1] === "api-keys" && m === "POST") { const b = (await req.json().catch(() => ({}))) as { name?: string }; return json({ key: reg.createApiKey(b.name ?? "default") }); }
     if (seg[1] === "assignments" && seg[2] && seg[3] === "logs" && m === "GET") return json({ lines: channel.recentLogs(seg[2]) });
     if (seg[1] === "assignments" && m === "GET") return json({ assignments: reg.listAssignments(url.searchParams.get("deployment") ?? undefined) });
-    if (seg[1] === "profiles" && m === "GET") return json({ profiles: [...deps.profiles.values()].map((p) => ({ id: p.id, name: p.name, modelName: p.modelName, layers: p.layers, envelope: p.envelope })) });
+    if (seg[1] === "profiles" && m === "GET") return json({ profiles: [...deps.profiles.values()].map((p) => ({ id: p.id, name: p.name, modelName: p.modelName, layers: p.layers, layerMiB: p.layerMiB, boundaryBytes: p.boundaryBytes, coordinatorHostMiB: p.coordinatorHostMiB, envelope: p.envelope })) });
     if (seg[1] === "routing" && m === "GET") { const models = deployments.routing(); return json({ models, totals: { inflight: models.reduce((n, mm) => n + mm.deployments.reduce((k, d) => k + d.inflight, 0), 0) } }); }
     if (seg[1] === "deployments") {
       const d = deployments;

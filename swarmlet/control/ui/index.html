@@ -76,6 +76,10 @@
           <div class="tile"><span class="label">Served by</span><div class="value value--text" id="chat-node">&mdash;</div><div class="sub" id="chat-dep">deployment</div></div>
           <div class="tile"><span class="label">Session</span><div class="value" id="chat-session">&mdash;</div><div class="sub" id="chat-session-sub">tok/s over all replies</div></div>
         </div>
+        <div class="panel topo-panel" id="chat-topo">
+          <div class="toolbar"><span class="label grow" id="chat-topo-title">Topology</span><span class="form-status" id="chat-topo-status"></span></div>
+          <div id="chat-topo-body"><p class="hint">Pick a model: the deployments that can serve it appear here, and after each reply the one that actually served it.</p></div>
+        </div>
         <div class="chat-log" id="chat-log"><p class="hint">Pick a model and say something. Replies stream through the control plane router to whichever deployment serves that model; the Nodes tab shows the generation rate per machine while it runs.</p></div>
         <form class="chat-form" id="chat-form">
           <textarea id="chat-input" rows="3" placeholder="Message (Enter sends, Shift+Enter adds a line)"></textarea>

@@ -78,7 +78,10 @@ machine has are rejected with the reason. What each control enforces:
 
 The **Chat** tab (`http://192.168.1.53:47900/#chat`) is a small chat client that goes through the router like any
 API client: pick a served model, type, Enter. Each reply shows the server's own timing (tok/s, prompt and completion
-tokens, time to first token), which node and deployment served it, and a running session average. "Thinking"
+tokens, time to first token), which node and deployment served it, and a running session average. The **Topology**
+panel draws the path of the selected model (and, after each reply, of the deployment that served it): browser →
+control router → coordinator node (device, layers, ctx/parallel/chain) → each RPC worker (device, layers, memory
+cap, ports, direct or relay path, bytes per token), with the ring and boundary settings spelled out below it. "Thinking"
 toggles the model's reasoning mode. The **Nodes** tab (`#nodes`) has a tok/s column: every agent reports the
 generation rate of its local llama-server (coordinator, replica, or the external production server) over the last
 heartbeat interval, so the number moves while a reply streams and drops to 0.0 when idle.

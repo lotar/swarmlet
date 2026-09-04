@@ -99,22 +99,30 @@ export class AssignmentRunner {
   /** tok/s over the last interval (delta of tokens_predicted_total), lifetime average and in-flight
    *  requests from the local llama-server /metrics: coordinator, replica, or an external server. */
   async serverMetrics(): Promise<{ tokPerSec?: number; tokPerSecAvg?: number; tokensTotal?: number; inflight?: number; serving?: string } | null> {
-    const srv = [...this.active.values()].find((x) => (x.a.kind === "coordinator" || x.a.kind === "replica") && x.state === "ready");
-    if (!srv) { this.lastTokens = null; return null; }
-    const a = srv.a as CoordinatorAssignment | ReplicaAssignment;
-    const base = a.kind === "replica" && a.external ? a.external.url.replace(/\/$/, "") : `http://127.0.0.1:${a.port}`;
-    try {
-      const text = await (await fetch(`${base}/metrics`, { signal: AbortSignal.timeout(2000), headers: { connection: "close" } })).text();
-      const num = (name: string) => { const m = text.match(new RegExp(`^${name}(?:\\{[^}]*\\})?\\s+([0-9.eE+-]+)`, "m")); return m ? Number(m[1]) : undefined; };
-      const total = num("llamacpp:tokens_predicted_total");
-      const now = Date.now();
-      let tokPerSec: number | undefined;
-      if (total !== undefined) {
-        if (this.lastTokens && now > this.lastTokens.at) tokPerSec = Math.max(0, (total - this.lastTokens.total) / ((now - this.lastTokens.at) / 1000));
-        this.lastTokens = { total, at: now };
-      }
-      return { tokPerSec: tokPerSec === undefined ? undefined : Math.round(tokPerSec * 10) / 10, tokPerSecAvg: num("llamacpp:predicted_tokens_seconds"), tokensTotal: total, inflight: num("llamacpp:requests_processing"), serving: a.modelName };
-    } catch { return null; }
+    // every ready llama-server on this node (coordinator, replica, external) contributes; rates are summed
+    const servers = [...this.active.values()].filter((x) => (x.a.kind === "coordinator" || x.a.kind === "replica") && x.state === "ready");
+    if (!servers.length) { this.lastTokens = null; return null; }
+    let total = 0, inflight = 0, avg = 0, seen = 0;
+    const serving: string[] = [];
+    for (const srv of servers) {
+      const a = srv.a as CoordinatorAssignment | ReplicaAssignment;
+      const base = a.kind === "replica" && a.external ? a.external.url.replace(/\/$/, "") : `http://127.0.0.1:${a.port}`;
+      try {
+        const text = await (await fetch(`${base}/metrics`, { signal: AbortSignal.timeout(2000), headers: { connection: "close" } })).text();
+        const num = (name: string) => { const m = text.match(new RegExp(`^${name}(?:\\{[^}]*\\})?\\s+([0-9.eE+-]+)`, "m")); return m ? Number(m[1]) : undefined; };
+        total += num("llamacpp:tokens_predicted_total") ?? 0;
+        inflight += num("llamacpp:requests_processing") ?? 0;
+        avg += num("llamacpp:predicted_tokens_seconds") ?? 0;
+        seen++;
+        if (a.modelName) serving.push(a.modelName);
+      } catch { /* that server is not answering right now */ }
+    }
+    if (!seen) return null;
+    const now = Date.now();
+    let tokPerSec: number | undefined;
+    if (this.lastTokens && now > this.lastTokens.at && total >= this.lastTokens.total) tokPerSec = (total - this.lastTokens.total) / ((now - this.lastTokens.at) / 1000);
+    this.lastTokens = { total, at: now };
+    return { tokPerSec: tokPerSec === undefined ? undefined : Math.round(tokPerSec * 10) / 10, tokPerSecAvg: Math.round(avg * 10) / 10, tokensTotal: total, inflight, serving: serving.join(", ") };
   }
 
   handle(a: Assignment): void {

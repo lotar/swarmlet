@@ -237,8 +237,14 @@
     return ['rtt ' + num(net.rttMs, 0) + ' ms', el('br'), 'up ' + num(net.upMbit, 0) + ' / down ' + num(net.downMbit, 0) + ' Mbit'];
   }
 
-  function tpsCell(m, routed) {
-    var serving = m && m.serving;
+  function servedModels(nodeId) {
+    var names = {};
+    (state.deployments || []).forEach(function (d) { if (d.state === 'ready' && d.endpoint && d.endpoint.nodeId === nodeId) names[d.endpoint.modelName] = 1; });
+    return Object.keys(names);
+  }
+
+  function tpsCell(m, routed, models) {
+    var serving = (models && models.length) ? models.join(', ') : (m && m.serving);
     if (!serving && !(isNum(routed) && routed > 0)) return el('span', { class: 'dim', text: NA });
     var live = isNum(routed) && routed > 0 ? routed : (m && isNum(m.tokPerSec) ? m.tokPerSec : 0);
     var sub = live > 0 ? (isNum(routed) && routed > 0 ? 'streaming now' : 'last interval') : 'idle';
@@ -271,7 +277,7 @@
         td(offerSummary(n.offer), 'small'),
         td(netSummary(caps.net), 'mono small'),
         td(metricsSummary(n.metrics), 'mono small'),
-        td(tpsCell(n.metrics, n.routedTokPerSec), 'num mono'),
+        td(tpsCell(n.metrics, n.routedTokPerSec, servedModels(n.id)), 'num mono'),
         td(String((n.models || []).length), 'num'),
       ]);
     }), 'No nodes yet. Create a join code and enter it in a node agent.');
@@ -726,6 +732,7 @@
       }
       if (!list.length) note('chat-status', 'No ready deployment serves a model yet (Deployments tab).', 'error');
       else if (/No ready deployment/.test($('chat-status').textContent)) note('chat-status', '');
+      if (list.length && !topo.lastDep && !chat.busy) return loadTopologyForModel();
     });
   }
 
@@ -818,6 +825,7 @@
       $('chat-tokens-sub').textContent = 'prompt / completion' + (genSec ? ', ' + genSec.toFixed(1) + ' s generating' : '');
       setTile('chat-ttft', ttft == null ? NA : String(ttft), ttft == null ? '' : ' ms');
       setTile('chat-node', served.node ? nodeName(served.node) : NA);
+      if (served.dep) { $('chat-topo-title').textContent = 'Topology · served this reply'; loadTopology(served.dep, { servedNodeId: served.node, note: 'This reply was served by ' + (served.node ? nodeName(served.node) : 'the node below') + ' through deployment ' + shortId(served.dep) + '.' }).catch(showError); }
       $('chat-dep').textContent = served.dep ? 'deployment ' + shortId(served.dep) + ' · ' + model : 'deployment';
       var sess = chat.stats.seconds > 0 ? chat.stats.tokens / chat.stats.seconds : 0;
       setTile('chat-session', sess ? sess.toFixed(1) : NA, sess ? ' tok/s' : '');
@@ -878,13 +886,130 @@
     note('chat-status', '');
   });
 
+  /* ---------- chat topology: what serves the selected model / the last reply ---------- */
+  var topo = { profiles: null, lastDep: null };
+
+  function ensureTopoProfiles() {
+    if (topo.profiles) return Promise.resolve(topo.profiles);
+    return api('GET', '/api/profiles').then(function (r) {
+      topo.profiles = {};
+      (r.profiles || []).forEach(function (p) { topo.profiles[p.id] = p; });
+      return topo.profiles;
+    });
+  }
+
+  function fmtBytes(n) { return isNum(n) ? (n >= 1048576 ? (n / 1048576).toFixed(1) + ' MiB' : n >= 1024 ? (n / 1024).toFixed(0) + ' KiB' : n + ' B') : NA; }
+
+  function topoNode(cls, lines) {
+    return el('div', { class: 'topo-node ' + cls }, lines.filter(function (l) { return l != null && l !== ''; }).map(function (l, i) {
+      return el('div', { class: i === 0 ? 'topo-title' : 'topo-line', text: l });
+    }));
+  }
+  function topoEdge(caption) {
+    return el('div', { class: 'topo-edge' }, [el('div', { class: 'topo-arrow', text: '→' }), el('div', { class: 'topo-cap', text: caption })]);
+  }
+  function nodeLive(id) {
+    var n = nodeById(id);
+    if (!n) return '';
+    var parts = [];
+    var rtt = n.caps && n.caps.net && isNum(n.caps.net.rttMs) ? n.caps.net.rttMs : null;
+    if (rtt != null) parts.push('rtt ' + num(rtt, 0) + ' ms');
+    var live = isNum(n.routedTokPerSec) && n.routedTokPerSec > 0 ? n.routedTokPerSec : (n.metrics && isNum(n.metrics.tokPerSec) ? n.metrics.tokPerSec : null);
+    if (live != null) parts.push(num(live, 1) + ' tok/s');
+    return parts.join(' · ');
+  }
+
+  function renderTopology(dep, profiles, opts) {
+    opts = opts || {};
+    var body = clear($('chat-topo-body'));
+    var spec = dep.spec || {};
+    var plan = dep.plan;
+    var prof = profiles[spec.profile] || null;
+    var asg = dep.assignments || [];
+    var coordA = asg.filter(function (a) { return a.body && a.body.kind === 'coordinator' && a.state !== 'stopped'; })[0];
+    var paths = {};
+    if (coordA && coordA.detail) {
+      (coordA.detail.match(/rpc\d+=(direct|relay)/g) || []).forEach(function (m) { var kv = m.split('='); paths[kv[0]] = kv[1]; });
+    }
+    var served = opts.servedNodeId || null;
+    var row = el('div', { class: 'topo' });
+    row.appendChild(topoNode('topo-client', ['browser', 'this page', 'SSE stream back']));
+    row.appendChild(topoEdge('HTTP · /v1/chat/completions'));
+    row.appendChild(topoNode('topo-router', ['control router', location.host, spec.name + ' (' + shortId(dep.id) + ')', 'least in-flight, then lowest rtt']));
+    if (spec.kind === 'external' && spec.external) {
+      var extId = spec.external.nodeId;
+      row.appendChild(topoEdge('agent channel · tunnel to ' + (dep.endpoint ? ':' + dep.endpoint.port : 'server')));
+      row.appendChild(topoNode('topo-coord' + (served === extId ? ' topo-node--served' : ''), [nodeName(extId), 'external server · whole model', spec.external.url, spec.external.modelName, nodeLive(extId)]));
+    } else if (plan) {
+      var total = prof ? prof.layers : plan.tensorSplit.reduce(function (a, b) { return a + b; }, 0);
+      var coordLayers = plan.tensorSplit.length ? plan.tensorSplit[plan.tensorSplit.length - 1] : total;
+      row.appendChild(topoEdge('agent channel · tunnel to :' + (dep.endpoint ? dep.endpoint.port : '?')));
+      row.appendChild(topoNode('topo-coord' + (served === plan.coordinatorNodeId ? ' topo-node--served' : ''), [
+        nodeName(plan.coordinatorNodeId),
+        (spec.kind === 'replica' ? 'whole model' : 'coordinator') + ' · ' + plan.coordinatorDevice,
+        (spec.kind === 'replica' ? total + ' layers' : coordLayers + ' of ' + total + ' layers') + (prof ? ' · ' + fmtGiB(coordLayers * prof.layerMiB) + ' GiB' : ''),
+        'ctx ' + plan.ctx + ', parallel ' + plan.parallel + (plan.chain ? ', MTP chain ' + plan.chain : ''),
+        nodeLive(plan.coordinatorNodeId),
+      ]));
+      (plan.workers || []).forEach(function (w, i) {
+        var path = paths['rpc' + i] || (coordA ? 'path pending' : 'not started');
+        var bytes = prof && isNum(prof.boundaryBytes) ? ' · ' + fmtBytes(prof.boundaryBytes) + '/token' : '';
+        row.appendChild(topoEdge('RPC' + i + ' · ' + path + bytes));
+        row.appendChild(topoNode('topo-worker' + (served === w.nodeId ? ' topo-node--served' : ''), [
+          nodeName(w.nodeId),
+          'worker · ' + w.device,
+          w.layers + (w.layers === 1 ? ' layer' : ' layers') + (prof ? ' · ' + fmtGiB(w.layers * prof.layerMiB) + ' GiB' : '') + ' · cap ' + fmtGiB(w.memCapMiB) + ' GiB',
+          'rpc :' + w.port + (w.peerPort ? ' · peer :' + w.peerPort : '') + ' · ' + w.threads + ' threads',
+          nodeLive(w.nodeId),
+        ]));
+      });
+    } else {
+      row.appendChild(topoEdge('not planned yet'));
+    }
+    body.appendChild(row);
+    var notes = [];
+    notes.push('state ' + dep.state + (dep.endpoint ? ', endpoint ' + nodeName(dep.endpoint.nodeId) + ':' + dep.endpoint.port : ''));
+    if (plan && plan.workers && plan.workers.length) {
+      var env = plan.env || {};
+      notes.push('ring: the coordinator sends the boundary activations to RPC0' + (plan.workers.length > 1 ? (env.GGML_RPC_FORWARD === '1' ? ', each worker pushes them on to the next (peer port)' : ', the coordinator relays between workers') : '') + ', the last worker answers the coordinator’s GET; the coordinator finishes the layers and samples');
+      notes.push('boundary GETs ' + (env.GGML_RPC_GET_PIPELINE === '1' ? 'batched' : 'serial') + ' · wire ' + (env.GGML_RPC_WIRE || 'off') + ' · pipelined dispatcher ' + (env.GGML_RPC_PIPELINE === '1' ? 'on' : 'off'));
+      notes.push('direct = TLS to the worker’s data listener with its certificate pinned; relay = through the control channel');
+    }
+    if (opts.note) notes.unshift(opts.note);
+    body.appendChild(el('div', { class: 'topo-notes dim small' }, notes.map(function (t) { return el('div', { text: t }); })));
+  }
+
+  function loadTopology(depId, opts) {
+    return Promise.all([ensureTopoProfiles(), api('GET', '/api/deployments/' + encodeURIComponent(depId))]).then(function (r) {
+      topo.lastDep = depId;
+      topo.lastOpts = opts;
+      renderTopology(r[1], r[0], opts);
+    });
+  }
+
+  /** Topology of what can serve the selected model (before any reply). */
+  function loadTopologyForModel() {
+    var model = $('chat-model').value;
+    if (!model) { replace($('chat-topo-body'), el('p', { class: 'hint', text: 'No model selected.' })); return Promise.resolve(); }
+    return api('GET', '/api/routing').then(function (r) {
+      var entry = (r.models || []).filter(function (m) { return m.modelName === model; })[0];
+      var cands = entry ? entry.deployments : [];
+      if (!cands.length) { replace($('chat-topo-body'), el('p', { class: 'hint', text: 'No ready deployment serves ' + model + ' right now.' })); return; }
+      $('chat-topo-title').textContent = 'Topology · ' + model + (cands.length > 1 ? ' · ' + cands.length + ' candidates, showing the router’s current pick' : '');
+      var pick = cands.slice().sort(function (a, b) { return (a.inflight - b.inflight) || ((isNum(a.rttMs) ? a.rttMs : 1e9) - (isNum(b.rttMs) ? b.rttMs : 1e9)); })[0];
+      return loadTopology(pick.id, { note: cands.length > 1 ? cands.length + ' deployments serve this model; the router picks per request.' : null });
+    });
+  }
+
+  $('chat-model').addEventListener('change', function () { loadTopologyForModel().catch(showError); });
+
   /* ---------- polling ---------- */
   function tick() {
     if (!state.authed) return;
     var extra = Promise.resolve();
     if (state.active === 'routing') extra = loadRouting();
     else if (state.active === 'events') extra = loadEvents();
-    else if (state.active === 'chat' && !chat.busy) extra = loadChatModels();
+    else if (state.active === 'chat') extra = chat.busy ? (topo.lastDep ? loadTopology(topo.lastDep, topo.lastOpts || {}) : Promise.resolve()) : loadChatModels();
     Promise.all([loadNodes(), loadDeployments(), extra]).then(function () {
       $('app-error').hidden = true;
       renderJoinCode();

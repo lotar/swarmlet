@@ -26,6 +26,10 @@
   out.replyMeta = msgs[msgs.length - 1]?.querySelector(".msg-meta")?.textContent;
   out.tiles = { tps: $("chat-tps").textContent, tpsSub: $("chat-tps-sub").textContent, tokens: $("chat-tokens").textContent, tokensSub: $("chat-tokens-sub").textContent, ttft: $("chat-ttft").textContent, node: $("chat-node").textContent, dep: $("chat-dep").textContent, session: $("chat-session").textContent };
   out.status = $("chat-status").textContent;
+  out.topoTitle = $("chat-topo-title").textContent;
+  out.topoNodes = [...document.querySelectorAll("#chat-topo-body .topo-node")].map((n) => (n.classList.contains("topo-node--served") ? "*" : "") + n.innerText.replace(/\s+/g, " ").trim());
+  out.topoEdges = [...document.querySelectorAll("#chat-topo-body .topo-cap")].map((n) => n.textContent.trim());
+  out.topoNotes = ($("chat-topo-body").querySelector(".topo-notes")?.innerText || "").replace(/\s+/g, " ").slice(0, 500);
   document.querySelector('[role=tab][data-tab="nodes"]').click(); await sleep(1500);
   out.nodesTps = [...$("nodes-table").querySelectorAll("tbody tr")].map((tr) => { const tds = tr.querySelectorAll("td"); return `${tds[0]?.innerText.split("\n")[0]}: ${tds[6]?.innerText.replace(/\s+/g, " ")}`; });
   document.querySelector('[role=tab][data-tab="chat"]').click(); await sleep(600);
