@@ -20,7 +20,7 @@ trap cleanup EXIT INT TERM
 # --- control plane on this Mac, reachable from the Legions ---
 if curl -sf "$CONTROL_URL/health" >/dev/null 2>&1; then log "control already running @ $CONTROL_URL (reusing)"; else
   log "control @ $CONTROL_URL"
-  ( cd "$HERE" && SWARMLET_CONTROL_DIR=$CTRL_DIR SWARMLET_CONTROL_HOST=0.0.0.0 SWARMLET_CONTROL_URL=$CONTROL_URL bun run control/main.ts > "$OUT/control.log" 2>&1 ) & PIDS="$PIDS $!"
+  ( cd "$HERE" && SWARMLET_CONTROL_DIR=$CTRL_DIR SWARMLET_CONTROL_HOST=0.0.0.0 SWARMLET_CONTROL_URL=$CONTROL_URL exec bun run control/main.ts > "$OUT/control.log" 2>&1 ) & PIDS="$PIDS $!"
   for _ in $(seq 1 30); do curl -sf "$CONTROL_URL/health" >/dev/null 2>&1 && break; sleep 1; done
 fi
 TOKEN=$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))["adminToken"])' "$CTRL_DIR/control.json")
@@ -41,7 +41,7 @@ cfg.setdefault("uiPort", 47800); cfg.setdefault("dataPort", 47801)
 json.dump(cfg, open(p, "w"), indent=2); os.chmod(p, 0o600); print("node.json prepared")
 PY
 log "M5 agent"
-( cd "$HERE" && SWARMLET_HOME=$HOME_AGENT SWARMLET_ENGINE=$HERE/engine/dist/darwin bun run node-agent/main.ts run > "$OUT/agent-m5.log" 2>&1 ) & PIDS="$PIDS $!"
+( cd "$HERE" && SWARMLET_HOME=$HOME_AGENT SWARMLET_ENGINE=$HERE/engine/dist/darwin exec bun run node-agent/main.ts run > "$OUT/agent-m5.log" 2>&1 ) & PIDS="$PIDS $!"
 for _ in $(seq 1 30); do curl -sf http://127.0.0.1:47800/api/status >/dev/null 2>&1 && break; sleep 1; done
 # offer from the measured limits (GPU total as the engine reports it), so validation never disables it
 python3 - "$MODELS" <<'PY2'

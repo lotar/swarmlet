@@ -25,7 +25,7 @@ trap cleanup EXIT INT TERM
 
 curl -sf "$CONTROL_URL/health" >/dev/null || { log "control not running at $CONTROL_URL (run e2e/rig-2b.sh --keep first or start control)"; exit 2; }
 if ! curl -sf http://127.0.0.1:47800/api/status >/dev/null 2>&1; then
-  log "M5 agent"; ( cd "$HERE" && SWARMLET_HOME=$HOME_AGENT SWARMLET_ENGINE=$HERE/engine/dist/darwin bun run node-agent/main.ts run > "$OUT/agent-m5.log" 2>&1 ) & PIDS="$PIDS $!"
+  log "M5 agent"; ( cd "$HERE" && SWARMLET_HOME=$HOME_AGENT SWARMLET_ENGINE=$HERE/engine/dist/darwin exec bun run node-agent/main.ts run > "$OUT/agent-m5.log" 2>&1 ) & PIDS="$PIDS $!"
   for _ in $(seq 1 60); do curl -sf http://127.0.0.1:47800/api/status >/dev/null 2>&1 && break; sleep 1; done
 fi
 curl -sf --max-time 5 http://127.0.0.1:8099/health > "$OUT/production-before.txt"; ( "$MAINT" check-only 2>&1 || true ) | head -1
