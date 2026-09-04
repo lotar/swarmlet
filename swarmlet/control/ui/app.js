@@ -237,11 +237,14 @@
     return ['rtt ' + num(net.rttMs, 0) + ' ms', el('br'), 'up ' + num(net.upMbit, 0) + ' / down ' + num(net.downMbit, 0) + ' Mbit'];
   }
 
-  function tpsCell(m) {
-    if (!m || !isNum(m.tokPerSec)) return el('span', { class: 'dim', text: NA });
-    var live = m.tokPerSec > 0;
-    var sub = (m.serving ? m.serving : '') + (isNum(m.tokPerSecAvg) && m.tokPerSecAvg > 0 ? (m.serving ? ' \u00b7 ' : '') + 'avg ' + m.tokPerSecAvg.toFixed(1) : '');
-    return [el('span', { class: live ? 'strong tps-live' : 'dim', text: m.tokPerSec.toFixed(1) }), el('br'), el('span', { class: 'dim small', text: sub || 'idle' })];
+  function tpsCell(m, routed) {
+    var serving = m && m.serving;
+    if (!serving && !(isNum(routed) && routed > 0)) return el('span', { class: 'dim', text: NA });
+    var live = isNum(routed) && routed > 0 ? routed : (m && isNum(m.tokPerSec) ? m.tokPerSec : 0);
+    var sub = live > 0 ? (isNum(routed) && routed > 0 ? 'streaming now' : 'last interval') : 'idle';
+    if (serving) sub += ' \u00b7 ' + serving;
+    if (m && isNum(m.tokPerSecAvg) && m.tokPerSecAvg > 0) sub += ' \u00b7 avg ' + m.tokPerSecAvg.toFixed(1);
+    return [el('span', { class: live > 0 ? 'strong tps-live' : 'dim', text: live.toFixed(1) }), el('br'), el('span', { class: 'dim small', text: sub })];
   }
 
   function metricsSummary(m) {
@@ -268,7 +271,7 @@
         td(offerSummary(n.offer), 'small'),
         td(netSummary(caps.net), 'mono small'),
         td(metricsSummary(n.metrics), 'mono small'),
-        td(tpsCell(n.metrics), 'num mono'),
+        td(tpsCell(n.metrics, n.routedTokPerSec), 'num mono'),
         td(String((n.models || []).length), 'num'),
       ]);
     }), 'No nodes yet. Create a join code and enter it in a node agent.');

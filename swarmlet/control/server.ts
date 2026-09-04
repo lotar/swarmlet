@@ -56,7 +56,10 @@ export function createControlServer(deps: ControlDeps): Server<ConnData> {
     const url = new URL(req.url);
     const seg = path.split("/").filter(Boolean); // ["api", ...]
     const m = req.method;
-    if (seg[1] === "nodes" && m === "GET" && seg.length === 2) return json({ nodes: reg.listNodes().map((n) => ({ ...n, pubJwk: undefined, online: channel.isOnline(n.id) })) });
+    if (seg[1] === "nodes" && m === "GET" && seg.length === 2) {
+      const live = deployments.liveTokPerSecByNode();
+      return json({ nodes: reg.listNodes().map((n) => ({ ...n, pubJwk: undefined, online: channel.isOnline(n.id), routedTokPerSec: live.get(n.id) ?? 0 })) });
+    }
     if (seg[1] === "nodes" && seg[2] && m === "GET" && seg.length === 3) { const n = reg.getNode(seg[2]); return n ? json({ ...n, online: channel.isOnline(n.id) }) : json({ error: "not found" }, 404); }
     if (seg[1] === "nodes" && seg[2] && seg[3] === "offer" && m === "PUT") {
       const n = reg.getNode(seg[2]); if (!n?.caps) return json({ error: "node or capabilities unknown" }, 404);

@@ -12,6 +12,7 @@ log.info(`web UI http://${cfg.host}:${server.port}/  admin token in ${cfg.dataDi
 
 const shutdown = () => {
   clearInterval(sweeper);
+  channel.shuttingDown = true; // agent disconnects caused by our exit are not node failures
   server.stop(true);
   process.exit(0);
 };

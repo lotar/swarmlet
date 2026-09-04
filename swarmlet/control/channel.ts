@@ -38,6 +38,8 @@ function randomNonce(): string {
 export class AgentChannel {
   private conns = new Map<string, ServerWebSocket<ConnData>>();
   private logs = new Map<string, string[]>();
+  /** Set by the process shutdown path: connection closes are then not node failures. */
+  shuttingDown = false;
 
   constructor(private readonly reg: Registry, private readonly log: Logger, private readonly hooks: ChannelHooks = {}) {}
 
@@ -131,6 +133,7 @@ export class AgentChannel {
     if (nodeId && this.conns.get(nodeId) === ws) {
       this.conns.delete(nodeId);
       this.reg.setOnline(nodeId, false);
+      if (this.shuttingDown) return; // control is restarting; nodes reconnect and re-report
       this.reg.event("offline", "disconnected", { nodeId });
       this.hooks.onOffline?.(nodeId);
     }

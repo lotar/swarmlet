@@ -10,6 +10,42 @@ import type { TunnelPool } from "./tunnel.ts";
 const json = (body: unknown, status = 200): Response => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
 const HOP_HEADERS = new Set(["host", "authorization", "connection", "content-length", "transfer-encoding", "keep-alive", "upgrade"]);
 
+/** Counts completion tokens in a passing response body: streamed SSE deltas count one per content or
+ *  reasoning piece (llama-server emits one delta per token); a non-streamed JSON reply counts
+ *  usage.completion_tokens at the end. Nothing is buffered beyond the current partial line. */
+class TokenCounter {
+  private decoder = new TextDecoder();
+  private rest = "";
+  private streamed = false;
+  private tail = "";
+  constructor(private readonly emit: (n: number) => void) {}
+  feed(chunk: Uint8Array): void {
+    const text = this.decoder.decode(chunk, { stream: true });
+    if (!this.streamed && !this.rest && text.trimStart().startsWith("data:")) this.streamed = true;
+    if (!this.streamed) { this.tail = (this.tail + text).slice(-4096); if (this.tail.length < 4096 && !text.trimStart().startsWith("data:")) { /* small JSON reply, counted at finish */ } return; }
+    this.rest += text;
+    let nl: number;
+    let n = 0;
+    while ((nl = this.rest.indexOf("\n")) >= 0) {
+      const line = this.rest.slice(0, nl).trim();
+      this.rest = this.rest.slice(nl + 1);
+      if (!line.startsWith("data:")) continue;
+      const data = line.slice(5).trim();
+      if (!data || data === "[DONE]") continue;
+      try {
+        const d = (JSON.parse(data) as { choices?: Array<{ delta?: { content?: string; reasoning_content?: string } }> }).choices?.[0]?.delta;
+        if (d && (d.content || d.reasoning_content)) n++;
+      } catch { /* partial */ }
+    }
+    if (n) this.emit(n);
+  }
+  finish(): void {
+    if (this.streamed) return;
+    const m = this.tail.match(/"completion_tokens"\s*:\s*(\d+)/);
+    if (m) this.emit(Number(m[1]));
+  }
+}
+
 export function createRouter(deps: { deployments: DeploymentManager; tunnels: TunnelPool; log: Logger }) {
   return async (req: Request, path: string): Promise<Response> => {
     const table = deps.deployments.routing();
@@ -36,9 +72,12 @@ export function createRouter(deps: { deployments: DeploymentManager; tunnels: Tu
       out.set("x-swarmlet-deployment", pick.id);
       out.set("x-swarmlet-node", pick.nodeId);
       if (!upstream.body) { deps.deployments.trackInflight(pick.id, -1); return new Response(null, { status: upstream.status, headers: out }); }
-      // release the in-flight slot when the body finishes streaming
+      // count generated tokens as they pass (SSE deltas, or usage of a non-streamed reply) for the
+      // live per-deployment rate, and release the in-flight slot when the body finishes
+      const counter = new TokenCounter((n) => deps.deployments.recordTokens(pick.id, n));
       const body = upstream.body.pipeThrough(new TransformStream<Uint8Array, Uint8Array>({
-        flush: () => { deps.deployments.trackInflight(pick.id, -1); deps.log.debug("routed", { path, deployment: pick.id, ms: Date.now() - t0 }); },
+        transform: (chunk, controller) => { counter.feed(chunk); controller.enqueue(chunk); },
+        flush: () => { counter.finish(); deps.deployments.trackInflight(pick.id, -1); deps.log.debug("routed", { path, deployment: pick.id, ms: Date.now() - t0 }); },
       }));
       return new Response(body, { status: upstream.status, headers: out });
     } catch (e) {

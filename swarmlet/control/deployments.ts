@@ -63,8 +63,11 @@ export class DeploymentManager {
   onOffline(nodeId: string): void {
     for (const dep of this.deps.reg.listDeployments()) {
       if (dep.state === "stopped" || dep.state === "failed" || dep.state === "planned") continue;
-      const mine = this.deps.reg.listAssignments(dep.id).some((a) => a.nodeId === nodeId && a.state !== "stopped");
-      if (mine) void this.fail(dep.id, `node ${nodeId} went offline`);
+      const rows = this.deps.reg.listAssignments(dep.id).filter((a) => a.nodeId === nodeId && a.state !== "stopped");
+      if (!rows.length) continue;
+      // an external server keeps running without its agent: keep the deployment, the watch is re-issued on reconnect
+      if (rows.every((a) => a.body.kind === "replica" && a.body.external)) { this.deps.reg.event("deployment", `agent on ${nodeId} offline; external server assumed up`, { deploymentId: dep.id }); continue; }
+      void this.fail(dep.id, `node ${nodeId} went offline`);
     }
   }
 
@@ -123,13 +126,46 @@ export class DeploymentManager {
       if (dep.state !== "ready" || !dep.endpoint) continue;
       const node = this.deps.reg.getNode(dep.endpoint.nodeId);
       const list = byModel.get(dep.endpoint.modelName) ?? [];
-      list.push({ id: dep.id, name: dep.spec.name, nodeId: dep.endpoint.nodeId, port: dep.endpoint.port, inflight: this.inflight.get(dep.id) ?? 0, tokPerSec: node?.metrics?.tokPerSec, rttMs: node?.caps?.net?.rttMs });
+      list.push({ id: dep.id, name: dep.spec.name, nodeId: dep.endpoint.nodeId, port: dep.endpoint.port, inflight: this.inflight.get(dep.id) ?? 0, tokPerSec: this.liveTokPerSec(dep.id) || node?.metrics?.tokPerSec, rttMs: node?.caps?.net?.rttMs });
       byModel.set(dep.endpoint.modelName, list);
     }
     return [...byModel].map(([modelName, deployments]) => ({ modelName, deployments }));
   }
 
   trackInflight(id: string, delta: number): void { this.inflight.set(id, Math.max(0, (this.inflight.get(id) ?? 0) + delta)); }
+
+  /** Tokens the router saw stream out of each deployment, in 1 s buckets, for a live rate. */
+  private tokenBuckets = new Map<string, Map<number, number>>();
+
+  recordTokens(id: string, n: number): void {
+    if (n <= 0) return;
+    const sec = Math.floor(Date.now() / 1000);
+    const b = this.tokenBuckets.get(id) ?? new Map<number, number>();
+    b.set(sec, (b.get(sec) ?? 0) + n);
+    for (const k of b.keys()) if (k < sec - 30) b.delete(k);
+    this.tokenBuckets.set(id, b);
+  }
+
+  /** Routed generation rate over the last `windowSec` seconds (0 when idle). */
+  liveTokPerSec(id: string, windowSec = 5): number {
+    const b = this.tokenBuckets.get(id);
+    if (!b) return 0;
+    const now = Math.floor(Date.now() / 1000);
+    let total = 0;
+    for (const [k, v] of b) if (k > now - windowSec && k <= now) total += v;
+    return Math.round((total / windowSec) * 10) / 10;
+  }
+
+  /** Routed live rate per node (sum over the ready deployments it serves). */
+  liveTokPerSecByNode(): Map<string, number> {
+    const out = new Map<string, number>();
+    for (const dep of this.deps.reg.listDeployments()) {
+      if (dep.state !== "ready" || !dep.endpoint) continue;
+      const r = this.liveTokPerSec(dep.id);
+      if (r > 0) out.set(dep.endpoint.nodeId, (out.get(dep.endpoint.nodeId) ?? 0) + r);
+    }
+    return out;
+  }
 
   // ---------- starters ----------
 
