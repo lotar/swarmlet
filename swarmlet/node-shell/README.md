@@ -11,7 +11,7 @@ The shell adds no features of its own. The window is the agent's own web UI serv
 
 ```
 node-shell/
-├── dist/index.html            splash page shown until the agent answers (no framework, no npm)
+├── frontend/index.html            splash page shown until the agent answers (no framework, no npm)
 ├── scripts/build-sidecar.sh   copies the canonical service agent and verified engine into src-tauri/binaries
 └── src-tauri/
     ├── Cargo.toml             crate swarmlet-node-shell (tauri 2 + tray-icon, plugin-shell, plugin-autostart)
@@ -114,7 +114,7 @@ Startup (`src-tauri/src/lib.rs`, `supervise`):
    carries them inside; both are resolved through Tauri's resource path), waits up to 20 s for `/api/status`, and if the sidecar
    exits later it is restarted (at most 20 times per app session).
 
-The window shows `dist/index.html` (a splash with the current message) until `/api/status`
+The window shows `frontend/index.html` (a splash with the current message) until `/api/status`
 answers, then navigates to `http://127.0.0.1:47800/`. If the agent stops answering for two polls
 the window goes back to the splash, and returns to the UI when the agent is back.
 

@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Swarmlet Node</title>
+<style>
+  :root { color-scheme: dark; }
+  html, body { height: 100%; margin: 0; }
+  body {
+    display: flex; align-items: center; justify-content: center;
+    font: 15px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+    background: #12161e; color: #ecf6f2;
+  }
+  .card { text-align: center; max-width: 36rem; padding: 2rem; }
+  .mark { width: 96px; height: 96px; margin: 0 auto 1.25rem; }
+  h1 { font-size: 1.25rem; font-weight: 600; margin: 0 0 .5rem; }
+  #msg { color: #9fb3ab; margin: 0; white-space: pre-line; word-break: break-word; }
+  #msg.error { color: #ffb4a3; }
+  .hint { margin-top: 1.5rem; font-size: 13px; color: #6f8079; }
+  code { font: 12px ui-monospace, SFMono-Regular, Menlo, monospace; background: #1c222c; padding: 1px 5px; border-radius: 4px; }
+</style>
+</head>
+<body>
+  <div class="card">
+    <svg class="mark" viewBox="0 0 100 100" aria-hidden="true">
+      <polygon points="50,7 87,28.5 87,71.5 50,93 13,71.5 13,28.5" fill="none" stroke="#3ad6a6" stroke-width="7"/>
+      <polyline points="50,32 66,59 34,59 50,32" fill="none" stroke="#3ad6a6" stroke-width="4"/>
+      <circle cx="50" cy="32" r="6" fill="#ecf6f2"/><circle cx="66" cy="59" r="6" fill="#ecf6f2"/><circle cx="34" cy="59" r="6" fill="#ecf6f2"/>
+    </svg>
+    <h1>Swarmlet Node</h1>
+    <p id="msg">Starting the node agent…</p>
+    <p class="hint">This window shows the node UI served by the agent on <code>127.0.0.1:47800</code>. The shell switches to it as soon as the agent answers.</p>
+  </div>
+  <script>
+    // The Rust shell drives this page: it calls __setMsg(text, isError) and navigates to the
+    // agent UI once /api/status answers. "#down" is set when the shell navigates back here
+    // because a previously running agent stopped answering.
+    (function () {
+      var el = document.getElementById("msg");
+      window.__setMsg = function (text, isError) {
+        el.textContent = text;
+        el.className = isError ? "error" : "";
+      };
+      if (location.hash === "#down") {
+        window.__setMsg("The node agent stopped answering on 127.0.0.1:47800. Waiting for it to come back…", true);
+      }
+    })();
+  </script>
+</body>
+</html>

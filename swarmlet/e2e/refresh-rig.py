@@ -129,7 +129,7 @@ def main():
         run(['git', 'merge', '--ff-only', revision], cwd=live)
         archive = backup / 'source.tar'
         with archive.open('wb') as out:
-            subprocess.run(['git', 'archive', revision, 'swarmlet'], cwd=root, stdout=out, check=True)
+            subprocess.run(['git', 'archive', revision, 'swarmlet', 'sin-harness/core/sign.ts'], cwd=root, stdout=out, check=True)
         record['sourceArchiveSha256'] = hash_file(archive)
         scp(str(archive), hosts[0] + ':' + remote + '/source.tar')
         remote_hash = ssh(hosts[0], 'sha256sum ' + shlex.quote(remote + '/source.tar'), capture=True).stdout.split()[0]
