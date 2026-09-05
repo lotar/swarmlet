@@ -8,7 +8,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { makeLogger } from "../../../control/log.ts";
 import {
-  CODE_NOT_FOUND, CODE_SPAWN_FAILED, CODE_TIMEOUT, cpuPctBetween, exec, listModels, measureNet, median,
+  CODE_NOT_FOUND, CODE_SPAWN_FAILED, CODE_TIMEOUT, ENGINE_DEVICE_TIMEOUT_MS, cpuPctBetween, exec, listModels, measureNet, median,
   modelKind, nvidiaInventory, nvidiaUsed, NVIDIA_INVENTORY_FIELDS, NVIDIA_USED_FIELDS, parseCgroupControllers, parseDfK,
   parseDisplays, parseListDevices, parseMeminfo, parseNvidiaSmi, parseProcStat, parsePsCpu, parsePsRss, parseShaManifest,
   parseVmStat, privateIps, probeCapabilities, probeMetrics, publicIp, reclaimableMiB,
@@ -310,12 +310,17 @@ describe("live probes on this machine", () => {
 
   const enginePath = join(import.meta.dir, "../../../engine/dist", process.platform);
   test.if(existsSync(join(enginePath, "llama-server")))("probeCapabilities with the shipped engine lists its devices and hashes", async () => {
-    const caps = await probeCapabilities({ enginePath, log });
+    const warnings: string[] = [];
+    const caps = await probeCapabilities({ enginePath, log: { ...log, warn: (message) => { warnings.push(message); } } });
+    // An OS fallback must not make a failed/timed-out engine probe look successful.
+    expect(warnings.filter((message) => message.startsWith("gpu:"))).toEqual([]);
     expect(caps.gpus.length).toBeGreaterThan(0);
     expect(caps.gpus[0]?.engineName).toMatch(/^(MTL|CUDA)\d+$/);
     expect(caps.engine?.proto).toBe("8.1");
     expect(caps.engine?.sha256["llama-server"]).toMatch(/^[0-9a-f]{64}$/);
-  }, 30_000);
+  // Measured cold Metal initialization at 50–59 s; allow the real probe's existing
+  // budget plus host-probe overhead instead of killing it at the former 30 s.
+  }, ENGINE_DEVICE_TIMEOUT_MS + 15_000);
 
   test("probeMetrics reports rss of this process, free RAM and cpu", async () => {
     const gone = Bun.spawn(["true"]);

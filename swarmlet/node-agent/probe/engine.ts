@@ -8,6 +8,8 @@ import { CODE_NOT_FOUND, exec } from "./exec.ts";
 
 /** RPC protocol the shipped engine speaks (push forwarding + wire compression). */
 export const ENGINE_PROTO = "8.1";
+// A cold static Metal engine compiles its shader library before listing devices.
+export const ENGINE_DEVICE_TIMEOUT_MS = 90_000;
 
 // "  MTL0: Apple M5 Max (98304 MiB, 98304 MiB free)"  /  "  RPC0[host:port]: RPC[host:port] (3706 MiB, 3596 MiB free)"
 const DEVICE_LINE = /^\s*([A-Za-z]+)(\d*)(?:\[[^\]]*\])?:\s+(.*?)\s+\((\d+)\s+MiB,\s+(\d+)\s+MiB free\)\s*$/;
@@ -43,7 +45,7 @@ const lastLine = (s: string) => s.trim().split("\n").pop()?.trim() ?? "";
 /** Ask the engine itself what it can drive; the caller falls back to OS tools when this is not ok. */
 export async function engineDevices(enginePath: string): Promise<EngineDevices> {
   const bin = join(enginePath, "llama-server");
-  const r = await exec([bin, "--list-devices"], { timeoutMs: 90_000 }); // first run of a static Metal build compiles its shader library (~25 s)
+  const r = await exec([bin, "--list-devices"], { timeoutMs: ENGINE_DEVICE_TIMEOUT_MS });
   if (r.code === CODE_NOT_FOUND) return { ok: false, reason: `${bin}: not found` };
   if (r.code !== 0) {
     return { ok: false, reason: `${bin} --list-devices exited ${r.code}${r.timedOut ? " (timed out)" : ""}: ${lastLine(r.stderr) || lastLine(r.stdout)}` };
