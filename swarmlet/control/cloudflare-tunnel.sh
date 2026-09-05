@@ -38,7 +38,8 @@ EOF
     u=""
     for _ in $(seq 1 60); do u=$(grep -oE 'https://[a-z0-9-]+\.trycloudflare\.com' "$LOG" 2>/dev/null | tail -1 || true); [ -n "$u" ] && grep -q 'Registered tunnel connection' "$LOG" 2>/dev/null && break; sleep 1; done
     [ -n "$u" ] || { echo "tunnel did not come up; see $LOG" >&2; exit 1; }
-    for _ in $(seq 1 30); do curl -sf --max-time 5 "$u/health" >/dev/null 2>&1 && break; sleep 2; done
+    # Public HTTP endpoints (including /health) are closed; tunnel registration above
+    # is the startup check. Enrolled agents authenticate on the /agent WebSocket.
     echo "$u"; grep -oE 'location=[a-z0-9]+' "$LOG" | tail -1 ;;
   stop) launchctl bootout "$DOMAIN/$LABEL" 2>/dev/null || true; rm -f "$PLIST"; echo "tunnel stopped" ;;
   url) url_from_log ;;

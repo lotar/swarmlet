@@ -8,6 +8,7 @@
 //   GET  /                            web UI                                      [ui/ui.ts]
 
 import type { Server } from "bun";
+import { isIP } from "node:net";
 import { validateOffer } from "../protocol/validate.ts";
 import { ensureKeys, readPublicJwk } from "../protocol/sign.ts";
 import type { DeploymentSpec } from "../protocol/types.ts";
@@ -47,6 +48,24 @@ function adminOk(req: Request, cfg: ControlConfig, remoteIp?: string | null): bo
 }
 
 const PROBE_MAX = 32 * 1024 * 1024;
+
+function privateAddress(address: string): boolean {
+  const ip = address.toLowerCase().replace(/^\[|\]$/g, "").replace(/^::ffff:/, "");
+  if (isIP(ip) === 4) {
+    const [a, b] = ip.split(".").map(Number);
+    return a === 127 || a === 10 || (a === 172 && b! >= 16 && b! <= 31) || (a === 192 && b === 168);
+  }
+  return isIP(ip) === 6 && (ip === "::1" || /^(fc|fd|fe[89ab])/.test(ip));
+}
+
+/** Only direct LAN/loopback requests may reach the web/admin/router surface.
+ * Cloudflared connects from loopback, so socket address alone is insufficient.
+ * Forwarding headers can only remove access; they never establish local trust. */
+export function directLocalRequest(req: Request, remoteIp: string | null | undefined): boolean {
+  if (["cf-ray", "cf-connecting-ip", "forwarded", "x-forwarded-for", "x-forwarded-host", "x-forwarded-proto"].some((h) => req.headers.has(h))) return false;
+  const host = new URL(req.url).hostname;
+  return !!remoteIp && privateAddress(remoteIp) && (host === "localhost" || privateAddress(host));
+}
 
 export function createControlServer(deps: ControlDeps): Server<ConnData> {
   const { cfg, reg, channel, log, deployments } = deps;
@@ -143,6 +162,12 @@ export function createControlServer(deps: ControlDeps): Server<ConnData> {
       const url = new URL(req.url);
       const path = url.pathname;
       try {
+        // The public tunnel is exclusively an agent transport. Reject before credentials,
+        // body parsing, diagnostics, or UI routing, even if a public caller has an admin token.
+        const agentUpgrade = path === "/agent" && req.method === "GET" && req.headers.get("upgrade")?.toLowerCase() === "websocket";
+        if (!directLocalRequest(req, srv.requestIP(req)?.address) && !agentUpgrade) {
+          return new Response("not found", { status: 404, headers: { "cache-control": "no-store" } });
+        }
         if (path === "/health") return json({ status: "ok", nodes: channel.onlineNodeIds().length });
         if (path === "/enroll" && req.method === "POST") {
           const out = await handleEnroll(reg, await req.json().catch(() => null));

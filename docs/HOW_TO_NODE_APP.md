@@ -90,6 +90,8 @@ heartbeat interval, so the number moves while a reply streams and drops to 0.0 w
 
 ## 3c. Internet path (relay through the Cloudflare edge)
 
+**Public access restricted as of 2026-09-05:** only the `/agent` WebSocket is exposed through the tunnel, with the existing signed node authentication. Dashboard assets, login, admin/OpenAI APIs, enrollment, health and bandwidth/IP probes return 404 publicly, even with valid admin credentials. Open the dashboard directly at `http://192.168.1.53:47900`; proxy headers or a public Host cannot grant local access. All three existing nodes use the internet channel. Host/engine metrics continue over that channel; HTTP network probes through the public URL are unavailable, so previous RTT/bandwidth samples retain their age. New nodes must enroll over the LAN before their configured agent URL is switched to the tunnel. The historical re-enrollment script described below cannot enroll through the public URL under this restriction.
+
 All three rig machines share one public IP, so an internet path needs an external hop. `swarmlet/control/cloudflare-tunnel.sh start`
 puts a quick tunnel in front of control (LaunchAgent, new hostname on every start); `swarmlet/e2e/rig-internet.sh` pins that
 hostname on the Legions (the LAN router's resolver drops A records for fresh trycloudflare names) and re-enrolls them through it,

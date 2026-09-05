@@ -8,7 +8,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createServer, type Server as NetServer } from "node:net";
 import { loadControlConfig, type ControlConfig } from "../config.ts";
-import { bootControl } from "../server.ts";
+import { bootControl, directLocalRequest } from "../server.ts";
 import { AgentClient, enroll } from "../../node-agent/agent.ts";
 import { loadIdentity, type Identity } from "../../node-agent/identity.ts";
 import { agentPaths } from "../../node-agent/paths.ts";
@@ -62,6 +62,52 @@ afterAll(() => { ctl.server.stop(true); ctl.reg.close(); });
 
 describe("control core", () => {
   let a!: FakeAgent, b!: FakeAgent;
+
+  test("public web, API and diagnostics are closed even with valid admin credentials", async () => {
+    for (const path of ["/", "/index.html", "/app.js", "/style.css", "/login", "/logout", "/health", "/probe/ip", "/probe/down", "/probe/up", "/enroll", "/api/nodes", "/api/stream", "/v1/models", "/v1/chat/completions", "/agent"]) {
+      for (const method of ["GET", "POST"]) {
+        const res = await api(path, { method, headers: { "cf-ray": "public-edge", "x-forwarded-for": "127.0.0.1" } });
+        expect(res.status).toBe(404);
+        expect(await res.text()).toBe("not found");
+      }
+    }
+    const publicHost = await api("/", { headers: { host: "example.trycloudflare.com" } });
+    expect(publicHost.status).toBe(404);
+    expect((await api("/")).status).toBe(200);
+    expect((await api("/api/nodes")).status).toBe(200);
+  });
+
+  test("local access requires both a private peer and local Host; forwarding never grants access", () => {
+    const req = (host: string, headers: HeadersInit = {}) => new Request(`http://${host}/api/nodes`, { headers });
+    for (const [host, peer] of [["127.0.0.1", "127.0.0.1"], ["192.168.1.53", "192.168.1.20"], ["localhost", "::1"], ["[::1]", "::ffff:127.0.0.1"], ["10.1.1.2", "172.16.1.2"]]) {
+      expect(directLocalRequest(req(host!), peer)).toBe(true);
+    }
+    for (const peer of ["203.0.113.1", "172.32.1.1", "192.169.1.1", "", null]) expect(directLocalRequest(req("127.0.0.1"), peer)).toBe(false);
+    expect(directLocalRequest(req("public.example"), "127.0.0.1")).toBe(false);
+    for (const h of ["cf-ray", "cf-connecting-ip", "forwarded", "x-forwarded-for", "x-forwarded-host", "x-forwarded-proto"]) {
+      expect(directLocalRequest(req("localhost", { [h]: "" }), "127.0.0.1")).toBe(false);
+    }
+  });
+
+  test("public agent WebSocket still requires a registered signed identity", async () => {
+    // Bun supports client headers; the shared DOM constructor type does not expose them.
+    const Socket = WebSocket as unknown as { new(url: string, options: { headers: Record<string, string> }): WebSocket };
+    const ws = new Socket(base.replace("http:", "ws:") + "/agent", { headers: { "cf-ray": "public-edge" } });
+    const outcome = await new Promise<{ challenge: string; code: number }>((resolve, reject) => {
+      let challenge = "";
+      ws.onmessage = (ev) => {
+        const msg = JSON.parse(String(ev.data));
+        if (msg.t === "challenge") {
+          challenge = msg.nonce;
+          ws.send(JSON.stringify({ t: "pong", ts: new Date().toISOString() }));
+        }
+      };
+      ws.onclose = (ev) => resolve({ challenge, code: ev.code });
+      ws.onerror = () => reject(new Error("agent websocket failed"));
+    });
+    expect(outcome.challenge.length).toBeGreaterThan(0);
+    expect(outcome.code).toBe(1008);
+  });
 
   test("live tabs leave API capacity and release their stream slots on disconnect", async () => {
     const readers: ReadableStreamDefaultReader<Uint8Array>[] = [];
