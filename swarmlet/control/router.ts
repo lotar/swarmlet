@@ -48,7 +48,7 @@ export function createRouter(deps: { deployments: DeploymentManager; tunnels: Tu
   return async (req: Request, path: string): Promise<Response> => {
     const table = deps.deployments.routing();
     if (path === "/v1/models") {
-      return json({ object: "list", data: table.map((m) => ({ id: m.modelName, object: "model", owned_by: "swarmlet", ready: m.deployments.length })) });
+      return json({ object: "list", data: table.map((m) => ({ id: m.modelName, object: "model", created: m.created, owned_by: "swarmlet", ready: m.deployments.length })) });
     }
     if (!["/v1/chat/completions", "/v1/completions", "/v1/embeddings"].includes(path)) return json({ error: { message: `unsupported path ${path}`, type: "invalid_request_error" } }, 404);
     if (req.method !== "POST") return json({ error: { message: "POST required", type: "invalid_request_error" } }, 405);

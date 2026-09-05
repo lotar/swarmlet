@@ -240,8 +240,9 @@ export class DeploymentManager {
   }
 
   /** Ready deployments grouped by served model name, for the router and the Routing page. */
-  routing(): Array<{ modelName: string; deployments: Array<{ id: string; name: string; kind: string; nodeId: string; port: number; nodes: string[]; inflight: number; tokPerSec?: number; rttMs?: number }> }> {
+  routing(): Array<{ modelName: string; created: number; deployments: Array<{ id: string; name: string; kind: string; nodeId: string; port: number; nodes: string[]; inflight: number; tokPerSec?: number; rttMs?: number }> }> {
     const byModel = new Map<string, Array<{ id: string; name: string; kind: string; nodeId: string; port: number; nodes: string[]; inflight: number; tokPerSec?: number; rttMs?: number }>>();
+    const created = new Map<string, number>();
     for (const dep of this.deps.reg.listDeployments()) {
       if (dep.state !== "ready" || !dep.endpoint) continue;
       const node = this.deps.reg.getNode(dep.endpoint.nodeId);
@@ -249,8 +250,10 @@ export class DeploymentManager {
       const nodes = dep.plan ? [dep.plan.coordinatorNodeId, ...dep.plan.workers.map((w) => w.nodeId)] : [dep.endpoint.nodeId];
       list.push({ id: dep.id, name: dep.spec.name, kind: dep.spec.kind, nodeId: dep.endpoint.nodeId, port: dep.endpoint.port, nodes, inflight: this.inflight.get(dep.id) ?? 0, tokPerSec: this.liveTokPerSec(dep.id), rttMs: node?.caps?.net?.rttMs });
       byModel.set(dep.endpoint.modelName, list);
+      const registered = Math.floor(Date.parse(dep.createdAt) / 1000);
+      created.set(dep.endpoint.modelName, Math.min(created.get(dep.endpoint.modelName) ?? registered, registered));
     }
-    return [...byModel].map(([modelName, deployments]) => ({ modelName, deployments }));
+    return [...byModel].map(([modelName, deployments]) => ({ modelName, created: created.get(modelName)!, deployments }));
   }
 
   trackInflight(id: string, delta: number): void { this.inflight.set(id, Math.max(0, (this.inflight.get(id) ?? 0) + delta)); }

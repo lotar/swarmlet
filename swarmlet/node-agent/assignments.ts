@@ -31,6 +31,7 @@ export interface RunnerDeps {
 
 interface Active {
   a: Assignment;
+  registeredAt: number;
   state: AssignmentState;
   detail?: string;
   proc?: SupervisedProcess;
@@ -88,10 +89,10 @@ export class AssignmentRunner {
   }
 
   /** Only ready HTTP model servers can answer inference; RPC workers cannot decode alone. */
-  inferenceTargets(): Array<{ model: string; deploymentId: string; url: string }> {
-    return [...this.active.values()].flatMap(({ a, state }) => {
+  inferenceTargets(): Array<{ model: string; deploymentId: string; url: string; created: number }> {
+    return [...this.active.values()].flatMap(({ a, state, registeredAt }) => {
       if (state !== "ready" || (a.kind !== "coordinator" && a.kind !== "replica") || !a.modelName) return [];
-      return [{ model: a.modelName, deploymentId: a.deploymentId, url: a.kind === "replica" && a.external ? a.external.url : `http://127.0.0.1:${a.port}` }];
+      return [{ model: a.modelName, deploymentId: a.deploymentId, created: registeredAt, url: a.kind === "replica" && a.external ? a.external.url : `http://127.0.0.1:${a.port}` }];
     });
   }
 
@@ -196,7 +197,7 @@ export class AssignmentRunner {
       return;
     }
     if (this.active.has(a.id)) { this.deps.log.warn("duplicate assignment ignored", { id: a.id }); this.deps.report(a.id, this.active.get(a.id)!.state, "already running"); return; }
-    const x: Active = { a, state: "starting", ports: {} };
+    const x: Active = { a, registeredAt: Math.floor(Date.now() / 1000), state: "starting", ports: {} };
     this.active.set(a.id, x);
     this.set(x, "starting");
     x.startTask = Promise.resolve().then(() => {

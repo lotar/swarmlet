@@ -20,7 +20,7 @@ test("local ready server bypasses control, strips keys and preserves streamed UT
     return new Response(new ReadableStream({ pull(c) { if (i === bytes.length) c.close(); else c.enqueue(bytes.slice(i, ++i)); } }), { headers: { "content-type": "text/event-stream" } });
   });
   const remote = serve(() => { remoteCalls++; return Response.json({}); });
-  const handler = createNodeInference({ local: () => [{ model: "shared", deploymentId: "d1", url: local }], remote: () => ({ url: remote, key: "secret" }), nodeId: () => "node1" });
+  const handler = createNodeInference({ local: () => [{ model: "shared", deploymentId: "d1", created: 1700000000, url: local }], remote: () => ({ url: remote, key: "secret" }), nodeId: () => "node1" });
   const result = await handler(request("shared", {}, { authorization: "Bearer caller", cookie: "private" }), "/v1/chat/completions");
   expect(await result.text()).toBe(expected);
   expect(result.headers.get("x-swarmlet-route")).toBe("local");
@@ -46,13 +46,14 @@ test("model list merges local and mesh with local preference and survives contro
   let online = true;
   const remote = serve((req) => {
     expect(req.headers.get("authorization")).toBe("Bearer participant-key");
-    return online ? Response.json({ data: [{ id: "shared" }, { id: "remote" }] }) : new Response("offline", { status: 503 });
+    return online ? Response.json({ data: [{ id: "shared", created: 1600000000 }, { id: "remote", created: 1600000010 }] }) : new Response("offline", { status: 503 });
   });
-  let targets: InferenceTarget[] = [{ model: "shared", deploymentId: "d1", url: "http://127.0.0.1:8100" }];
+  let targets: InferenceTarget[] = [{ model: "shared", deploymentId: "d1", created: 1700000000, url: "http://127.0.0.1:8100" }];
   const handler = createNodeInference({ local: () => targets, remote: () => ({ url: remote, key: "participant-key" }), nodeId: () => "node1" });
   const req = new Request("http://127.0.0.1/v1/models");
-  const first = await (await handler(req, "/v1/models")).json() as { data: Array<{ id: string; route: string }> };
+  const first = await (await handler(req, "/v1/models")).json() as { data: Array<{ id: string; route: string; created: number }> };
   expect(first.data.map((m) => [m.id, m.route])).toEqual([["shared", "local"], ["remote", "mesh"]]);
+  expect(first.data.map((m) => m.created)).toEqual([1700000000, 1600000010]);
   online = false;
   const offline = await (await handler(req, "/v1/models")).json() as { mesh_available: boolean; data: unknown[] };
   expect(offline.mesh_available).toBe(false); expect(offline.data).toHaveLength(1);
@@ -66,7 +67,7 @@ test("cancelling local response disconnects upstream without replaying on mesh",
     return new Response(new ReadableStream({ start(c) { c.enqueue(new TextEncoder().encode('data: {}\n\n')); }, cancel() { cancelled = true; } }), { headers: { "content-type": "text/event-stream" } });
   });
   const remote = serve(() => { meshCalls++; return Response.json({}); });
-  const handler = createNodeInference({ local: () => [{ model: "shared", deploymentId: "d", url: local }], remote: () => ({ url: remote, key: "key" }), nodeId: () => "n" });
+  const handler = createNodeInference({ local: () => [{ model: "shared", deploymentId: "d", created: 1700000000, url: local }], remote: () => ({ url: remote, key: "key" }), nodeId: () => "n" });
   const res = await handler(request(), "/v1/chat/completions");
   const reader = res.body!.getReader(); await reader.read(); await reader.cancel();
   for (let i = 0; i < 50 && !cancelled; i++) await Bun.sleep(10);

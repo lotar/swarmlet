@@ -25,6 +25,19 @@ if [ "$os" = darwin ]; then
     codesign --force --deep --sign - "$build_target/release/bundle/$subdir/Swarmlet Node.app"
   fi
   codesign --verify --deep --strict "$build_target/release/bundle/$subdir/Swarmlet Node.app"
+  # Signing can change the sidecar bytes. Publish that exact artifact for both service
+  # and GUI, and record its final hash instead of the pre-signing compiler output.
+  python3 - "$root/dist/agent/darwin" "$build_target/release/bundle/$subdir/Swarmlet Node.app/Contents/MacOS/swarmlet-node" <<'PY_SIGNED_AGENT'
+import hashlib, json, os, pathlib, shutil, sys
+folder, sidecar = map(pathlib.Path, sys.argv[1:])
+manifest = json.loads((folder / "agent-build.json").read_text())
+manifest.setdefault("compiledSha256", manifest["sha256"])
+manifest["sha256"] = hashlib.sha256(sidecar.read_bytes()).hexdigest()
+temporary = folder / "swarmlet-node.signed"
+shutil.copy2(sidecar, temporary)
+os.replace(temporary, folder / "swarmlet-node")
+(folder / "agent-build.json").write_text(json.dumps(manifest, indent=2) + "\n")
+PY_SIGNED_AGENT
   rm -rf "$out/Swarmlet Node.app"
   cp -R "$build_target/release/bundle/$subdir/Swarmlet Node.app" "$out/"
 else

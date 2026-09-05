@@ -1,5 +1,5 @@
 // Participant inference gateway: ready local model servers first, otherwise the keyed internet API.
-export interface InferenceTarget { model: string; deploymentId: string; url: string }
+export interface InferenceTarget { model: string; deploymentId: string; url: string; created: number }
 export interface InferenceDeps {
   local: () => InferenceTarget[];
   remote: () => { url: string; key: string } | null;
@@ -15,7 +15,7 @@ export function createNodeInference(deps: InferenceDeps) {
     const remote = deps.remote();
     if (path === "/v1/models") {
       if (req.method !== "GET") return error("GET required", 405);
-      const models = new Map(local.map((target) => [target.model, { id: target.model, object: "model", owned_by: "swarmlet", route: "local" }]));
+      const models = new Map(local.map((target) => [target.model, { id: target.model, object: "model", created: target.created, owned_by: "swarmlet", route: "local" }]));
       let meshAvailable = false;
       if (remote) {
         try {
@@ -24,10 +24,10 @@ export function createNodeInference(deps: InferenceDeps) {
             signal: AbortSignal.any([req.signal, AbortSignal.timeout(5000)]),
           });
           if (res.ok) {
-            const body = await res.json() as { data?: Array<{ id: string }> };
+            const body = await res.json() as { data?: Array<{ id: string; created?: number }> };
             if (Array.isArray(body.data)) {
               meshAvailable = true;
-              for (const model of body.data) if (typeof model.id === "string" && !models.has(model.id)) models.set(model.id, { id: model.id, object: "model", owned_by: "swarmlet", route: "mesh" });
+              for (const model of body.data) if (typeof model.id === "string" && !models.has(model.id)) models.set(model.id, { id: model.id, object: "model", created: Number.isInteger(model.created) ? model.created! : 0, owned_by: "swarmlet", route: "mesh" });
             }
           }
         } catch { /* local models remain usable when control cannot be reached */ }
