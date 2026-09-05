@@ -21,64 +21,140 @@ import urllib.error
 import urllib.request
 
 
-# These read-only probes run on each node. They emit only selected process metadata, never config.
-PROCESS_AUDIT = r'''
-import json, os, re, subprocess, sys
-from pathlib import Path
-payload = json.loads(sys.argv[1])
-config = json.loads((Path.home()/'.swarmlet/node.json').read_text())
-roots = [Path(config['enginePath']), Path.home()/'.swarmlet/engine', Path.home()/'swarmlet/engine',
-         Path.home()/'swarmlet-engine/dist/linux', Path('/usr/lib/Swarmlet Node')]
-allowed = {str((root/name).resolve()) for root in roots for name in ['ggml-rpc-server', 'llama-server']}
-rows = []
-ps = subprocess.run(['ps', '-ww', '-axo', 'pid=,ppid=,comm='], check=True, capture_output=True, text=True).stdout
-parents = {}
-for line in ps.splitlines():
-    fields = line.strip().split(None, 2)
-    if len(fields) != 3: continue
-    pid, ppid = map(int, fields[:2]); parents[pid] = ppid
-    if sys.platform.startswith('linux'):
-        try: executable = os.readlink('/proc/%d/exe' % pid).removesuffix(' (deleted)')
-        except (FileNotFoundError, PermissionError): continue
-    else:
-        executable = fields[2]
-    if str(Path(executable).resolve()) in allowed:
-        rows.append({'pid': pid, 'ppid': ppid, 'executable': executable, 'ports': []})
-if sys.platform.startswith('linux'):
-    sockets = subprocess.run(['ss', '-H', '-ltnp'], check=True, capture_output=True, text=True).stdout
+# Shared verbatim with the remote probe so focused tests exercise the actual classifier.
+AUDIT_HELPERS = r'''
+def classify_processes(rows, expected, parents, agent_pid):
+    errors, matched, probes = [], set(), []
+    for assignment in expected:
+        pid = assignment.get('pid')
+        matches = []
+        for row in rows:
+            ancestor, seen = row['pid'], set()
+            while ancestor and ancestor not in seen:
+                if ancestor == pid:
+                    matches.append(row); break
+                seen.add(ancestor); ancestor = parents.get(ancestor)
+        if len(matches) != 1:
+            errors.append('assignment %s pid %s has %d engine processes' % (assignment['id'], pid, len(matches)))
+            continue
+        row = matches[0]; matched.add(row['pid'])
+        row['assignmentId'] = assignment['id']; row['snapshotPid'] = pid
+        if not row['ports'] or any(port not in row['ports'] for port in assignment['expectedEnginePorts']):
+            errors.append('assignment %s missing engine listening ports %s' % (assignment['id'], assignment['expectedEnginePorts']))
     for row in rows:
-        for line in sockets.splitlines():
-            if re.search(r'pid=%d,' % row['pid'], line):
-                row['ports'].append(int(line.split()[3].rsplit(':', 1)[1]))
-else:
-    for row in rows:
-        result = subprocess.run(['lsof', '-nP', '-a', '-p', str(row['pid']), '-iTCP', '-sTCP:LISTEN', '-Fn'], capture_output=True, text=True)
-        if result.returncode not in (0, 1): raise RuntimeError('lsof failed')
-        row['ports'] = [int(line[1:].rsplit(':', 1)[1]) for line in result.stdout.splitlines() if line.startswith('n')]
-errors = []
-matched = set()
-for assignment in payload['expected']:
-    pid = assignment.get('pid')
-    matches = []
-    for row in rows:
-        ancestor = row['pid']; seen = set()
-        while ancestor and ancestor not in seen:
-            if ancestor == pid:
-                matches.append(row); break
-            seen.add(ancestor); ancestor = parents.get(ancestor)
-    if len(matches) != 1:
-        errors.append('assignment %s pid %s has %d engine processes' % (assignment['id'], pid, len(matches)))
-        continue
-    row = matches[0]; matched.add(row['pid'])
-    row['assignmentId'] = assignment['id']; row['snapshotPid'] = pid
-    # Worker/server ports, unlike rpcN/peerN dialer sockets, are owned by the engine process.
-    expected_ports = assignment['expectedEnginePorts']
-    if not row['ports'] or any(port not in row['ports'] for port in expected_ports):
-        errors.append('assignment %s missing engine listening ports %s' % (assignment['id'], expected_ports))
-for row in rows:
-    if row['pid'] not in matched: errors.append('unaccounted managed engine pid %d' % row['pid'])
-print(json.dumps({'processes': rows, 'errors': errors}))
+        if row['pid'] in matched: continue
+        sole_device_flag = (row.get('argv') == [row['executable'], '--list-devices']
+                            if 'argv' in row else row.get('command') == row['executable'] + ' --list-devices')
+        if (row['executable'].rsplit('/', 1)[-1] == 'llama-server' and sole_device_flag
+                and row['ppid'] == agent_pid and agent_pid > 1 and not row['ports']):
+            probes.append(row)
+        else:
+            errors.append('unaccounted managed engine pid %d' % row['pid'])
+    return {'processes': [r for r in rows if r not in probes], 'deviceProbes': probes, 'errors': errors}
 '''
+
+# Selected process metadata only; node config and credentials are never emitted.
+PROCESS_AUDIT = AUDIT_HELPERS + r'''
+import json, os, re, subprocess, sys, time
+from pathlib import Path
+stages = []
+class ProcessDisappeared(Exception): pass
+def run_stage(stage, argv, timeout=8, allowed=(0,)):
+    started = time.monotonic()
+    try:
+        result = subprocess.run(argv, capture_output=True, text=True, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        stages.append({'stage': stage, 'seconds': round(time.monotonic()-started, 3), 'timeout': timeout})
+        raise
+    stages.append({'stage': stage, 'seconds': round(time.monotonic()-started, 3), 'exitCode': result.returncode})
+    if result.returncode not in allowed:
+        raise RuntimeError('%s exited %d' % (stage, result.returncode))
+    return result
+
+def collect():
+    payload = json.loads(sys.argv[1])
+    config = json.loads((Path.home()/'.swarmlet/node.json').read_text())
+    roots = [Path(config['enginePath']), Path.home()/'.swarmlet/engine', Path.home()/'swarmlet/engine',
+             Path.home()/'swarmlet-engine/dist/linux', Path('/usr/lib/Swarmlet Node')]
+    allowed = {str((root/name).resolve()) for root in roots for name in ['ggml-rpc-server', 'llama-server']}
+    if sys.platform.startswith('linux'):
+        agent_pid = int(run_stage('agent-main-pid', ['systemctl', '--user', 'show', 'swarmlet-node.service', '-p', 'MainPID', '--value']).stdout)
+    else:
+        service = run_stage('agent-main-pid', ['launchctl', 'print', 'gui/%d/ai.swarmlet.node' % os.getuid()]).stdout
+        match = re.search(r'^\s*pid = (\d+)\s*$', service, re.M)
+        if not match: raise RuntimeError('node LaunchAgent has no MainPID')
+        agent_pid = int(match.group(1))
+    rows, parents = [], {}
+    ps = run_stage('process-list', ['ps', '-ww', '-axo', 'pid=,ppid=,comm=']).stdout
+    for line in ps.splitlines():
+        fields = line.strip().split(None, 2)
+        if len(fields) != 3: continue
+        pid, ppid = map(int, fields[:2]); parents[pid] = ppid
+        if sys.platform.startswith('linux'):
+            try: executable = os.readlink('/proc/%d/exe' % pid).removesuffix(' (deleted)')
+            except FileNotFoundError: continue # ordinary unrelated process-list churn
+            except PermissionError: continue
+        else:
+            executable = fields[2]
+        if str(Path(executable).resolve()) not in allowed: continue
+        row = {'pid': pid, 'ppid': ppid, 'executable': executable, 'ports': []}
+        if sys.platform.startswith('linux'):
+            try:
+                row['argv'] = Path('/proc/%d/cmdline' % pid).read_bytes().rstrip(b'\0').decode().split('\0')
+            except FileNotFoundError: raise ProcessDisappeared('managed engine %d exited during argv read' % pid)
+        else:
+            result = run_stage('process-argv:%d' % pid, ['ps', '-ww', '-p', str(pid), '-o', 'command='], allowed=(0, 1))
+            if result.returncode == 1 or not result.stdout.strip(): raise ProcessDisappeared('managed engine %d exited during argv read' % pid)
+            row['command'] = result.stdout.strip()
+        rows.append(row)
+    if sys.platform.startswith('linux'):
+        sockets = run_stage('listening-sockets', ['ss', '-H', '-ltnp']).stdout
+        for row in rows:
+            for line in sockets.splitlines():
+                if re.search(r'pid=%d,' % row['pid'], line): row['ports'].append(int(line.split()[3].rsplit(':', 1)[1]))
+    else:
+        for row in rows:
+            result = run_stage('listening-sockets:%d' % row['pid'], ['lsof', '-nP', '-a', '-p', str(row['pid']), '-iTCP', '-sTCP:LISTEN', '-Fn'], allowed=(0, 1))
+            row['ports'] = [int(line[1:].rsplit(':', 1)[1]) for line in result.stdout.splitlines() if line.startswith('n')]
+    # A disappearing process is an inconsistent sample, not a live orphan or proof of cleanup.
+    for row in rows:
+        try: os.kill(row['pid'], 0)
+        except ProcessLookupError: raise ProcessDisappeared('managed engine %d exited during socket read' % row['pid'])
+    result = classify_processes(rows, payload['expected'], parents, agent_pid)
+    result['agentPid'] = agent_pid
+    return result
+try:
+    report = collect()
+except subprocess.TimeoutExpired as exc:
+    report = {'auditFailure': {'kind': 'timeout', 'stage': stages[-1]['stage'], 'timeout': exc.timeout}}
+except ProcessDisappeared as exc:
+    report = {'auditFailure': {'kind': 'process-disappeared', 'detail': str(exc)}}
+report['stages'] = stages
+print(json.dumps(report))
+'''
+
+class AuditTransient(Exception):
+    def __init__(self, details):
+        super().__init__(str(details))
+        self.details = details
+
+
+def audit_with_retry(collect, record_failure):
+    """One fresh read-only snapshot retry; never used for mutations or topology failures."""
+    for attempt in (1, 2):
+        try:
+            return collect()
+        except (AuditTransient, subprocess.TimeoutExpired, TimeoutError, urllib.error.URLError) as exc:
+            if isinstance(exc, urllib.error.URLError) and not isinstance(exc.reason, TimeoutError):
+                raise
+            if isinstance(exc, AuditTransient) and exc.details.get('kind') not in ('timeout', 'process-disappeared'):
+                raise
+            details = exc.details if isinstance(exc, AuditTransient) else {
+                'kind': 'transport-timeout', 'type': type(exc).__name__,
+                'timeout': getattr(exc, 'timeout', None),
+            }
+            record_failure(attempt, details)
+            if attempt == 2: raise
 
 AGENT_SIGNAL = r'''
 import json, os, signal, subprocess, sys
@@ -209,23 +285,32 @@ def main():
     def local_assignments():
         return [a for _, snapshot in node_snapshots() for a in snapshot.get('assignments', []) if a['deploymentId'] == deployment_id]
     def process_audit(label, expected_count):
-        # Inspect OS executables and listening sockets independently of the agent's accounting.
-        reports = []
-        bodies = {a['id']: a['body'] for a in deployment().get('assignments', [])}
-        for host, snapshot in node_snapshots():
-            expected = [a for a in snapshot.get('assignments', []) if a['deploymentId'] == deployment_id]
-            for assignment in expected:
-                body = bodies[assignment['id']]
-                assignment['expectedEnginePorts'] = [body[k] for k in ('port', 'peerPort') if body.get(k)]
-            payload = {'expected': expected}
-            if host:
-                report = remote_python(host, PROCESS_AUDIT, payload)
-            else:
-                result = subprocess.run([sys.executable, '-', json.dumps(payload)], input=PROCESS_AUDIT,
-                    capture_output=True, text=True, check=True, timeout=30)
-                report = json.loads(result.stdout)
-            report['nodeId'] = snapshot['nodeId']
-            reports.append(report)
+        # Each retry recollects the full control+three-agent+OS snapshot, never reuses old PIDs.
+        def collect():
+            reports = []
+            bodies = {a['id']: a['body'] for a in deployment().get('assignments', [])}
+            for host, snapshot in node_snapshots():
+                expected = [a for a in snapshot.get('assignments', []) if a['deploymentId'] == deployment_id]
+                for assignment in expected:
+                    body = bodies[assignment['id']]
+                    assignment['expectedEnginePorts'] = [body[k] for k in ('port', 'peerPort') if body.get(k)]
+                payload = {'expected': expected}
+                if host:
+                    report = remote_python(host, PROCESS_AUDIT, payload)
+                else:
+                    result = subprocess.run([sys.executable, '-', json.dumps(payload)], input=PROCESS_AUDIT,
+                        capture_output=True, text=True, check=True, timeout=30)
+                    report = json.loads(result.stdout)
+                if 'auditFailure' in report:
+                    raise AuditTransient({'nodeId': snapshot['nodeId'], **report['auditFailure'], 'stages': report.get('stages', [])})
+                report['nodeId'] = snapshot['nodeId']
+                reports.append(report)
+                if report['errors']:
+                    record(label + '-topology-failure', nodes=reports)
+                    raise AssertionError('OS process/port audit found a live topology mismatch; see evidence')
+            return reports
+        reports = audit_with_retry(collect, lambda attempt, failure:
+            record(label + '-sample-failure', attempt=attempt, failure=failure))
         record(label, nodes=reports)
         if sum(len(r['processes']) for r in reports) != expected_count or any(r['errors'] for r in reports):
             raise AssertionError('OS process/port audit differs from expected assignments; see evidence')
