@@ -6,6 +6,16 @@ Final-state change at17:29UTC: the mesh coordinator received SIGKILL and recover
 
 Feature revision: `05f9730d48f7ac236e36b9aabb0729cee03eb634`. Packaging follow-up: `f3f8f82` seals locally built macOS bundles with an ad-hoc signature. Branch: `feat/control-dashboard-redesign`.
 
+## Strict SDK compatibility follow-up
+
+Revision `2db2e7e91e15295caac960ee7b34bece258df1b0` is now installed in all three running services and the Mac app. The OpenAI Python SDK3.8.0 with strict response validation found a missing required `created` integer in `/v1/models`. Control now reports the earliest ready deployment's registration timestamp; local models use their node assignment registration timestamp, and remote entries preserve control's timestamp. Legacy control entries without a timestamp use0 to signal unknown metadata.
+
+`uv run --with openai==3.8.0 python /tmp/swarmlet-sdk-check.py` passed model listing and real streaming on Mac (`local`), Legion1 (`mesh`), Legion2 (`mesh`) and the keyed public endpoint. All returned “SDK works.” The reproducible single-endpoint client is `swarmlet/e2e/tools/openai-client.py`.
+
+New Linux service/package hash: `42edefd57ce3cdf947e4d56d37eb76dc4365c5e513b00d556f00a9c49f36a862`. New Mac signed sidecar hash prefix: `eeb2cb06159150f3`; package/service manifests now record the final signed bytes. New packages and evidence are under `~/.swarmlet/releases/node-chat-2db2e7e9` and `~/.swarmlet/backups/node-chat-2db2e7e9`. Canonical `swarmlet/dist/agent` and `swarmlet/dist/shell` artifacts were refreshed. Linux system-package replacement and rendered UI checks remain pending; the original rollout evidence below is historical where hashes differ.
+
+Validation after the metadata fix:135 runtime tests,622 expectations;6 simulated E2E tests,62 expectations. Mac package `codesign --verify --deep --strict` and signed service/package hash agreement passed. Public unauthorized/admin401, keyed200 and private dashboard/admin404 matrix passed again.
+
 ## Verified behavior
 
 | Requirement | Evidence | State |
@@ -35,7 +45,7 @@ Installed Mac sidecar/service SHA256: `fe2ecb020d582341` prefix (full hash in pr
 
 ## Remaining
 
-1. Install the staged deb on both Legions using the existing sudo-password-file workflow. Passwordless sudo is unavailable; the file path was requested. Then compare `/usr/bin/swarmlet-node`, the service binary and `/proc/<MainPID>/exe` to the new Linux hash. Existing desktop apps already attach to the updated service; their packaged fallback sidecars still need replacement.
+1. Install the staged deb on both Legions using the existing sudo-password-file workflow. Passwordless sudo is unavailable; the file path was requested. Then compare `/usr/bin/swarmlet-node`, the service binary and `/proc/<MainPID>/exe` to the latest Linux hash `42edefd5…`. Existing desktop apps already attach to the updated service; their packaged fallback sidecars still need replacement.
 2. Use the permitted browser tool to inspect node Chat, send/stop a reply, select a model and check desktop/narrow layouts. Attempts against preview47810 and installed47800 were rejected because the tool could not verify its admin-enforced policy. No alternative browser automation was used to bypass that restriction.
 3. Resolve the production8099 stop intent with the user. `sin-harness/scripts/flashnext-maintenance.sh status` confirms unloaded/down; if restoration is requested, use the same script with `start`. Do not undo an intentional stop from another session.
 4. Repeat final health and source/package checks after those finishing steps, then close the goal. Do not claim complete from the API and asset checks alone.
