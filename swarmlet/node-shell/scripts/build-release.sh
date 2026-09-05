@@ -19,6 +19,12 @@ out="$root/dist/shell/$os"
 mkdir -p "$out"
 # Clear only this script's known output name, so old releases cannot masquerade as this build.
 if [ "$os" = darwin ]; then
+  # Local builds have only a linker signature until the complete app is sealed.
+  # Preserve an explicitly configured signing identity; otherwise use local ad-hoc signing.
+  if [ -z "${APPLE_SIGNING_IDENTITY:-}" ]; then
+    codesign --force --deep --sign - "$build_target/release/bundle/$subdir/Swarmlet Node.app"
+  fi
+  codesign --verify --deep --strict "$build_target/release/bundle/$subdir/Swarmlet Node.app"
   rm -rf "$out/Swarmlet Node.app"
   cp -R "$build_target/release/bundle/$subdir/Swarmlet Node.app" "$out/"
 else
