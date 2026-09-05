@@ -4,6 +4,7 @@
 
 import { connect as netConnect } from "node:net";
 import type { Logger } from "../../control/log.ts";
+import { processIdentity, type ProcessIdentity } from "./identity.ts";
 
 export interface SpawnSpec {
   argv: string[];
@@ -24,10 +25,12 @@ export class SupervisedProcess {
   private exited = false;
   private stopping = false;
   private exitInfo: { code: number | null; signal: string | null } | null = null;
+  private spawnIdentity: ProcessIdentity | undefined;
 
   constructor(readonly name: string, private readonly log: Logger, private readonly events: ProcessEvents = {}) {}
 
   get pid(): number | null { return this.proc?.pid ?? null; }
+  get identity(): ProcessIdentity | undefined { return this.spawnIdentity; }
   get running(): boolean { return this.proc !== null && !this.exited; }
   get exit(): { code: number | null; signal: string | null } | null { return this.exitInfo; }
   recent(n = 40): string[] { return this.lines.slice(-n); }
@@ -51,6 +54,8 @@ export class SupervisedProcess {
       this.log.info(`${this.name}: exited`, { code, signal: proc.signalCode, stopping: this.stopping });
       this.events.onExit?.(code, proc.signalCode ?? null);
     });
+    try { this.spawnIdentity = processIdentity(proc.pid) ?? undefined; }
+    catch (e) { proc.kill("SIGTERM"); throw e; }
   }
 
   private async pump(stream: ReadableStream<Uint8Array> | number | null | undefined): Promise<void> {

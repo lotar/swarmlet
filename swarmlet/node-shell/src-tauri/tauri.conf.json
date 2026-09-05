@@ -15,7 +15,12 @@
   },
   "bundle": {
     "active": true,
-    "targets": ["app", "dmg", "deb", "appimage"],
+    "targets": [
+      "app",
+      "dmg",
+      "deb",
+      "appimage"
+    ],
     "category": "Utility",
     "shortDescription": "Swarmlet node agent",
     "longDescription": "Desktop shell for the Swarmlet node agent: opens the local node UI, keeps a tray icon, starts at login, and runs the agent as a sidecar when no service is installed.",
@@ -26,16 +31,23 @@
       "icons/icon.icns",
       "icons/icon.ico"
     ],
-    "externalBin": ["binaries/swarmlet-node"],
+    "externalBin": [
+      "binaries/swarmlet-node"
+    ],
     "resources": {
-      "binaries/engine/*": "engine/"
+      "binaries/engine/*": "engine/",
+      "binaries/agent-build.json": "agent-build.json"
     },
     "macOS": {
       "minimumSystemVersion": "12.0"
     },
     "linux": {
       "deb": {
-        "depends": ["libwebkit2gtk-4.1-0", "libgtk-3-0", "libayatana-appindicator3-1"]
+        "depends": [
+          "libwebkit2gtk-4.1-0",
+          "libgtk-3-0",
+          "libayatana-appindicator3-1"
+        ]
       }
     }
   }

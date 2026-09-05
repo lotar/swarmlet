@@ -73,11 +73,14 @@ export interface NodeMetrics {
   rssMiB?: number;
   freeRamMiB?: number;
   gpu?: Array<{ id: string; usedMiB: number }>;
-  /** Generation rate over the last heartbeat interval, from llama-server /metrics on coordinator/replica
-   *  nodes (delta of tokens_predicted_total); 0 when idle. */
+  /** Completed-token counter delta per sample interval. Counters advance at request completion;
+   *  zero does not imply idle. Undefined for missing samples or a new/restarted server. */
   tokPerSec?: number;
   /** llama-server's own lifetime average (llamacpp:predicted_tokens_seconds). */
   tokPerSecAvg?: number;
+  /** Time/status of the latest engine metrics scrape (separate from host metrics). */
+  serverMetricsTs?: string;
+  serverMetricsState?: "ok" | "partial" | "unavailable";
   tokensTotal?: number;
   inflight?: number;
   /** Served model name of the local llama-server the metrics came from. */

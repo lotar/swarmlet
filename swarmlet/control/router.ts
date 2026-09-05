@@ -16,13 +16,11 @@ const HOP_HEADERS = new Set(["host", "authorization", "connection", "content-len
 class TokenCounter {
   private decoder = new TextDecoder();
   private rest = "";
-  private streamed = false;
   private tail = "";
-  constructor(private readonly emit: (n: number) => void) {}
+  constructor(private readonly emit: (n: number) => void, private readonly streamed: boolean) {}
   feed(chunk: Uint8Array): void {
     const text = this.decoder.decode(chunk, { stream: true });
-    if (!this.streamed && !this.rest && text.trimStart().startsWith("data:")) this.streamed = true;
-    if (!this.streamed) { this.tail = (this.tail + text).slice(-4096); if (this.tail.length < 4096 && !text.trimStart().startsWith("data:")) { /* small JSON reply, counted at finish */ } return; }
+    if (!this.streamed) { this.tail = (this.tail + text).slice(-4096); return; }
     this.rest += text;
     let nl: number;
     let n = 0;
@@ -33,8 +31,8 @@ class TokenCounter {
       const data = line.slice(5).trim();
       if (!data || data === "[DONE]") continue;
       try {
-        const d = (JSON.parse(data) as { choices?: Array<{ delta?: { content?: string; reasoning_content?: string } }> }).choices?.[0]?.delta;
-        if (d && (d.content || d.reasoning_content)) n++;
+        const choices = (JSON.parse(data) as { choices?: Array<{ text?: string; delta?: { content?: string; reasoning_content?: string } }> }).choices;
+        for (const c of choices ?? []) if (c.text || c.delta?.content || c.delta?.reasoning_content) n++;
       } catch { /* partial */ }
     }
     if (n) this.emit(n);
@@ -70,22 +68,45 @@ export function createRouter(deps: { deployments: DeploymentManager; tunnels: Tu
     headers.set("content-type", "application/json");
     deps.deployments.trackInflight(pick.id, +1);
     const t0 = Date.now();
+    const abort = new AbortController();
+    const signal = AbortSignal.any([req.signal, abort.signal, AbortSignal.timeout(30 * 60_000)]);
+    let released = false;
+    const release = () => {
+      if (released) return;
+      released = true;
+      signal.removeEventListener("abort", release);
+      deps.deployments.trackInflight(pick.id, -1);
+    };
+    signal.addEventListener("abort", release, { once: true });
+    if (signal.aborted) release();
     try {
-      const upstream = await fetch(`http://127.0.0.1:${local}${path}`, { method: "POST", headers, body: bodyText, signal: AbortSignal.timeout(30 * 60_000) });
+      const upstream = await fetch(`http://127.0.0.1:${local}${path}`, { method: "POST", headers, body: bodyText, signal });
       const out = new Headers(upstream.headers);
       out.set("x-swarmlet-deployment", pick.id);
       out.set("x-swarmlet-node", pick.nodeId);
-      if (!upstream.body) { deps.deployments.trackInflight(pick.id, -1); return new Response(null, { status: upstream.status, headers: out }); }
-      // count generated tokens as they pass (SSE deltas, or usage of a non-streamed reply) for the
-      // live per-deployment rate, and release the in-flight slot when the body finishes
-      const counter = new TokenCounter((n) => deps.deployments.recordTokens(pick.id, n));
-      const body = upstream.body.pipeThrough(new TransformStream<Uint8Array, Uint8Array>({
-        transform: (chunk, controller) => { counter.feed(chunk); controller.enqueue(chunk); },
-        flush: () => { counter.finish(); deps.deployments.trackInflight(pick.id, -1); deps.log.debug("routed", { path, deployment: pick.id, ms: Date.now() - t0 }); },
-      }));
+      if (!upstream.body) { release(); return new Response(null, { status: upstream.status, headers: out }); }
+      // Explicit SSE detection survives a first network chunk as small as "d". These are stream
+      // delta estimates; non-streamed responses contribute their reported completion-token usage.
+      const counter = new TokenCounter((n) => deps.deployments.recordTokens(pick.id, n), /text\/event-stream/i.test(upstream.headers.get("content-type") ?? ""));
+      const reader = upstream.body.getReader();
+      const body = new ReadableStream<Uint8Array>({
+        async pull(controller) {
+          try {
+            const { done, value } = await reader.read();
+            if (done) {
+              counter.finish(); release(); controller.close();
+              deps.log.debug("routed", { path, deployment: pick.id, ms: Date.now() - t0 });
+            } else { counter.feed(value); controller.enqueue(value); }
+          } catch (e) { release(); controller.error(e); }
+        },
+        async cancel(reason) {
+          release(); abort.abort(reason);
+          await reader.cancel(reason).catch(() => {});
+        },
+      });
       return new Response(body, { status: upstream.status, headers: out });
     } catch (e) {
-      deps.deployments.trackInflight(pick.id, -1);
+      release();
       deps.log.warn("upstream failed", { deployment: pick.id, err: (e as Error).message });
       return json({ error: { message: `upstream failed: ${(e as Error).message}`, type: "server_error" } }, 502);
     }

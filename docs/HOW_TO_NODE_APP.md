@@ -149,3 +149,60 @@ Ed25519 node identity, signed enrollment with a one-time code, nonce-signed chan
 127.0.0.1. The agent's TLS data listener (:47801) is the only exposed socket: client certificates are
 pinned by fingerprint to enrolled identities and only ports of running assignments are reachable.
 Anything else travels over the outbound control channel and is relayed when no direct path exists.
+
+
+## 7. Refreshing the three rig installations
+
+Build and stage first; apply only after the local AI is idle and the operator has
+acquired the maintenance window. Use `flashnext-maintenance.sh` to stop/restore
+production. A quiet token counter alone does not establish idle: verify processing
+requests and foreign clients too. Do not run real inference or deliberately restart
+control while other clients use the local AI.
+
+1. From the intended final source revision, build the Mac release with
+   `SWARMLET_ENGINE_DIST=/Users/lotar/projects/ai-mesh/swarmlet/engine/dist/darwin CARGO_TARGET_DIR=/Users/lotar/projects/ai-mesh/swarmlet/node-shell/src-tauri/target swarmlet/node-shell/scripts/build-release.sh`.
+   The native Cargo cache is reused; only two build jobs run by default.
+2. Stage the same source tree on Legion 1, with its native prebuilt engine
+   `/home/lotar/swarmlet-engine/dist/linux`, then run
+   `SWARMLET_ENGINE_DIST=/home/lotar/swarmlet-engine/dist/linux swarmlet/node-shell/scripts/build-release.sh`.
+   Reuse the existing `/home/lotar/swarmlet-shell` Cargo target directory if present,
+   using an absolute `CARGO_TARGET_DIR`. Alternatively compile Linux's agent on the
+   Mac and transfer `dist/agent/linux` intact, then use `--reuse-agent` on Linux.
+3. Before application, save the existing agent executable, GUI package/app, service
+   definition and `~/.swarmlet/node.json` in a dated private rollback directory on
+   each host. Never overwrite identities, offers, enrollment, models, or externals.
+4. Copy the canonical binary from `dist/agent/<os>/swarmlet-node` to a sibling
+   temporary file at the service's existing stable path, preserve executable mode,
+   then rename it into place. Current paths: Mac
+   `/Users/lotar/projects/ai-mesh/swarmlet/dist/agent/darwin/swarmlet-node`; both
+   Legions `/home/lotar/swarmlet/swarmlet-node`. Install the corresponding
+   `agent-build.json` beside it. Copy the Mac engine to the service's sibling
+   `engine/` and keep the Legions' engine at
+   `/home/lotar/swarmlet-engine/dist/linux`. Update **only** `enginePath` in each
+   `node.json` to that stable absolute directory. Do not point a service at a GUI
+   bundle, staging worktree, or transient AppImage mount.
+5. Replace `/Applications/Swarmlet Node.app` on the Mac with the staged native app;
+   install the **same** refreshed `.deb` on Legion 1 and Legion 2 using
+   `sudo dpkg -i swarmlet-node_0.1.0_amd64.deb`. Package installation supplies the
+   GUI and `/usr/bin/swarmlet-node`; the existing systemd service still uses its
+   stable `/home/lotar/swarmlet/swarmlet-node` path. Close an old GUI instance before
+   replacing its files. Restart agents in the coordinated maintenance window;
+   the shell must attach to the service instead of launching another agent.
+6. Compare SHA-256 for the canonical artifact, installed service executable and
+   GUI sidecar (Mac `Contents/MacOS/swarmlet-node`, Linux `/usr/bin/swarmlet-node`).
+   Verify each against `agent-build.json.sha256`; do not accept a GUI merely
+   attaching successfully as proof it contains the current agent. Native signing
+   may change Mach-O metadata: if packaging changes the Mac sidecar bytes, make
+   that final packaged sidecar the canonical installed service artifact and record
+   its final hash in the release evidence. Check engine checksums in each stable
+   directory and `/api/status` on each node; verify three online nodes in control.
+7. Run real three-node inference, disconnect/reconnect and control-restart
+   acceptance. Confirm production restoration even if an acceptance check fails.
+   If rollout fails, restore the saved agent, app/package, config and service
+   definition, restart only the affected agent, and recheck its status and
+   production health. Do not re-enroll nodes as part of an update.
+
+These are an operator-controlled refresh and rollback procedure, not auto-update.
+The source manifest labels uncommitted builds `-dirty`; the binary SHA-256 is the
+exact artifact identity. Record final source status and all three installed hashes
+with the acceptance evidence.

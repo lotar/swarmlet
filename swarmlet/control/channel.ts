@@ -108,7 +108,13 @@ export class AgentChannel {
         this.reg.setCaps(nodeId, m.caps);
         this.reg.setOffer(nodeId, m.offer);
         this.reg.setModels(nodeId, m.models);
-        for (const a of m.assignments) this.reg.setAssignmentState(a.id, a.state, a.detail); // undefined keeps the stored detail
+        // Authentication identifies the node, not every assignment ID it sends. Keep foreign rows immutable.
+        m.assignments = m.assignments.filter((a) => {
+          const row = this.reg.getAssignment(a.id);
+          if (row && row.nodeId !== nodeId) { this.log.warn("foreign assignment in hello ignored", { nodeId, id: a.id }); return false; }
+          if (row) this.reg.setAssignmentState(a.id, a.state, a.detail); // unknown IDs reach reconciliation for cleanup
+          return true;
+        });
         this.reg.event("online", `${m.caps.hostname} online (agent ${m.agentVersion})`, { nodeId });
         this.hooks.onHello?.(nodeId, m);
         break;
@@ -117,6 +123,8 @@ export class AgentChannel {
       case "offer": this.reg.setOffer(nodeId, m.offer); this.reg.event("offer", "offer updated", { nodeId }); break;
       case "models": this.reg.setModels(nodeId, m.models); break;
       case "assignment": {
+        const owned = this.reg.getAssignment(m.id);
+        if (!owned || owned.nodeId !== nodeId) { this.log.warn("unowned assignment report ignored", { nodeId, id: m.id }); break; }
         const row = this.reg.setAssignmentState(m.id, m.state, m.detail);
         this.reg.event("assignment", `${m.id} ${m.state}${m.detail ? ": " + m.detail : ""}`, { nodeId, deploymentId: row?.deploymentId });
         this.hooks.onAssignmentState?.(nodeId, m.id, m.state, m.detail);

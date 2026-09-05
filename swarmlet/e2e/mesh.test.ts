@@ -21,6 +21,45 @@ let ctl: Awaited<ReturnType<typeof bootControl>>;
 let base: string;
 const api = (path: string, init: RequestInit = {}) => fetch(`${base}${path}`, { ...init, headers: { authorization: `Bearer ${cfg.adminToken}`, "content-type": "application/json", ...(init.headers ?? {}) } });
 const agents: AgentRuntime[] = [];
+let sweeper: ReturnType<typeof setInterval>;
+function startSweeper(): void {
+  sweeper = setInterval(() => {
+    ctl.channel.sweep();
+    void ctl.deployments.reconcile();
+  }, 100);
+}
+async function waitUntil(check: () => boolean, timeoutMs = 30_000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (!check()) {
+    if (Date.now() > deadline) throw new Error("condition did not converge");
+    await Bun.sleep(100);
+  }
+}
+async function restartControl(): Promise<void> {
+  const port = ctl.server.port!;
+  clearInterval(sweeper);
+  ctl.deployments.dispose();
+  ctl.channel.shuttingDown = true;
+  ctl.tunnels.close();
+  ctl.server.stop(true);
+  // Let websocket close callbacks finish before closing this connection to the persisted DB.
+  await Bun.sleep(100);
+  ctl.reg.close();
+  cfg.port = port;
+  ctl = await bootControl(cfg);
+  startSweeper();
+  await waitUntil(() => agents.every((a) => ctl.channel.isOnline(a.id.nodeId)));
+}
+async function assertRouted(id: string, model = "qwen3.5-2b", expected = "echo:recovery rpc=ok"): Promise<void> {
+  const response = await api("/v1/chat/completions", {
+    method: "POST", headers: { "x-swarmlet-deployment": id },
+    body: JSON.stringify({ model, messages: [{ role: "user", content: "recovery" }] }),
+  });
+  expect(response.status).toBe(200);
+  expect(response.headers.get("x-swarmlet-deployment")).toBe(id);
+  const body = await response.json() as { choices: Array<{ message: { content: string } }> };
+  expect(body.choices[0]?.message.content).toBe(expected);
+}
 
 async function makeNode(name: string, roles: Offer["roles"], withModel: boolean, uiPort: number, dataPort: number): Promise<AgentRuntime> {
   const home = mkdtempSync(join(tmpdir(), `swarmlet-e2e-${name}-`));
@@ -58,9 +97,13 @@ beforeAll(async () => {
   ctl = await bootControl(cfg);
   base = `http://127.0.0.1:${ctl.server.port}`;
   cfg.publicUrl = base;
+  startSweeper();
 });
 
 afterAll(async () => {
+  clearInterval(sweeper);
+  ctl.deployments.dispose();
+  ctl.channel.shuttingDown = true;
   for (const a of agents) { await a.runner.stopAll(); a.client?.stop(); }
   ctl.server.stop(true);
 });
@@ -133,6 +176,7 @@ describe("mesh e2e (fake engine)", () => {
   test("external deployment is health-checked and routed", async () => {
     // an "external" server = a fake llama-server we start by hand on alpha's machine
     const proc = Bun.spawn([join(FAKE, "llama-server"), "--port", "8199", "--alias", "ext"], { env: { ...process.env, FAKE_LOAD_MS: "10" }, stdout: "ignore", stderr: "ignore" });
+    try {
     await Bun.sleep(600);
     const spec = { name: "flashnext-prod", profile: "external", kind: "external", external: { nodeId: alpha.id.nodeId, url: "http://127.0.0.1:8199", healthPath: "/health", modelName: "ext-model" } };
     const { id } = (await (await api("/api/deployments", { method: "POST", body: JSON.stringify(spec) })).json()) as { id: string };
@@ -141,10 +185,65 @@ describe("mesh e2e (fake engine)", () => {
     expect(dep.state).toBe("ready");
     const r = await api("/v1/chat/completions", { method: "POST", body: JSON.stringify({ model: "ext-model", messages: [{ role: "user", content: "x" }] }) });
     expect(r.status).toBe(200);
+    await restartControl();
+    await waitState(id, ["ready"], 30_000);
+    await assertRouted(id, "ext-model", "echo:recovery rpc=none");
+    expect(alpha.runner.snapshot().filter((a) => a.deploymentId === id)).toHaveLength(1);
+    alpha.client!.stop();
+    await waitUntil(() => !ctl.channel.isOnline(alpha.id.nodeId));
+    alpha.connect();
+    await alpha.client!.whenConnected();
+    await waitState(id, ["ready"], 30_000);
+    expect(alpha.runner.snapshot().filter((a) => a.deploymentId === id)).toHaveLength(1);
     await api(`/api/deployments/${id}/stop`, { method: "POST" });
     await waitState(id, ["stopped"], 30_000);
-    proc.kill();
-  });
+    } finally { proc.kill(); }
+  }, 120_000);
+
+  test("relay mesh recovers after actual disconnect and persisted control restart; offline stop stays stopped", async () => {
+    if (!hasGpu()) return;
+    const spec = { name: "e2e-recovery", profile: "qwen35-2b-q8", kind: "split", coordinatorNodeId: alpha.id.nodeId, workerNodeIds: [beta.id.nodeId], ctx: 2048, transport: "relay" };
+    const { id } = await (await api("/api/deployments", { method: "POST", body: JSON.stringify(spec) })).json() as { id: string };
+    await api(`/api/deployments/${id}/start`, { method: "POST" });
+    await waitState(id, ["ready"], 60_000);
+    await assertRouted(id);
+    const originalIds = agents.flatMap((a) => a.runner.snapshot().filter((x) => x.deploymentId === id).map((x) => x.id));
+    beta.client!.stop(); // real WebSocket loss, leaving the offline worker alive
+    await waitUntil(() => !ctl.channel.isOnline(beta.id.nodeId));
+    await waitState(id, ["failed"], 30_000);
+    expect(beta.runner.snapshot().some((a) => a.deploymentId === id)).toBe(true);
+    beta.connect();
+    await beta.client!.whenConnected();
+    await waitState(id, ["ready"], 60_000);
+    await assertRouted(id);
+    const recovered = agents.flatMap((a) => a.runner.snapshot().filter((x) => x.deploymentId === id));
+    expect(recovered).toHaveLength(2);
+    expect(recovered.every((a) => !originalIds.includes(a.id))).toBe(true);
+
+    const beforeRestart = recovered.map((a) => a.id);
+    await restartControl();
+    await waitState(id, ["ready"], 60_000);
+    await assertRouted(id);
+    const restarted = agents.flatMap((a) => a.runner.snapshot().filter((x) => x.deploymentId === id));
+    expect(restarted).toHaveLength(2);
+    expect(restarted.every((a) => !beforeRestart.includes(a.id))).toBe(true);
+
+    beta.client!.stop();
+    await waitUntil(() => !ctl.channel.isOnline(beta.id.nodeId));
+    await waitState(id, ["failed"], 30_000);
+    const stopResponse = api(`/api/deployments/${id}/stop`, { method: "POST" });
+    await waitUntil(() => !ctl.reg.deploymentIntent(id).running);
+    beta.connect();
+    await beta.client!.whenConnected();
+    expect((await stopResponse).status).toBe(200);
+    await waitState(id, ["stopped"], 30_000);
+    await waitUntil(() => agents.every((a) => !a.runner.snapshot().some((x) => x.deploymentId === id)));
+    await restartControl();
+    await Bun.sleep(6000); // exceed first recovery backoff
+    expect((await waitState(id, ["stopped"], 1000)).state).toBe("stopped");
+    expect(agents.flatMap((a) => a.runner.snapshot()).filter((a) => a.deploymentId === id)).toHaveLength(0);
+    expect(ctl.reg.deploymentIntent(id).running).toBe(false);
+  }, 240_000);
 
   test("worker crash fails the deployment and cleans up", async () => {
     if (!hasGpu()) return;
@@ -157,6 +256,7 @@ describe("mesh e2e (fake engine)", () => {
     process.kill(pid!, "SIGKILL");
     const dep = await waitState(id, ["failed"], 30_000);
     expect(dep.error).toMatch(/failed/);
+    await api(`/api/deployments/${id}/stop`, { method: "POST" });
     for (let i = 0; i < 100 && alpha.runner.snapshot().length; i++) await Bun.sleep(100);
     expect(alpha.runner.snapshot().length).toBe(0);
   });

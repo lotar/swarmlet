@@ -195,6 +195,7 @@ export async function bootControl(cfg: ControlConfig, opts: { profilesDir?: stri
   const channel = new AgentChannel(reg, log, hooks);
   const profiles = loadProfiles(opts.profilesDir);
   const deployments = new DeploymentManager({ reg, channel, profiles, log });
+  deployments.restore();
   hooks.onAssignmentState = (nodeId, id, state, detail) => deployments.onAssignmentState(nodeId, id, state, detail);
   hooks.onHello = (nodeId, hello) => deployments.onHello(nodeId, hello.assignments);
   hooks.onOffline = (nodeId) => { tunnels.close(nodeId); deployments.onOffline(nodeId); };

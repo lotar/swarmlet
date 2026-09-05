@@ -12,7 +12,7 @@ The shell adds no features of its own. The window is the agent's own web UI serv
 ```
 node-shell/
 ├── dist/index.html            splash page shown until the agent answers (no framework, no npm)
-├── scripts/build-sidecar.sh   compiles the agent with Bun and copies the engine into src-tauri/binaries
+├── scripts/build-sidecar.sh   copies the canonical service agent and verified engine into src-tauri/binaries
 └── src-tauri/
     ├── Cargo.toml             crate swarmlet-node-shell (tauri 2 + tray-icon, plugin-shell, plugin-autostart)
     ├── tauri.conf.json        productName "Swarmlet Node", identifier ai.swarmlet.node, sidecar + engine resources
@@ -36,7 +36,7 @@ Everything installs in user space; no `sudo` is needed on macOS.
 - Tauri CLI: `cargo install tauri-cli --version "^2" --locked` (compiles for several minutes).
 - Bun 1.3.x (the repo pins `bun` in `swarmlet/package.json`) to compile the sidecar.
 - The engine binaries for the platform in `swarmlet/engine/dist/<darwin|linux>/` (built by `engine/build.sh`).
-  Without them the bundle still builds; the agent then falls back to its own default engine path.
+  Release staging refuses missing engines or a checksum mismatch.
 
 **macOS** (Apple silicon; the sidecar target is `aarch64-apple-darwin`)
 
@@ -57,27 +57,33 @@ On Fedora/Arch use the equivalents from the Tauri prerequisites page.
 ```sh
 export PATH="$HOME/.cargo/bin:$PATH"
 cd swarmlet/node-shell
-
-# 1. sidecar + engine for the host OS -> src-tauri/binaries/
-scripts/build-sidecar.sh            # or: scripts/build-sidecar.sh linux
-#    (equivalent by hand on macOS:
-#     cd swarmlet && bun build --compile --minify node-agent/main.ts \
-#        --outfile node-shell/src-tauri/binaries/swarmlet-node-aarch64-apple-darwin
-#     on Linux add --target=bun-linux-x64 and name it swarmlet-node-x86_64-unknown-linux-gnu;
-#     then copy engine/dist/<os>/* into node-shell/src-tauri/binaries/engine/)
-
-# 2. the app
-cd src-tauri
-cargo tauri build --bundles app,dmg        # macOS
-cargo tauri build --bundles deb,appimage   # Linux (AppImage packaging downloads linuxdeploy on first use)
+scripts/build-release.sh  # native macOS .app or Linux .deb; never installs or restarts
 ```
 
-Outputs (macOS): `src-tauri/target/release/bundle/macos/Swarmlet Node.app` and
-`src-tauri/target/release/bundle/dmg/Swarmlet Node_0.1.0_aarch64.dmg`.
-Outputs (Linux): `src-tauri/target/release/bundle/deb/*.deb` and `.../appimage/*.AppImage`.
+This compiles the agent once via `node-agent/build.ts`, records its SHA-256 in
+`dist/agent/<os>/agent-build.json`, and copies the exact binary into the shell. The
+canonical binary is also the service-install artifact. Every engine executable must
+exist, be executable, and pass `sha256.txt`. The manifest travels inside the GUI package.
+Outputs are `swarmlet/dist/shell/darwin/Swarmlet Node.app` and
+`swarmlet/dist/shell/linux/swarmlet-node_0.1.0_amd64.deb`.
 
-Tauri checks that `binaries/swarmlet-node-<host triple>` exists before bundling, so step 1 is
-mandatory. Regenerate the icon set after changing the mark with
+To compile both agents on the Mac, then package Linux natively, first run
+`bun run node-agent/build.ts darwin linux` from `swarmlet/`, transfer
+`dist/agent/linux/` with its manifest and Linux engine to the Linux build tree, then
+run `scripts/build-release.sh --reuse-agent` there. Reuse checks the agent's checksum;
+the operator must ensure this artifact is from the intended final source revision.
+`SWARMLET_ENGINE_DIST=/absolute/path` selects a prebuilt engine directory for a
+**single OS** build. Do not use it for a multi-OS build.
+
+Builds default to two Cargo jobs. Reuse a native cache with absolute
+`CARGO_TARGET_DIR=/path/to/existing/target`; this speeds recompilation but does not
+reuse old agent binaries. For the existing rig, the Mac cache is
+`/Users/lotar/projects/ai-mesh/swarmlet/node-shell/src-tauri/target`; Legion 1 has its
+native tree at `/home/lotar/swarmlet-shell`. Keep machine caches local. The scripts
+build `.app` and `.deb` only; DMG/AppImage, signing and auto-update are separate work.
+
+Tauri checks that `binaries/swarmlet-node-<host triple>` exists before bundling.
+The release script always stages it first. Regenerate the icon set after changing the mark with
 `cargo tauri icon icons/app-icon-1024.png -o icons`.
 
 For a debug run without bundling use `cargo tauri dev` from `src-tauri/` (the sidecar and engine
@@ -143,13 +149,16 @@ serve the mesh with the app closed or before anyone logs in (`loginctl enable-li
 
 ## Known gaps
 
-- Built only for macOS/Apple silicon so far; the Linux path (deb/AppImage, appindicator tray,
-  `--target=bun-linux-x64` sidecar) is wired in the config and code but has not been exercised.
+- macOS arm64 `.app` and Linux x64 `.deb` were exercised on the rig on 2026-09-04.
+  AppImage packaging failed in linuxdeploy and is excluded from the native release workflow.
   No Intel macOS build (would need a `bun-darwin-x64` sidecar and an x86_64 engine dist).
 - Unsigned and un-notarized (see above). No auto-update.
 - If the agent UI's "install as service" is used while the *sidecar* is the running agent, the
   service plist points at the sidecar binary inside the `.app` bundle (moving or deleting the app
   breaks the service), and launchd cannot bind the port until the shell is quit once.
+  For always-on nodes, install the canonical artifact in a stable directory and set
+  `node.json.enginePath` to its stable engine directory before restarting; see the
+  [rig refresh procedure](../../../docs/HOW_TO_NODE_APP.md#7-refreshing-the-three-rig-installations).
 - No single-instance guard: launching the app twice on Linux opens two shells (macOS reuses the
   running instance through Launch Services).
 - Tray tooltips are not displayed by every Linux desktop; the status menu item carries the text.

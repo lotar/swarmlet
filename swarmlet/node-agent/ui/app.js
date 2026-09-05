@@ -189,8 +189,16 @@
     (caps.gpus || []).forEach(function (g) {
       tiles.push(tile(g.name || g.id, fmtGiB(gpuUsed(m, g.id)), 'GiB used', 'of ' + fmtGiB(g.totalMiB) + ' GiB on ' + g.id));
     });
-    if (m && isNum(m.tokPerSec)) tiles.push(tile('Throughput', num(m.tokPerSec, 1), 'tok/s', 'engine on this node'));
-    if (m && isNum(m.inflight)) tiles.push(tile('In flight', m.inflight, 'requests', 'engine on this node'));
+    if (m && (m.serving || m.serverMetricsState)) {
+      var sampleAt = Date.parse(m.serverMetricsTs || m.ts);
+      var fresh = sampleAt && Date.now() - sampleAt <= 10000;
+      var available = fresh && (!m.serverMetricsState || m.serverMetricsState === 'ok');
+      var busy = available && isNum(m.inflight) && m.inflight > 0;
+      var measured = available && isNum(m.tokPerSec) && m.tokPerSec > 0;
+      var hint = !fresh ? 'stale engine sample' : !available ? m.serverMetricsState + ' engine metrics' : measured ? 'completed-token interval' : busy ? 'active · decode rate unavailable' : m.inflight === 0 ? 'idle at engine sample' : 'activity unknown';
+      tiles.push(tile('Throughput', measured ? num(m.tokPerSec, 1) : available && m.inflight === 0 ? '0.0' : NA, 'tok/s', hint));
+      tiles.push(tile('In flight', available && isNum(m.inflight) ? m.inflight : NA, 'requests', available ? 'engine sample' : hint));
+    }
     tiles.push(tile('Agent RSS', fmtGiB(m && m.rssMiB, 2), 'GiB', m ? 'sampled ' + ago(m.ts) : 'no sample yet'));
     replace($('status-metrics'), tiles);
 

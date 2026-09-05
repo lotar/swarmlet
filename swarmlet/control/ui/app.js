@@ -246,14 +246,25 @@
     return Object.keys(names);
   }
 
+  function throughput(m, routed) {
+    if (isNum(routed) && routed > 0) return { value: routed, label: 'routed stream estimate · last 5s' };
+    var at = m && Date.parse(m.serverMetricsTs || m.ts);
+    if (!at || Date.now() - at > 10000) return { value: null, label: m ? 'stale engine sample' : 'engine metrics unavailable' };
+    if (m.serverMetricsState === 'unavailable' || m.serverMetricsState === 'partial') return { value: null, label: m.serverMetricsState + ' engine metrics' };
+    var busy = isNum(m.inflight) && m.inflight > 0;
+    if (isNum(m.tokPerSec) && m.tokPerSec > 0) return { value: m.tokPerSec, label: 'completed-token interval' + (busy ? ' · ' + m.inflight + ' active' : '') };
+    if (busy) return { value: null, label: m.inflight + ' active · decode rate unavailable' };
+    if (isNum(m.inflight) && m.inflight === 0) return { value: 0, label: 'idle at engine sample' };
+    return { value: null, label: 'activity unknown' };
+  }
+
   function tpsCell(m, routed, models) {
     var serving = (models && models.length) ? models.join(', ') : (m && m.serving);
     if (!serving && !(isNum(routed) && routed > 0)) return el('span', { class: 'dim', text: NA });
-    var live = isNum(routed) && routed > 0 ? routed : (m && isNum(m.tokPerSec) ? m.tokPerSec : 0);
-    var sub = live > 0 ? (isNum(routed) && routed > 0 ? 'streaming now' : 'last interval') : 'idle';
-    if (serving) sub += ' \u00b7 ' + serving;
-    if (m && isNum(m.tokPerSecAvg) && m.tokPerSecAvg > 0) sub += ' \u00b7 avg ' + m.tokPerSecAvg.toFixed(1);
-    return [el('span', { class: live > 0 ? 'strong tps-live' : 'dim', text: live.toFixed(1) }), el('br'), el('span', { class: 'dim small', text: sub })];
+    var rate = throughput(m, routed);
+    var sub = rate.label;
+    if (serving) sub += ' · ' + serving;
+    return [el('span', { class: rate.value > 0 ? 'strong tps-live' : 'dim', text: rate.value == null ? NA : rate.value.toFixed(1) }), el('br'), el('span', { class: 'dim small', text: sub })];
   }
 
   function fmtRate(bps) { return bps >= 1048576 ? (bps / 1048576).toFixed(1) + ' MB/s' : bps >= 1024 ? (bps / 1024).toFixed(0) + ' KB/s' : bps + ' B/s'; }
@@ -666,7 +677,7 @@
           td(shortId(d.id), 'mono', d.id),
           td(nodeName(d.nodeId), null, d.nodeId),
           td(isNum(d.inflight) ? String(d.inflight) : NA, 'num'),
-          td(num(d.tokPerSec, 1), 'num'),
+          td(el('span', { text: num(d.tokPerSec, 1), title: 'Routed stream estimate over the last 5 seconds; excludes direct engine traffic' }), 'num'),
         ]));
       });
     });
@@ -949,8 +960,8 @@
     var parts = [];
     var rtt = n.caps && n.caps.net && isNum(n.caps.net.rttMs) ? n.caps.net.rttMs : null;
     if (rtt != null) parts.push('rtt ' + num(rtt, 0) + ' ms');
-    var live = isNum(n.routedTokPerSec) && n.routedTokPerSec > 0 ? n.routedTokPerSec : (n.metrics && isNum(n.metrics.tokPerSec) ? n.metrics.tokPerSec : null);
-    if (live != null) parts.push(num(live, 1) + ' tok/s');
+    var rate = throughput(n.metrics, n.routedTokPerSec);
+    if ((n.metrics && n.metrics.serving) || rate.value > 0) parts.push((rate.value == null ? '' : num(rate.value, 1) + ' tok/s · ') + rate.label);
     if ((n.relayInBps || 0) + (n.relayOutBps || 0) > 0) parts.push('relay \u2193' + fmtRate(n.relayInBps || 0) + ' \u2191' + fmtRate(n.relayOutBps || 0));
     if (n.metrics && isNum(n.metrics.cpuPct)) parts.push('cpu ' + num(n.metrics.cpuPct, 0) + '%');
     return parts.join(' · ');

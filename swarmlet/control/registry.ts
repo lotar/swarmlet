@@ -32,6 +32,7 @@ export interface AssignmentRow {
   state: AssignmentState | "sent";
   detail: string | null;
   updatedAt: string;
+  retired: boolean;
 }
 
 export interface EventRow { id: number; ts: string; kind: string; nodeId: string | null; deploymentId: string | null; message: string }
@@ -48,6 +49,9 @@ CREATE TABLE IF NOT EXISTS deployments (
 CREATE TABLE IF NOT EXISTS assignments (
   id TEXT PRIMARY KEY, deployment_id TEXT NOT NULL, node_id TEXT NOT NULL, body TEXT NOT NULL,
   state TEXT NOT NULL, detail TEXT, updated_at TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS deployment_intent (
+  deployment_id TEXT PRIMARY KEY, running INTEGER NOT NULL DEFAULT 0,
+  attempts INTEGER NOT NULL DEFAULT 0, retry_at INTEGER NOT NULL DEFAULT 0);
 CREATE TABLE IF NOT EXISTS events (id INTEGER PRIMARY KEY AUTOINCREMENT, ts TEXT NOT NULL, kind TEXT NOT NULL,
   node_id TEXT, deployment_id TEXT, message TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS api_keys (key TEXT PRIMARY KEY, name TEXT NOT NULL, created_at TEXT NOT NULL);
@@ -66,6 +70,12 @@ export class Registry {
     this.db = new Database(path, { create: true });
     this.db.exec("PRAGMA journal_mode = WAL; PRAGMA synchronous = NORMAL; PRAGMA foreign_keys = ON;");
     this.db.exec(SCHEMA);
+    if (!this.db.query<{ name: string }, []>("PRAGMA table_info(assignments)").all().some((c) => c.name === "retired")) {
+      this.db.run("ALTER TABLE assignments ADD COLUMN retired INTEGER NOT NULL DEFAULT 0");
+    }
+    // Upgrade only deployments that were active. Old failed/planned rows never silently start.
+    this.db.run(`INSERT OR IGNORE INTO deployment_intent (deployment_id, running)
+      SELECT id, CASE WHEN state IN ('placing', 'loading', 'ready') THEN 1 ELSE 0 END FROM deployments`);
     // nothing is online right after a restart
     this.db.run("UPDATE nodes SET online = 0");
   }
@@ -132,6 +142,7 @@ export class Registry {
   createDeployment(id: string, spec: DeploymentSpec): Deployment {
     const ts = now();
     this.db.run("INSERT INTO deployments (id, spec, state, created_at, updated_at) VALUES (?, ?, 'planned', ?, ?)", [id, j(spec), ts, ts]);
+    this.db.run("INSERT INTO deployment_intent (deployment_id) VALUES (?)", [id]);
     return this.getDeployment(id)!;
   }
 
@@ -155,8 +166,21 @@ export class Registry {
   }
 
   deleteDeployment(id: string): void {
+    this.db.run("DELETE FROM deployment_intent WHERE deployment_id = ?", [id]);
     this.db.run("DELETE FROM assignments WHERE deployment_id = ?", [id]);
     this.db.run("DELETE FROM deployments WHERE id = ?", [id]);
+  }
+
+  deploymentIntent(id: string): { running: boolean; attempts: number; retryAt: number } {
+    const row = this.db.query<{ running: number; attempts: number; retry_at: number }, [string]>("SELECT running, attempts, retry_at FROM deployment_intent WHERE deployment_id = ?").get(id);
+    return { running: !!row?.running, attempts: row?.attempts ?? 0, retryAt: row?.retry_at ?? 0 };
+  }
+
+  setDeploymentIntent(id: string, patch: { running?: boolean; attempts?: number; retryAt?: number }): void {
+    const cur = this.deploymentIntent(id);
+    this.db.run(`INSERT INTO deployment_intent (deployment_id, running, attempts, retry_at) VALUES (?, ?, ?, ?)
+      ON CONFLICT(deployment_id) DO UPDATE SET running = excluded.running, attempts = excluded.attempts, retry_at = excluded.retry_at`,
+    [id, (patch.running ?? cur.running) ? 1 : 0, patch.attempts ?? cur.attempts, patch.retryAt ?? cur.retryAt]);
   }
 
   // ---------- assignments ----------
@@ -164,7 +188,7 @@ export class Registry {
   putAssignment(a: Assignment, nodeId: string, state: AssignmentRow["state"] = "sent"): void {
     this.db.run(
       `INSERT INTO assignments (id, deployment_id, node_id, body, state, updated_at) VALUES (?, ?, ?, ?, ?, ?)
-       ON CONFLICT(id) DO UPDATE SET body = excluded.body, state = excluded.state, node_id = excluded.node_id, updated_at = excluded.updated_at`,
+       ON CONFLICT(id) DO UPDATE SET body = excluded.body, state = excluded.state, node_id = excluded.node_id, updated_at = excluded.updated_at, retired = 0`,
       [a.id, a.deploymentId, nodeId, j(a), state, now()],
     );
   }
@@ -173,6 +197,8 @@ export class Registry {
     this.db.run("UPDATE assignments SET state = ?, detail = COALESCE(?, detail), updated_at = ? WHERE id = ?", [state, detail ?? null, now(), id]);
     return this.getAssignment(id);
   }
+
+  retireAssignment(id: string): void { this.db.run("UPDATE assignments SET retired = 1 WHERE id = ?", [id]); }
 
   getAssignment(id: string): AssignmentRow | null {
     const r = this.db.query<Record<string, unknown>, [string]>("SELECT * FROM assignments WHERE id = ?").get(id);
@@ -235,6 +261,6 @@ function rowToDeployment(r: Record<string, unknown>): Deployment {
 function rowToAssignment(r: Record<string, unknown>): AssignmentRow {
   return {
     id: r.id as string, deploymentId: r.deployment_id as string, nodeId: r.node_id as string, body: p<Assignment>(r.body)!,
-    state: r.state as AssignmentRow["state"], detail: (r.detail as string | null) ?? null, updatedAt: r.updated_at as string,
+    state: r.state as AssignmentRow["state"], detail: (r.detail as string | null) ?? null, updatedAt: r.updated_at as string, retired: r.retired === 1,
   };
 }
