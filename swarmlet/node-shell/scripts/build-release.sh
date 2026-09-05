@@ -23,7 +23,8 @@ if [ "$os" = darwin ]; then
   cp -R "$build_target/release/bundle/$subdir/Swarmlet Node.app" "$out/"
 else
   version="$(python3 -c 'import json, sys; print(json.load(open(sys.argv[1]))["version"])' "$here/../src-tauri/tauri.conf.json")"
-  cp "$build_target/release/bundle/$subdir/swarmlet-node_${version}_amd64.deb" "$out/"
+  product="$(python3 -c 'import json, sys; print(json.load(open(sys.argv[1]))["productName"])' "$here/../src-tauri/tauri.conf.json")"
+  cp "$build_target/release/bundle/$subdir/${product}_${version}_amd64.deb" "$out/swarmlet-node_${version}_amd64.deb"
 fi
 cp "$root/dist/agent/$os/agent-build.json" "$out/agent-build.json"
 echo "release staged at $out; service artifact at $root/dist/agent/$os (not installed)"
