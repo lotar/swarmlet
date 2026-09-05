@@ -41,3 +41,7 @@ Live checks on September 5: three online agents; `mesh-2b-internet` failed after
 No claim of uninterrupted individual requests across broken RPC streams: affected requests may fail, serving must recover. Do not retry requests invisibly. Existing failed deployments require explicit operator start during migration; intentional stops must never auto-start. Recovery must wait for required nodes/cleanup and not launch a second large model beside production. The real fault run uses 2B, sufficient to exercise the same control/transport lifecycle without requiring repeated 104 GB model loads. Existing Flash-Next production remains an externally managed service.
 
 Main risks: cleanup/start race reuses busy ports; stale ready state after restart routes to broken relay; repeated external watchers inflate metrics; sidecar differs from installed service; idle becomes busy before stop; exception leaves production down. Each has an explicit regression or final maintenance guard/restoration check. Backups preserve identities, offers, enrollment URLs and model paths. No design-blocking questions: the user explicitly authorized the idle production-stop window and deployment.
+
+## Completed acceptance
+
+All seven steps above are complete. Refreshed native packages are installed on all three machines; the complete real 2B relay fault run passed, and production was restored. See [the acceptance report](NODE_RELIABILITY_ACCEPTANCE_20260905.md) for measured recovery waits, exact artifacts, validation commands, final-state verification and the bounded exclusions.
