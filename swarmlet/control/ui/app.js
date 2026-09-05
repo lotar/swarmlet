@@ -980,6 +980,11 @@
   function topoEdge(caption) {
     return el('div', { class: 'topo-edge' }, [el('div', { class: 'topo-arrow', text: '→' }), el('div', { class: 'topo-cap', text: caption })]);
   }
+  function agentTunnelEdge(nodeId, port) {
+    var n = nodeById(nodeId);
+    var route = n && n.via && n.via.edge ? 'internet via Cloudflare' : 'agent channel';
+    return topoEdge(route + ' · tunnel to ' + port);
+  }
   function nodeLive(id) {
     var n = nodeById(id);
     if (!n) return '';
@@ -1012,12 +1017,12 @@
     row.appendChild(topoNode('topo-router', ['control router', location.host, spec.name + ' (' + shortId(dep.id) + ')', 'least in-flight, then lowest rtt']));
     if (spec.kind === 'external' && spec.external) {
       var extId = spec.external.nodeId;
-      row.appendChild(topoEdge('agent channel · tunnel to ' + (dep.endpoint ? ':' + dep.endpoint.port : 'server')));
+      row.appendChild(agentTunnelEdge(extId, dep.endpoint ? ':' + dep.endpoint.port : 'server'));
       row.appendChild(topoNode('topo-coord' + (served === extId ? ' topo-node--served' : ''), [nodeName(extId), 'external server · whole model', spec.external.url, spec.external.modelName, nodeLive(extId)]));
     } else if (plan) {
       var total = prof ? prof.layers : plan.tensorSplit.reduce(function (a, b) { return a + b; }, 0);
       var coordLayers = plan.tensorSplit.length ? plan.tensorSplit[plan.tensorSplit.length - 1] : total;
-      row.appendChild(topoEdge('agent channel · tunnel to :' + (dep.endpoint ? dep.endpoint.port : '?')));
+      row.appendChild(agentTunnelEdge(plan.coordinatorNodeId, ':' + (dep.endpoint ? dep.endpoint.port : '?')));
       row.appendChild(topoNode('topo-coord' + (served === plan.coordinatorNodeId ? ' topo-node--served' : ''), [
         nodeName(plan.coordinatorNodeId),
         (spec.kind === 'replica' ? 'whole model' : 'coordinator') + ' · ' + plan.coordinatorDevice,
