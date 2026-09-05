@@ -57,25 +57,46 @@ export function createControlServer(deps: ControlDeps): Server<ConnData> {
     return reg.listNodes().map((n) => { const r = channel.relayRate(n.id); return { ...n, pubJwk: undefined, online: channel.isOnline(n.id), via: channel.via(n.id), routedTokPerSec: live.get(n.id) ?? 0, relayInBps: r.inBps, relayOutBps: r.outBps }; });
   };
 
-  const api = async (req: Request, path: string): Promise<Response> => {
+  // HTTP/1.1 browsers share six connections across tabs. Reserve two for ordinary
+  // API/chat requests, including tabs still running an older UI without visibility cleanup.
+  const streamsByClient = new Map<string, number>();
+  const api = async (req: Request, path: string, client: string): Promise<Response> => {
     const url = new URL(req.url);
     const seg = path.split("/").filter(Boolean); // ["api", ...]
     const m = req.method;
     if (seg[1] === "nodes" && m === "GET" && seg.length === 2) return json({ nodes: nodesSnapshot() });
     if (seg[1] === "stream" && m === "GET") {
+      if ((streamsByClient.get(client) ?? 0) >= 4) {
+        return new Response(JSON.stringify({ error: "live stream limit; polling remains available" }), {
+          status: 503, headers: { "content-type": "application/json", "retry-after": "5", "cache-control": "no-store" },
+        });
+      }
+      streamsByClient.set(client, (streamsByClient.get(client) ?? 0) + 1);
       // server-sent events: a nodes + routing snapshot every second while the browser listens
       const enc = new TextEncoder();
       let timer: ReturnType<typeof setInterval> | null = null;
+      let released = false;
+      const release = () => {
+        if (released) return;
+        released = true;
+        if (timer) clearInterval(timer);
+        req.signal.removeEventListener("abort", release);
+        const count = (streamsByClient.get(client) ?? 1) - 1;
+        if (count > 0) streamsByClient.set(client, count); else streamsByClient.delete(client);
+      };
       const stream = new ReadableStream<Uint8Array>({
         start(controller) {
+          if (req.signal.aborted) { release(); controller.close(); return; }
+          req.signal.addEventListener("abort", release, { once: true });
           const push = () => {
+            if (released) return;
             try { controller.enqueue(enc.encode(`data: ${JSON.stringify({ t: "snapshot", ts: new Date().toISOString(), nodes: nodesSnapshot(), routing: deployments.routing(), relayStreams: channel.openRelayStreams })}\n\n`)); }
-            catch { if (timer) clearInterval(timer); }
+            catch { release(); }
           };
           push();
-          timer = setInterval(push, 1000);
+          if (!released) timer = setInterval(push, 1000);
         },
-        cancel() { if (timer) clearInterval(timer); },
+        cancel() { release(); },
       });
       return new Response(stream, { headers: { "content-type": "text/event-stream", "cache-control": "no-store", connection: "keep-alive" } });
     }
@@ -157,7 +178,7 @@ export function createControlServer(deps: ControlDeps): Server<ConnData> {
         }
         if (path.startsWith("/api/")) {
           if (!adminOk(req, cfg, srv.requestIP(req)?.address)) return json({ error: "admin token required" }, 401);
-          return api(req, path);
+          return api(req, path, srv.requestIP(req)?.address ?? "unknown");
         }
         if (path === "/login" && req.method === "POST") {
           const body = await req.formData().catch(() => null);

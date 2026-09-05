@@ -63,6 +63,42 @@ afterAll(() => { ctl.server.stop(true); ctl.reg.close(); });
 describe("control core", () => {
   let a!: FakeAgent, b!: FakeAgent;
 
+  test("live tabs leave API capacity and release their stream slots on disconnect", async () => {
+    const readers: ReadableStreamDefaultReader<Uint8Array>[] = [];
+    const aborts: AbortController[] = [];
+    try {
+      for (let i = 0; i < 4; i++) {
+        const abort = new AbortController(); aborts.push(abort);
+        const res = await api("/api/stream", { signal: abort.signal });
+        expect(res.status).toBe(200);
+        const reader = res.body!.getReader(); readers.push(reader);
+        expect(new TextDecoder().decode((await reader.read()).value)).toContain('"t":"snapshot"');
+      }
+      const denied = await api("/api/stream");
+      expect(denied.status).toBe(503);
+      expect(await denied.json()).toEqual({ error: "live stream limit; polling remains available" });
+      expect((await api("/api/nodes")).status).toBe(200);
+      aborts.shift()!.abort();
+      await readers.shift()!.cancel();
+      let replacement: Response | undefined;
+      for (let i = 0; i < 50; i++) {
+        replacement = await api("/api/stream");
+        if (replacement.status === 200) break;
+        await replacement.text();
+        await Bun.sleep(20);
+      }
+      expect(replacement!.status).toBe(200);
+      readers.push(replacement!.body!.getReader());
+      // Cancellation must release exactly one slot, even if abort and cancel both fire.
+      const stillFull = await api("/api/stream");
+      expect(stillFull.status).toBe(503);
+      await stillFull.text();
+    } finally {
+      aborts.forEach((abort) => abort.abort());
+      await Promise.all(readers.map((reader) => reader.cancel()));
+    }
+  });
+
   test("enrollment refuses unknown, expired and reused codes, and bad signatures", async () => {
     const paths = agentPaths(mkdtempSync(join(tmpdir(), "swarmlet-agent-x-")));
     const id = await loadIdentity(paths);

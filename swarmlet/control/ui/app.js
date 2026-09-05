@@ -154,6 +154,12 @@
   /* ---------- API + login ---------- */
   function api(method, path, body) {
     var init = { method: method, headers: {}, credentials: 'same-origin' };
+    var timeout = null;
+    if (method === 'GET') {
+      var controller = new AbortController();
+      init.signal = controller.signal;
+      timeout = setTimeout(function () { controller.abort(); }, 10000);
+    }
     if (body !== undefined) { init.headers['content-type'] = 'application/json'; init.body = JSON.stringify(body); }
     return fetch(path, init).then(function (res) {
       return res.text().then(function (text) {
@@ -169,12 +175,17 @@
         }
         return data;
       });
+    }).then(function (data) { if (timeout) clearTimeout(timeout); return data; }, function (err) {
+      if (timeout) clearTimeout(timeout);
+      if (err.name === 'AbortError') throw new Error('Request timed out. Retrying…');
+      throw err;
     });
   }
 
   function showLogin() {
     if (!state.authed && !$('login').hidden) return;
     state.authed = false;
+    stopLive();
     $('app').hidden = true;
     $('login').hidden = false;
     $('login-token').focus();
@@ -1129,8 +1140,12 @@
 
   /* ---------- live stream (server-sent events), polling stays as the fallback ---------- */
   var live = { es: null, ok: false, last: 0 };
+  function stopLive() {
+    if (live.es) live.es.close();
+    live.es = null; live.ok = false; live.last = 0;
+  }
   function startLive() {
-    if (live.es || !window.EventSource) return;
+    if (D.hidden || !state.authed || live.es || !window.EventSource) return;
     try {
       var es = new EventSource('/api/stream');
       live.es = es;
@@ -1149,30 +1164,46 @@
   }
 
   /* ---------- polling ---------- */
+  var polling = false;
   function tick() {
-    if (!state.authed) return;
-    if (state.active === 'chat' && topo.lastDep) refreshTopologyLive(); // age existing samples even when the next refresh fails
-    startLive();
-    var extra = Promise.resolve();
-    if (state.active === 'routing') extra = loadRouting();
-    else if (state.active === 'events') extra = loadEvents();
-    else if (state.active === 'chat') extra = chat.busy ? (topo.lastDep ? loadTopology(topo.lastDep, topo.lastOpts || {}) : Promise.resolve()) : loadChatModels();
-    var nodesP = (live.ok && Date.now() - live.last < 4000) ? Promise.resolve() : loadNodes();
-    Promise.all([nodesP, loadDeployments(), extra]).then(function () {
-      $('app-error').hidden = true;
-      renderJoinCode();
-      if (state.drawer.id) return loadDrawer();
-    }).catch(function (e) { if (e.status !== 401) showError(e); });
+    if (!state.authed || D.hidden || polling) return Promise.resolve();
+    polling = true;
+    return Promise.resolve().then(function () {
+      if (state.active === 'chat' && topo.lastDep) refreshTopologyLive(); // age existing samples even when the next refresh fails
+      startLive();
+      var extra = Promise.resolve();
+      if (state.active === 'routing') extra = loadRouting();
+      else if (state.active === 'events') extra = loadEvents();
+      else if (state.active === 'chat') extra = chat.busy ? (topo.lastDep ? loadTopology(topo.lastDep, topo.lastOpts || {}) : Promise.resolve()) : loadChatModels();
+      var nodesP = (live.ok && Date.now() - live.last < 4000) ? Promise.resolve() : loadNodes();
+      return Promise.allSettled([nodesP, loadDeployments(), extra]).then(function (results) {
+        var failed = results.find(function (result) { return result.status === 'rejected'; });
+        if (failed) throw failed.reason;
+        $('app-error').hidden = true;
+        renderJoinCode();
+        if (state.drawer.id) return loadDrawer();
+      });
+    }).catch(function (e) { if (e.status !== 401) showError(e); }).finally(function () { polling = false; });
   }
 
+  var booting = false;
   function boot() {
+    if (D.hidden || booting) return;
+    booting = true;
     api('GET', '/api/whoami').then(function (w) {
       state.whoami = w;
       hideLogin();
       showTab((location.hash || '#nodes').slice(1));
-    }).catch(function (e) { if (e.status !== 401) showError(e); });
+    }).catch(function (e) { if (e.status !== 401) showError(e); }).then(function () { booting = false; });
   }
 
+  function resumeView() {
+    if (D.hidden) { stopLive(); return; }
+    if (state.authed) tick(); else boot();
+  }
+  D.addEventListener('visibilitychange', resumeView);
+  window.addEventListener('pagehide', stopLive);
+  window.addEventListener('pageshow', resumeView);
   boot();
   setInterval(tick, POLL_MS);
 }());
