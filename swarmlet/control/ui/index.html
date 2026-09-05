@@ -3,9 +3,9 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
-  <meta name="theme-color" content="#17221f">
+  <meta name="theme-color" content="#f5f7f8">
   <meta name="robots" content="noindex">
-  <title>Swarmlet control</title>
+  <title>Swarmlet · Mesh control</title>
   <link rel="stylesheet" href="/style.css">
   <script src="/app.js" defer></script>
 </head>
@@ -22,24 +22,25 @@
     </form>
   </div>
 
+  <a class="skip-link" href="#main-content">Skip to content</a>
   <div id="app">
     <header class="head">
-      <div class="brand"><span class="mark" aria-hidden="true"></span><span>Swarmlet <b>control</b></span></div>
+      <div class="breadcrumb">Workspace <span aria-hidden="true">/</span> <strong>Local mesh</strong></div>
       <div class="head-status"><i class="dot" id="head-dot" data-state="off" aria-hidden="true"></i><span id="head-text">connecting</span></div>
     </header>
-    <nav class="tabs" role="tablist" aria-label="Sections">
-      <button type="button" role="tab" data-tab="nodes" aria-selected="true">Nodes</button>
-      <button type="button" role="tab" data-tab="chat" aria-selected="false">Chat</button>
-      <button type="button" role="tab" data-tab="deployments" aria-selected="false">Deployments</button>
-      <button type="button" role="tab" data-tab="routing" aria-selected="false">Routing</button>
-      <button type="button" role="tab" data-tab="events" aria-selected="false">Events</button>
-      <button type="button" role="tab" data-tab="keys" aria-selected="false">Keys</button>
-    </nav>
-    <main>
+    <aside class="sidebar"><a class="brand" href="#nodes"><span class="mark" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M5 6h6v6H5zM13 12h6v6h-6zM11 9h5v3M8 12v3h5"/></svg></span><span>swarmlet<span class="brand-sub">Mesh workspace</span></span></a><span class="nav-label">Workspace</span><nav class="tabs" role="tablist" aria-label="Sections">
+      <button type="button" role="tab" data-tab="nodes" aria-selected="true"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 4h6v6H4zM14 4h6v6h-6zM4 14h6v6H4zM14 14h6v6h-6z"/></svg><span>Nodes</span></button>
+      <button type="button" role="tab" data-tab="chat" aria-selected="false"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 4h14a1 1 0 0 1 1 1v11a1 1 0 0 1-1 1H9l-5 4V5a1 1 0 0 1 1-1zM8 8h8M8 12h5"/></svg><span>Chat</span></button>
+      <button type="button" role="tab" data-tab="deployments" aria-selected="false"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m12 3 9 5-9 5-9-5 9-5zM3 12l9 5 9-5M3 16l9 5 9-5"/></svg><span>Deployments</span></button>
+      <button type="button" role="tab" data-tab="routing" aria-selected="false"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h11M12 4l3 3-3 3M20 17H9M12 14l-3 3 3 3"/></svg><span>Routing</span></button>
+      <button type="button" role="tab" data-tab="events" aria-selected="false"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5h3M11 5h9M4 12h3M11 12h9M4 19h3M11 19h9"/></svg><span>Events</span></button>
+      <button type="button" role="tab" data-tab="keys" aria-selected="false"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M14 3a7 7 0 0 0-6 10L3 18v3h4v-3h3l2-2a7 7 0 1 0 2-13zM16 7h.01"/></svg><span>API keys</span></button>
+    </nav><div class="sidebar-foot"><span class="workspace-avatar" aria-hidden="true">L</span><div><strong>Local workspace</strong><span>Private infrastructure</span></div></div></aside>
+    <main id="main-content"><div class="page-heading"><div><span class="eyebrow">Mesh control</span><h1 id="page-title">Nodes</h1><p id="page-description">Your machines, connected. Monitor availability and shared resources.</p></div><span class="live-label">Updates automatically</span></div>
       <div class="banner banner--error" id="app-error" role="alert" hidden></div>
 
       <section class="tab" id="tab-nodes" data-tab="nodes">
-        <div class="toolbar">
+        <div class="mesh-summary" id="mesh-summary"></div><div class="section-heading"><h2>Connected machines</h2><p>Resources offered to this mesh</p></div><div class="toolbar">
           <span class="count grow" id="nodes-count"></span>
           <span class="form-status" id="join-status"></span>
           <button class="button button--signal" type="button" id="join-new">New join code</button>
@@ -55,7 +56,7 @@
         </div>
         <div class="table-wrap">
           <table class="data" id="nodes-table">
-            <thead><tr><th>Node</th><th>Id</th><th>State</th><th>Offer</th><th>Measured</th><th>Metrics</th><th class="num">tok/s</th><th class="num">Models</th></tr></thead>
+            <thead><tr><th>Node</th><th>State</th><th>Shared capacity</th><th>Connection</th><th>Utilization</th><th class="num">Generation</th><th class="num">Local models</th></tr></thead>
             <tbody></tbody>
           </table>
         </div>
@@ -70,25 +71,25 @@
           <span class="form-status grow" id="chat-status"></span>
           <button class="button button--small" type="button" id="chat-clear">New chat</button>
         </div>
-        <div class="tiles" id="chat-tiles">
-          <div class="tile"><span class="label">Last reply</span><div class="value" id="chat-tps">&mdash;</div><div class="sub" id="chat-tps-sub">tok/s, server timing</div></div>
-          <div class="tile"><span class="label">Tokens</span><div class="value" id="chat-tokens">&mdash;</div><div class="sub" id="chat-tokens-sub">prompt / completion</div></div>
-          <div class="tile"><span class="label">First token</span><div class="value" id="chat-ttft">&mdash;</div><div class="sub">ms after send</div></div>
-          <div class="tile"><span class="label">Served by</span><div class="value value--text" id="chat-node">&mdash;</div><div class="sub" id="chat-dep">deployment</div></div>
-          <div class="tile"><span class="label">Session</span><div class="value" id="chat-session">&mdash;</div><div class="sub" id="chat-session-sub">tok/s over all replies</div></div>
-        </div>
-        <div class="panel topo-panel" id="chat-topo">
-          <div class="toolbar"><span class="label grow" id="chat-topo-title">Topology</span><span class="form-status" id="chat-topo-status"></span></div>
-          <div id="chat-topo-body"><p class="hint">Pick a model: the deployments that can serve it appear here, and after each reply the one that actually served it.</p></div>
-        </div>
-        <div class="chat-log" id="chat-log"><p class="hint">Pick a model and say something. Replies stream through the control plane router to whichever deployment serves that model; the Nodes tab shows the generation rate per machine while it runs.</p></div>
+        <div class="chat-log" id="chat-log"><div class="chat-empty hint"><span class="empty-glyph" aria-hidden="true">✳</span><h2>A conversation with your mesh.</h2><p>Choose a model above and send a message.<br>Responses stream directly from your connected machines.</p></div></div>
         <form class="chat-form" id="chat-form">
-          <textarea id="chat-input" rows="3" placeholder="Message (Enter sends, Shift+Enter adds a line)"></textarea>
+          <textarea id="chat-input" rows="3" aria-label="Message" placeholder="Message your mesh…"></textarea>
           <div class="chat-actions">
             <button class="button button--signal" type="submit" id="chat-send">Send</button>
             <button class="button button--small" type="button" id="chat-stop" disabled>Stop</button>
           </div>
         </form>
+        <div class="tiles" id="chat-tiles">
+          <div class="tile"><span class="label">Last reply</span><div class="value" id="chat-tps">&mdash;</div><div class="sub" id="chat-tps-sub">tok/s, server timing</div></div>
+          <div class="tile"><span class="label">Tokens</span><div class="value" id="chat-tokens">&mdash;</div><div class="sub" id="chat-tokens-sub">prompt / completion</div></div>
+          <div class="tile"><span class="label">First token</span><div class="value" id="chat-ttft">&mdash;</div><div class="sub">ms after send</div></div>
+          <div class="tile"><span class="label">Served by</span><div class="value value--text" id="chat-node">&mdash;</div><div class="sub" id="chat-served-dep">deployment</div></div>
+          <div class="tile"><span class="label">Session</span><div class="value" id="chat-session">&mdash;</div><div class="sub" id="chat-session-sub">tok/s over all replies</div></div>
+        </div>
+        <details class="panel topo-panel" id="chat-topo"><summary>Deployment topology <span class="dim small">Route, workers &amp; live diagnostics</span></summary><div class="topo-content">
+          <div class="toolbar"><span class="label grow" id="chat-topo-title">Topology</span><span class="form-status" id="chat-topo-status"></span></div>
+          <div id="chat-topo-body"><p class="hint">Pick a model: the deployments that can serve it appear here, and after each reply the one that actually served it.</p></div>
+        </div></details>
       </section>
       <section class="tab" id="tab-deployments" data-tab="deployments" hidden>
         <div class="toolbar">
@@ -172,7 +173,7 @@
 
       <section class="tab" id="tab-events" data-tab="events" hidden>
         <div class="toolbar">
-          <input type="text" class="filter" id="events-filter" placeholder="filter by kind, node, deployment, text" autocomplete="off">
+          <input aria-label="Filter events" type="text" class="filter" id="events-filter" placeholder="filter by kind, node, deployment, text" autocomplete="off">
           <span class="form-status grow" id="events-status"></span>
         </div>
         <div class="table-wrap">

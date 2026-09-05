@@ -1,4 +1,4 @@
-/* Swarmlet control UI. Five tabs over the admin JSON API; the admin cookie comes from POST /login.
+/* Swarmlet control UI. Six tabs over the admin JSON API; the admin cookie comes from POST /login.
    No build step, no dependencies. */
 (function () {
   'use strict';
@@ -199,9 +199,22 @@
   });
 
   /* ---------- tabs ---------- */
+  D.querySelector('.brand').addEventListener('click', function (ev) { ev.preventDefault(); showTab('nodes'); });
+
   function showTab(name) {
     if (TABS.indexOf(name) < 0) name = 'nodes';
     state.active = name;
+    var pages = {
+      nodes: ['Nodes', 'Your machines, connected. Monitor availability and shared resources.'],
+      chat: ['Chat', 'Talk to the models running on your mesh.'],
+      deployments: ['Deployments', 'Manage the models and workloads across your machines.'],
+      routing: ['Routing', 'One endpoint for every model. See where requests are served.'],
+      events: ['Events', 'A live record of connections, deployments, and system activity.'],
+      keys: ['API keys', 'Connect your applications to the mesh with a dedicated API key.']
+    };
+    $('page-title').textContent = pages[name][0];
+    $('page-description').textContent = pages[name][1];
+    D.title = 'Swarmlet · ' + pages[name][0];
     TABS.forEach(function (t) { $('tab-' + t).hidden = t !== name; });
     [].forEach.call(D.querySelectorAll('.tabs [role="tab"]'), function (b) {
       b.setAttribute('aria-selected', b.getAttribute('data-tab') === name ? 'true' : 'false');
@@ -236,7 +249,7 @@
 
   function netSummary(net, via) {
     var parts = net ? ['rtt ' + num(net.rttMs, 0) + ' ms', el('br'), 'up ' + num(net.upMbit, 0) + ' / down ' + num(net.downMbit, 0) + ' Mbit'] : [el('span', { class: 'dim', text: 'not measured' })];
-    if (via) parts.push(el('br'), el('span', { class: 'dim', text: 'via ' + viaText(via) }));
+    if (via) parts.push(el('br'), el('span', { class: 'dim', title: viaText(via), text: via.edge ? 'Cloudflare relay' : 'Direct connection' }));
     return parts;
   }
 
@@ -289,8 +302,7 @@
     setRows($('nodes-table'), state.nodes.map(function (n) {
       var caps = n.caps || {};
       return el('tr', null, [
-        td([el('div', { class: 'strong', text: n.hostname }), el('div', { class: 'dim small mono', text: (n.os || NA) + ' ' + (n.arch || '') + (n.agentVersion ? ', agent ' + n.agentVersion : '') })]),
-        td(shortId(n.id), 'mono', n.id),
+        td([el('div', { class: 'strong', text: n.hostname }), el('div', { class: 'node-id dim small mono', title: n.id, text: shortId(n.id) + (n.agentVersion ? ' · agent ' + n.agentVersion : '') }), el('div', { class: 'dim small mono', text: (n.os || NA) + ' · ' + (n.arch || '') })]),
         td([badge(n.online ? 'online' : 'offline'), n.online ? null : el('div', { class: 'dim small', text: n.lastSeen ? 'seen ' + ago(n.lastSeen) : 'never seen' })]),
         td(offerSummary(n.offer), 'small'),
         td(netSummary(caps.net, n.via), 'mono small'),
@@ -299,7 +311,20 @@
         td(String((n.models || []).length), 'num'),
       ]);
     }), 'No nodes yet. Create a join code and enter it in a node agent.');
+    renderMeshSummary();
     fillNodeSelects();
+  }
+
+  function renderMeshSummary() {
+    var online = state.nodes.filter(function (n) { return n.online; });
+    var offered = online.filter(function (n) { return n.offer && n.offer.enabled; });
+    var gpu = offered.reduce(function (sum, n) { return sum + (n.offer.gpu || []).reduce(function (v, g) { return v + (g.memMiB || 0); }, 0); }, 0);
+    var ready = state.deployments.filter(function (d) { return d.state === 'ready'; }).length;
+    replace($('mesh-summary'), [
+      ['Online nodes', String(online.length).padStart(2, '0'), 'of ' + state.nodes.length + ' registered machines'],
+      ['GPU memory offered', fmtGiB(gpu) + ' GiB', 'from ' + offered.length + ' online, enabled nodes'],
+      ['Ready deployments', String(ready).padStart(2, '0'), 'available to serve requests']
+    ].map(function (item) { return el('div', { class: 'summary-item' }, [el('span', { class: 'label', text: item[0] }), el('strong', { class: 'summary-value', text: item[1] }), el('span', { class: 'summary-note', text: item[2] })]); }));
   }
 
   function renderJoinCode() {
@@ -332,7 +357,8 @@
   }
 
   function renderDeployments() {
-    var list = state.deployments;
+    var list = state.deployments.slice().sort(function (a, b) { return (b.state === 'ready') - (a.state === 'ready'); });
+    renderMeshSummary();
     var ready = list.filter(function (d) { return d.state === 'ready'; }).length;
     $('dep-count').textContent = list.length + (list.length === 1 ? ' deployment, ' : ' deployments, ') + ready + ' ready';
     setRows($('dep-table'), list.map(function (d) {
@@ -870,7 +896,7 @@
       setTile('chat-ttft', ttft == null ? NA : String(ttft), ttft == null ? '' : ' ms');
       setTile('chat-node', served.node ? nodeName(served.node) : NA);
       if (served.dep) { $('chat-topo-title').textContent = 'Topology · served this reply'; loadTopology(served.dep, { servedNodeId: served.node, note: 'This reply was served by ' + (served.node ? nodeName(served.node) : 'the node below') + ' through deployment ' + shortId(served.dep) + '.' }).catch(showError); }
-      $('chat-dep').textContent = served.dep ? 'deployment ' + shortId(served.dep) + ' · ' + model : 'deployment';
+      $('chat-served-dep').textContent = served.dep ? 'deployment ' + shortId(served.dep) + ' · ' + model : 'deployment';
       var sess = chat.stats.seconds > 0 ? chat.stats.tokens / chat.stats.seconds : 0;
       setTile('chat-session', sess ? sess.toFixed(1) : NA, sess ? ' tok/s' : '');
       $('chat-session-sub').textContent = chat.stats.replies + (chat.stats.replies === 1 ? ' reply, ' : ' replies, ') + chat.stats.tokens + ' tokens';
