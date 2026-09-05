@@ -985,17 +985,44 @@
     var route = n && n.via && n.via.edge ? 'internet via Cloudflare' : 'agent channel';
     return topoEdge(route + ' · tunnel to ' + port);
   }
-  function nodeLive(id) {
-    var n = nodeById(id);
-    if (!n) return '';
-    var parts = [];
-    var rtt = n.caps && n.caps.net && isNum(n.caps.net.rttMs) ? n.caps.net.rttMs : null;
-    if (rtt != null) parts.push('rtt ' + num(rtt, 0) + ' ms');
-    var rate = throughput(n.metrics, n.routedTokPerSec);
-    if ((n.metrics && n.metrics.serving) || rate.value > 0) parts.push((rate.value == null ? '' : num(rate.value, 1) + ' tok/s · ') + rate.label);
-    if ((n.relayInBps || 0) + (n.relayOutBps || 0) > 0) parts.push('relay \u2193' + fmtRate(n.relayInBps || 0) + ' \u2191' + fmtRate(n.relayOutBps || 0));
-    if (n.metrics && isNum(n.metrics.cpuPct)) parts.push('cpu ' + num(n.metrics.cpuPct, 0) + '%');
-    return parts.join(' · ');
+  // Every machine uses the same rows. Host/engine samples and the network probe have
+  // separate clocks; an RPC worker does not expose a token decoder or request queue.
+  function machineTopology(nodeId, config, served) {
+    var n = nodeById(nodeId), m = n && n.metrics, net = n && n.caps && n.caps.net;
+    var hostAt = m && Date.parse(m.ts), engineAt = m && Date.parse(m.serverMetricsTs || m.ts);
+    var hostFresh = !!(n && n.online && hostAt && Date.now() - hostAt < 10000);
+    var engineFresh = !!(n && n.online && engineAt && Date.now() - engineAt < 10000 && m.serverMetricsState === 'ok');
+    var stale = n && !n.online ? 'Offline' : (m ? 'Stale sample' : 'Not reported');
+    var worker = config.role === 'Worker';
+    var channelFresh = !!(n && n.online && Date.parse(n.lastSeen) && Date.now() - Date.parse(n.lastSeen) < 10000);
+    var rate = channelFresh ? throughput(m, n.routedTokPerSec) : { value: null, label: n && !n.online ? 'offline' : 'stale connection' };
+    var rateText = worker ? 'N/A · RPC worker' : (rate.value == null ? NA : num(rate.value, 1) + ' tok/s') + ' · ' + rate.label;
+    var gpu = m && m.gpu && m.gpu.length && m.gpu.every(function (g) { return isNum(g.usedMiB); }) ? m.gpu.reduce(function (sum, g) { return sum + g.usedMiB; }, 0) : null;
+    var relayFresh = channelFresh;
+    var rows = [
+      ['Role', config.role],
+      ['Device', config.device || 'Not reported'],
+      ['Layers', config.layers],
+      ['Layer weights', config.weights],
+      ['GPU allocation', config.gpu],
+      ['Deployment ctx / slots', config.runtime],
+      ['CPU threads', config.threads],
+      ['Engine / peer ports', config.ports],
+      ['CPU utilization', hostFresh ? (isNum(m.cpuPct) ? num(m.cpuPct, 0) + ' %' : 'Not reported') : stale],
+      ['RAM free', hostFresh ? (isNum(m.freeRamMiB) ? fmtGiB(m.freeRamMiB) + ' GiB' : 'Not reported') : stale],
+      ['GPU used', hostFresh ? (gpu == null ? 'Not reported' : fmtGiB(gpu) + ' GiB') : stale],
+      ['Token rate · node', rateText],
+      ['Active requests · node', worker ? 'N/A · RPC worker' : (engineFresh && isNum(m.inflight) ? String(m.inflight) : 'Unknown')],
+      ['Relay received · 3s', relayFresh && isNum(n.relayInBps) ? fmtRate(n.relayInBps) : stale],
+      ['Relay sent · 3s', relayFresh && isNum(n.relayOutBps) ? fmtRate(n.relayOutBps) : stale],
+      ['RTT · last probe', net && isNum(net.rttMs) ? num(net.rttMs, 0) + ' ms · ' + ago(net.measuredAt) : 'Not measured'],
+      ['Host sample', hostAt ? ago(m.ts) + (hostFresh ? ' · live' : ' · stale') : 'Not reported'],
+    ];
+    var card = el('article', { class: 'topo-node topo-machine ' + (worker ? 'topo-worker' : 'topo-coord') + (served === nodeId ? ' topo-node--served' : ''), 'data-node-id': nodeId }, [
+      el('div', { class: 'topo-machine-head' }, [el('h3', { class: 'topo-title', text: nodeName(nodeId) }), badge(n && n.online ? 'online' : 'offline')]),
+      el('dl', { class: 'topo-fields' }, kv(rows)),
+    ]);
+    return card;
   }
 
   function renderTopology(dep, profiles, opts) {
@@ -1018,18 +1045,27 @@
     if (spec.kind === 'external' && spec.external) {
       var extId = spec.external.nodeId;
       row.appendChild(agentTunnelEdge(extId, dep.endpoint ? ':' + dep.endpoint.port : 'server'));
-      row.appendChild(topoNode('topo-coord' + (served === extId ? ' topo-node--served' : ''), [nodeName(extId), 'external server · whole model', spec.external.url, spec.external.modelName, nodeLive(extId)]));
+      row.appendChild(machineTopology(extId, { role: 'External server', device: null, layers: 'Whole model · count not reported', weights: 'Not reported', gpu: 'Managed externally', runtime: 'Managed externally', threads: 'Not reported', ports: spec.external.url }, served));
     } else if (plan) {
       var total = prof ? prof.layers : plan.tensorSplit.reduce(function (a, b) { return a + b; }, 0);
       var coordLayers = plan.tensorSplit.length ? plan.tensorSplit[plan.tensorSplit.length - 1] : total;
       row.appendChild(agentTunnelEdge(plan.coordinatorNodeId, ':' + (dep.endpoint ? dep.endpoint.port : '?')));
-      row.appendChild(topoNode('topo-coord' + (served === plan.coordinatorNodeId ? ' topo-node--served' : ''), [
-        nodeName(plan.coordinatorNodeId),
-        (spec.kind === 'replica' ? 'whole model' : 'coordinator') + ' · ' + plan.coordinatorDevice,
-        (spec.kind === 'replica' ? total + ' layers' : coordLayers + ' of ' + total + ' layers') + (prof ? ' · ' + fmtGiB(coordLayers * prof.layerMiB) + ' GiB' : ''),
-        'ctx ' + plan.ctx + ', parallel ' + plan.parallel + (plan.chain ? ', MTP chain ' + plan.chain : ''),
-        nodeLive(plan.coordinatorNodeId),
-      ]));
+      var coordNode = nodeById(plan.coordinatorNodeId);
+      var coordGpu = coordNode && coordNode.offer && coordNode.offer.gpu;
+      var offeredMiB = coordGpu && coordGpu.length ? coordGpu.reduce(function (sum, g) { return sum + (g.memMiB || 0); }, 0) : null;
+      var coordArgs = coordA && coordA.body && coordA.body.extraArgs || [];
+      var threadsAt = coordArgs.indexOf('-t');
+      if (threadsAt < 0) threadsAt = coordArgs.indexOf('--threads');
+      var threads = threadsAt >= 0 && coordArgs[threadsAt + 1] ? coordArgs[threadsAt + 1] : 'Engine default';
+      var runtime = plan.ctx + ' / ' + plan.parallel + (plan.chain ? ' · MTP ' + plan.chain : '');
+      row.appendChild(machineTopology(plan.coordinatorNodeId, {
+        role: spec.kind === 'replica' ? 'Replica' : 'Coordinator', device: plan.coordinatorDevice,
+        layers: coordLayers + ' / ' + total,
+        weights: prof ? fmtGiB(coordLayers * prof.layerMiB) + ' GiB · estimated' : 'Not reported',
+        gpu: offeredMiB == null ? 'Not reported' : fmtGiB(offeredMiB) + ' GiB · offered',
+        runtime: runtime, threads: threads,
+        ports: (dep.endpoint ? 'HTTP :' + dep.endpoint.port : 'HTTP port pending') + ' / N/A',
+      }, served));
       var controlHost = (state.whoami && state.whoami.publicUrl) ? state.whoami.publicUrl.replace(/^https?:\/\//, '') : location.host;
       (plan.workers || []).forEach(function (w, i) {
         var raw = paths['rpc' + i];
@@ -1037,13 +1073,13 @@
         var path = raw === 'relay' ? 'relay via control' + (wn && wn.via ? ' \u2192 ' + viaText(wn.via) : ' (' + controlHost + ')') : raw === 'direct' ? 'direct TLS' : (coordA ? 'path pending' : 'not started');
         var bytes = prof && isNum(prof.boundaryBytes) ? ' · ' + fmtBytes(prof.boundaryBytes) + '/token' : '';
         row.appendChild(topoEdge('RPC' + i + ' · ' + path + bytes));
-        row.appendChild(topoNode('topo-worker' + (served === w.nodeId ? ' topo-node--served' : ''), [
-          nodeName(w.nodeId),
-          'worker · ' + w.device,
-          w.layers + (w.layers === 1 ? ' layer' : ' layers') + (prof ? ' · ' + fmtGiB(w.layers * prof.layerMiB) + ' GiB' : '') + ' · cap ' + fmtGiB(w.memCapMiB) + ' GiB',
-          'rpc :' + w.port + (w.peerPort ? ' · peer :' + w.peerPort : '') + ' · ' + w.threads + ' threads',
-          nodeLive(w.nodeId),
-        ]));
+        row.appendChild(machineTopology(w.nodeId, {
+          role: 'Worker', device: w.device, layers: w.layers + ' / ' + total,
+          weights: prof ? fmtGiB(w.layers * prof.layerMiB) + ' GiB · estimated' : 'Not reported',
+          gpu: isNum(w.memCapMiB) ? fmtGiB(w.memCapMiB) + ' GiB · cap' : 'Not reported',
+          runtime: runtime, threads: isNum(w.threads) ? String(w.threads) : 'Not reported',
+          ports: 'RPC :' + w.port + ' / ' + (w.peerPort ? ':' + w.peerPort : 'N/A'),
+        }, served));
       });
     } else {
       row.appendChild(topoEdge('not planned yet'));
@@ -1115,6 +1151,7 @@
   /* ---------- polling ---------- */
   function tick() {
     if (!state.authed) return;
+    if (state.active === 'chat' && topo.lastDep) refreshTopologyLive(); // age existing samples even when the next refresh fails
     startLive();
     var extra = Promise.resolve();
     if (state.active === 'routing') extra = loadRouting();
