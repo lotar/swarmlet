@@ -18,6 +18,7 @@ import { loadNodeConfig, saveNodeConfig, type NodeConfig } from "./config.ts";
 import { loadIdentity, type Identity } from "./identity.ts";
 import { installService, uninstallService } from "./install.ts";
 import { startLocalApi } from "./localapi.ts";
+import { createNodeInference } from "./inference.ts";
 import { agentPaths, type AgentPaths } from "./paths.ts";
 import { listModels, measureNet, probeCapabilities, probeMetrics, publicIp } from "./probe/index.ts";
 import { startDataListener } from "./transport/dataListener.ts";
@@ -112,6 +113,17 @@ export class AgentRuntime {
       policy: { allowedFingerprints: () => this.runner.allowedFingerprints(), allowedPorts: () => this.runner.allowedPorts() },
     });
     startLocalApi(this.cfg.uiPort, {
+      inference: createNodeInference({
+        local: () => this.runner.inferenceTargets(),
+        remote: () => {
+          if (!this.cfg.agentUrl || !this.client?.inferenceKey) return null;
+          const url = new URL(this.cfg.agentUrl);
+          url.protocol = url.protocol === "wss:" ? "https:" : "http:";
+          url.pathname = "/"; url.search = ""; url.hash = "";
+          return { url: url.toString(), key: this.client.inferenceKey };
+        },
+        nodeId: () => this.id.nodeId,
+      }),
       status: () => ({
         nodeId: this.id.nodeId, hostname: this.hostname, agentVersion: AGENT_VERSION, certFp: this.id.certFp, connected: this.client?.connected ?? false,
         controlUrl: this.cfg.controlUrl, enabled: this.cfg.offer.enabled, caps: this.caps, offer: this.cfg.offer, offerErrors: this.offerErrors(),

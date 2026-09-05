@@ -58,7 +58,7 @@ function privateAddress(address: string): boolean {
   return isIP(ip) === 6 && (ip === "::1" || /^(fc|fd|fe[89ab])/.test(ip));
 }
 
-/** Only direct LAN/loopback requests may reach the web/admin/router surface.
+/** Only direct LAN/loopback requests may reach the web/admin surface.
  * Cloudflared connects from loopback, so socket address alone is insufficient.
  * Forwarding headers can only remove access; they never establish local trust. */
 export function directLocalRequest(req: Request, remoteIp: string | null | undefined): boolean {
@@ -162,10 +162,11 @@ export function createControlServer(deps: ControlDeps): Server<ConnData> {
       const url = new URL(req.url);
       const path = url.pathname;
       try {
-        // The public tunnel is exclusively an agent transport. Reject before credentials,
-        // body parsing, diagnostics, or UI routing, even if a public caller has an admin token.
+        // Public access is limited to signed agent transport and the API-key-protected /v1 API.
+        // Reject all other routes before credentials, body parsing, diagnostics, or UI routing.
         const agentUpgrade = path === "/agent" && req.method === "GET" && req.headers.get("upgrade")?.toLowerCase() === "websocket";
-        if (!directLocalRequest(req, srv.requestIP(req)?.address) && !agentUpgrade) {
+        const localRequest = directLocalRequest(req, srv.requestIP(req)?.address);
+        if (!localRequest && !agentUpgrade && !path.startsWith("/v1/")) {
           return new Response("not found", { status: 404, headers: { "cache-control": "no-store" } });
         }
         if (path === "/health") return json({ status: "ok", nodes: channel.onlineNodeIds().length });
@@ -197,7 +198,7 @@ export function createControlServer(deps: ControlDeps): Server<ConnData> {
         if (path.startsWith("/v1/")) {
           const key = bearer(req);
           if (!key || !reg.hasApiKey(key)) {
-            if (!adminOk(req, cfg, srv.requestIP(req)?.address)) return json({ error: { message: "invalid api key", type: "auth" } }, 401);
+            if (!localRequest || !adminOk(req, cfg, srv.requestIP(req)?.address)) return json({ error: { message: "invalid api key", type: "auth" } }, 401);
           }
           return deps.router(req, path);
         }

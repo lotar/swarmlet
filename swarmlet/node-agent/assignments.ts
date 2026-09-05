@@ -87,6 +87,14 @@ export class AssignmentRunner {
     return [...this.active.values()].map((x) => ({ id: x.a.id, kind: x.a.kind, deploymentId: x.a.deploymentId, state: x.state, detail: x.detail, ports: x.ports, pid: x.proc?.pid ?? undefined, processIdentity: x.proc?.identity, stoppedExternalId: x.stoppedExternal?.id }));
   }
 
+  /** Only ready HTTP model servers can answer inference; RPC workers cannot decode alone. */
+  inferenceTargets(): Array<{ model: string; deploymentId: string; url: string }> {
+    return [...this.active.values()].flatMap(({ a, state }) => {
+      if (state !== "ready" || (a.kind !== "coordinator" && a.kind !== "replica") || !a.modelName) return [];
+      return [{ model: a.modelName, deploymentId: a.deploymentId, url: a.kind === "replica" && a.external ? a.external.url : `http://127.0.0.1:${a.port}` }];
+    });
+  }
+
   states(): Array<{ id: string; state: AssignmentState; detail?: string; ports?: Record<string, number> }> {
     return [...this.active.values()].map((x) => ({ id: x.a.id, state: x.state, detail: x.detail, ports: Object.keys(x.ports).length ? x.ports : undefined }));
   }

@@ -53,6 +53,8 @@ export class AgentClient {
   private stopped = false;
   private backoffMs = 1000;
   private _connected = false;
+  /** Server-side only; never included in the local UI status payload. */
+  inferenceKey: string | null = null;
   private waiters: Array<() => void> = [];
 
   constructor(
@@ -126,6 +128,7 @@ export class AgentClient {
     this.mux?.closeAll(reason);
     this.mux = null;
     this._connected = false;
+    this.inferenceKey = null;
     const ws = this.ws; this.ws = null;
     if (ws && ws.readyState === WebSocket.OPEN) ws.close(1000, reason);
   }
@@ -146,6 +149,7 @@ export class AgentClient {
         break;
       }
       case "welcome": {
+        this.inferenceKey = m.inferenceKey ?? null;
         this.mux = new StreamMux((f) => this.ws?.send(f), (s) => this.onIncomingStream(s), 1);
         this._connected = true;
         this.send({

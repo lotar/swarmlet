@@ -4,12 +4,14 @@
 
 import indexHtml from "./index.html" with { type: "text" };
 import appJs from "./app.js" with { type: "text" };
+import chatJs from "./chat.js" with { type: "text" };
 import styleCss from "./style.css" with { type: "text" };
 
 // bun-types declares `*.html` as an HTMLBundle (for Bun.serve routes); `type: "text"` makes it a string.
 const ASSETS: Record<string, { body: string; type: string }> = {
   "/": { body: indexHtml as unknown as string, type: "text/html; charset=utf-8" },
   "/app.js": { body: appJs, type: "application/javascript; charset=utf-8" },
+  "/chat.js": { body: chatJs, type: "application/javascript; charset=utf-8" },
   "/style.css": { body: styleCss, type: "text/css; charset=utf-8" },
 };
 

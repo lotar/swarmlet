@@ -145,6 +145,15 @@ describe("mesh e2e (fake engine)", () => {
     const s = await api("/v1/chat/completions", { method: "POST", body: JSON.stringify({ model: "qwen3.5-2b", stream: true, messages: [{ role: "user", content: "yo" }] }) });
     const text = await s.text();
     expect(text).toContain("data: [DONE]");
+    // Participants consume the same split model through their own localhost API.
+    for (const [port, route] of [[47810, "local"], [47820, "mesh"]] as const) {
+      const catalog = await (await fetch(`http://127.0.0.1:${port}/v1/models`)).json() as { data: Array<{ id: string; route: string }> };
+      expect(catalog.data.find((m) => m.id === "qwen3.5-2b")?.route).toBe(route);
+      const reply = await fetch(`http://127.0.0.1:${port}/v1/chat/completions`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ model: "qwen3.5-2b", stream: true, messages: [{ role: "user", content: "participant" }] }) });
+      expect(reply.status).toBe(200);
+      expect(reply.headers.get("x-swarmlet-route")).toBe(route);
+      expect(await reply.text()).toContain("data: [DONE]");
+    }
     // the coordinator reports which path it used for the worker
     const asg = ((await (await api(`/api/deployments/${id}`)).json()) as { assignments: Array<{ body: { kind: string }; detail: string | null }> }).assignments;
     const coord = asg.find((a) => a.body.kind === "coordinator");

@@ -21,6 +21,7 @@ export interface LocalApiDeps {
   join: (controlUrl: string, code: string) => Promise<{ nodeId: string }>;
   measureNet: () => Promise<NetMeasurement>;
   logs: (assignment?: string, lines?: number) => string[];
+  inference?: (req: Request, path: string) => Promise<Response>;
 }
 
 const json = (body: unknown, status = 200): Response => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json", "cache-control": "no-store" } });
@@ -29,10 +30,16 @@ export function startLocalApi(port: number, deps: LocalApiDeps): Server<undefine
   return Bun.serve({
     hostname: "127.0.0.1",
     port,
+    idleTimeout: 255,
+    maxRequestBodySize: 8 * 1024 * 1024,
     async fetch(req) {
       const url = new URL(req.url);
       const path = url.pathname;
       try {
+        // Loopback bind alone does not stop DNS rebinding or cross-origin browser requests.
+        const origin = req.headers.get("origin");
+        if (!["127.0.0.1", "localhost"].includes(url.hostname) || (origin && origin !== url.origin)) return json({ error: "local origin required" }, 403);
+        if (path.startsWith("/v1/")) return deps.inference ? deps.inference(req, path) : json({ error: { message: "inference unavailable", type: "server_error" } }, 503);
         if (path === "/api/status") return json(deps.status());
         if (path === "/api/offer" && req.method === "GET") {
           const caps = deps.caps();

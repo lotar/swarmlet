@@ -88,7 +88,7 @@ export function parseControlMessage(raw: string): Result<ControlToAgent> {
   if (!isObj(m) || !isStr(m.t)) return { ok: false, errors: ["missing t"] };
   switch (m.t) {
     case "challenge": if (!isStr(m.nonce)) return { ok: false, errors: ["challenge needs nonce"] }; break;
-    case "welcome": if (!isStr(m.nodeId)) return { ok: false, errors: ["welcome needs nodeId"] }; break;
+    case "welcome": if (!isStr(m.nodeId) || (m.inferenceKey !== undefined && !isStr(m.inferenceKey))) return { ok: false, errors: ["welcome needs nodeId and optional inferenceKey string"] }; break;
     case "assign": { const a = validateAssignment(m.assignment); if (!a.ok) return a; break; }
     case "error": if (!isStr(m.message)) return { ok: false, errors: ["error needs message"] }; break;
     case "ping": if (!isStr(m.ts)) return { ok: false, errors: ["ping needs ts"] }; break;

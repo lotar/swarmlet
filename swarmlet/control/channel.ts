@@ -184,7 +184,7 @@ export class AgentChannel {
     ws.data.authed = true;
     ws.data.mux = new StreamMux((f) => ws.send(f), (stream) => this.onAgentStream(m.nodeId, stream), 0);
     this.conns.set(m.nodeId, ws);
-    ws.send(JSON.stringify({ t: "welcome", nodeId: m.nodeId, serverTime: new Date().toISOString() } satisfies ControlToAgent));
+    ws.send(JSON.stringify({ t: "welcome", nodeId: m.nodeId, serverTime: new Date().toISOString(), inferenceKey: this.reg.nodeApiKey(m.nodeId) } satisfies ControlToAgent));
   }
 
   /** A node opened a stream towards control: only relays are accepted. */

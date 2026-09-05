@@ -8,6 +8,7 @@
   <title>Swarmlet node</title>
   <link rel="stylesheet" href="/style.css">
   <script src="/app.js" defer></script>
+  <script src="/chat.js" defer></script>
 </head>
 <body>
   <header class="head">
@@ -16,6 +17,7 @@
   </header>
   <nav class="tabs" role="tablist" aria-label="Sections">
     <button type="button" role="tab" data-tab="status" aria-selected="true">Status</button>
+    <button type="button" role="tab" data-tab="chat" aria-selected="false">Chat</button>
     <button type="button" role="tab" data-tab="resources" aria-selected="false">Resources</button>
     <button type="button" role="tab" data-tab="models" aria-selected="false">Models</button>
     <button type="button" role="tab" data-tab="connection" aria-selected="false">Connection</button>
@@ -37,6 +39,15 @@
           <tbody></tbody>
         </table>
       </div>
+    </section>
+
+    <section class="tab node-chat" id="tab-chat" data-tab="chat" hidden>
+      <div class="chat-heading"><div><h1>Your mesh, in conversation.</h1><p class="hint">Use the models your machines make possible.</p></div><button type="button" class="button" id="chat-new">New chat</button></div>
+      <div class="chat-controls"><label class="field"><span class="label">Model</span><select id="chat-model" aria-label="Chat model"><option value="">Loading models…</option></select></label><span id="chat-route" class="chat-route" role="status">Finding available models</span><button type="button" class="button" id="chat-refresh">Refresh</button></div>
+      <div class="chat-transcript" id="chat-transcript" role="log" aria-label="Conversation" aria-live="polite"><div id="chat-empty" class="chat-empty"><h2>What are you working on?</h2><p>Ask a question, explore an idea, or work through a problem.</p></div></div>
+      <div id="chat-error" class="banner banner--error" role="alert" hidden></div>
+      <form id="chat-form" class="chat-composer"><label for="chat-input" class="label">Message</label><textarea id="chat-input" rows="3" placeholder="Ask your mesh…" required></textarea><div class="chat-actions"><span id="chat-status" class="hint" role="status">Enter to send · Shift+Enter for a new line</span><button type="button" class="button" id="chat-stop" hidden>Stop</button><button type="submit" class="button button--signal" id="chat-send" disabled>Send message</button></div></form>
+      <details class="chat-api"><summary>Use this node from your apps</summary><p>Your local OpenAI-compatible base URL is <code id="chat-api-url"></code>. A ready local model server is used first; other requests use the internet mesh. Local access needs no key. If your client requires one, use <code>local</code>.</p><pre id="chat-api-example"></pre><button type="button" class="button" id="chat-copy">Copy example</button></details>
     </section>
 
     <section class="tab" id="tab-resources" data-tab="resources" hidden>

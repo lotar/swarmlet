@@ -64,7 +64,7 @@ describe("control core", () => {
   let a!: FakeAgent, b!: FakeAgent;
 
   test("public web, API and diagnostics are closed even with valid admin credentials", async () => {
-    for (const path of ["/", "/index.html", "/app.js", "/style.css", "/login", "/logout", "/health", "/probe/ip", "/probe/down", "/probe/up", "/enroll", "/api/nodes", "/api/stream", "/v1/models", "/v1/chat/completions", "/agent"]) {
+    for (const path of ["/", "/index.html", "/app.js", "/style.css", "/login", "/logout", "/health", "/probe/ip", "/probe/down", "/probe/up", "/enroll", "/api/nodes", "/api/stream", "/agent"]) {
       for (const method of ["GET", "POST"]) {
         const res = await api(path, { method, headers: { "cf-ray": "public-edge", "x-forwarded-for": "127.0.0.1" } });
         expect(res.status).toBe(404);
@@ -75,6 +75,19 @@ describe("control core", () => {
     expect(publicHost.status).toBe(404);
     expect((await api("/")).status).toBe(200);
     expect((await api("/api/nodes")).status).toBe(200);
+  });
+
+  test("public inference requires an API key, never an admin token or cookie", async () => {
+    const credentials: Record<string, string>[] = [{}, { authorization: "Bearer wrong" }, { authorization: `Bearer ${cfg.adminToken}` }, { cookie: `swarmlet_admin=${cfg.adminToken}` }];
+    for (const headers of credentials) {
+      const response = await fetch(base + "/v1/models", { headers: { ...headers, "cf-ray": "public-edge" } });
+      expect(response.status).toBe(401);
+    }
+    const key = ctl.reg.createApiKey("public-test");
+    const response = await fetch(base + "/v1/models", { headers: { authorization: `Bearer ${key}`, "cf-ray": "public-edge" } });
+    expect(response.status).toBe(200);
+    expect((await response.json() as { object: string }).object).toBe("list");
+    expect((await fetch(base + "/api/nodes", { headers: { authorization: `Bearer ${key}`, "cf-ray": "public-edge" } })).status).toBe(404);
   });
 
   test("local access requires both a private peer and local Host; forwarding never grants access", () => {
@@ -172,6 +185,9 @@ describe("control core", () => {
     expect(na.hostname).toBe("alpha");
     expect(na.offer?.ramMiB).toBe(8000);
     expect(na.caps?.gpus[0]?.engineName).toBe("CUDA0");
+    expect(a.client.inferenceKey).toBe(ctl.reg.nodeApiKey(a.id.nodeId));
+    expect(ctl.reg.hasApiKey(a.client.inferenceKey!)).toBe(true);
+    expect(a.client.inferenceKey).not.toBe(b.client.inferenceKey);
   });
 
   test("assignments are dispatched and state changes flow back", async () => {

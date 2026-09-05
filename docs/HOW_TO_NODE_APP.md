@@ -90,7 +90,17 @@ heartbeat interval, so the number moves while a reply streams and drops to 0.0 w
 
 ## 3c. Internet path (relay through the Cloudflare edge)
 
-**Public access restricted as of 2026-09-05:** only the `/agent` WebSocket is exposed through the tunnel, with the existing signed node authentication. Dashboard assets, login, admin/OpenAI APIs, enrollment, health and bandwidth/IP probes return 404 publicly, even with valid admin credentials. Open the dashboard directly at `http://192.168.1.53:47900`; proxy headers or a public Host cannot grant local access. All three existing nodes use the internet channel. Host/engine metrics continue over that channel; HTTP network probes through the public URL are unavailable, so previous RTT/bandwidth samples retain their age. New nodes must enroll over the LAN before their configured agent URL is switched to the tunnel. The historical re-enrollment script described below cannot enroll through the public URL under this restriction.
+**Public access restricted as of 2026-09-05:** the `/agent` WebSocket uses signed node authentication; `/v1/*` uses inference API keys. Dashboard assets, login, admin APIs, enrollment, health and bandwidth/IP probes return 404 publicly, even with valid admin credentials. An admin token or browser cookie cannot authorize public inference. Open the dashboard directly at `http://192.168.1.53:47900`; proxy headers or a public Host cannot grant local access. All three existing nodes use the internet channel. Host/engine metrics continue over that channel; HTTP network probes through the public URL are unavailable, so previous RTT/bandwidth samples retain their age. New nodes must enroll over the LAN before their configured agent URL is switched to the tunnel. The historical re-enrollment script described below cannot enroll through the public URL under this restriction.
+
+### Participant chat and local API
+
+Open **Chat** in Swarmlet Node on any enrolled machine. Choose a ready model, send a message, or stop a streamed reply. Conversations are saved in that machine's webview/browser storage; **New chat** clears them. The API example is available under **Use this node from your apps**.
+
+Every node serves an OpenAI-compatible API at `http://127.0.0.1:47800/v1`: models, chat completions, completions and embeddings (when supported by the selected engine). Loopback clients need no key; SDKs that require a value may use `local`. Foreign browser origins and non-local Host headers are refused.
+
+The local gateway selects a ready coordinator or replica on its own machine first. A worker holds only some model layers and cannot decode by itself; its gateway sends inference through the same internet host as its authenticated agent connection. A local coordinator serving a split model still contacts its remote workers. No extra model copy is loaded. The response header `x-swarmlet-route` reports `local` or `mesh`.
+
+Each enrolled node receives a distinct inference key over its signed agent session. The node daemon uses it internally; it is never placed in the chat page or status JSON. For other clients, create a key in the local control dashboard's **API keys** tab and use `Authorization: Bearer <key>` with the tunnel's `/v1` base URL. Public requests without a valid inference key return 401; public admin/dashboard routes remain 404.
 
 All three rig machines share one public IP, so an internet path needs an external hop. `swarmlet/control/cloudflare-tunnel.sh start`
 puts a quick tunnel in front of control (LaunchAgent, new hostname on every start); `swarmlet/e2e/rig-internet.sh` pins that

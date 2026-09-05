@@ -235,6 +235,13 @@ export class Registry {
     return !!this.db.query<{ key: string }, [string]>("SELECT key FROM api_keys WHERE key = ?").get(key);
   }
 
+  /** Stable participant credential, delivered only over that node's signed agent session. */
+  nodeApiKey(nodeId: string): string {
+    if (!this.getNode(nodeId)) throw new Error("unknown node");
+    const name = `node:${nodeId}`;
+    return this.db.query<{ key: string }, [string]>("SELECT key FROM api_keys WHERE name = ? ORDER BY created_at LIMIT 1").get(name)?.key ?? this.createApiKey(name);
+  }
+
   listApiKeys(): Array<{ name: string; createdAt: string; keyPrefix: string }> {
     return this.db.query<{ key: string; name: string; created_at: string }, []>("SELECT key, name, created_at FROM api_keys ORDER BY created_at").all()
       .map((r) => ({ name: r.name, createdAt: r.created_at, keyPrefix: r.key.slice(0, 8) }));

@@ -130,7 +130,7 @@
   }
 
   /* ---------- tabs ---------- */
-  var TABS = ['status', 'resources', 'models', 'connection', 'logs'];
+  var TABS = ['status', 'chat', 'resources', 'models', 'connection', 'logs'];
   var active = 'status';
 
   function showTab(name) {

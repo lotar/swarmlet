@@ -262,7 +262,7 @@ export interface ModelProfile {
 
 export interface ChallengeMsg { t: "challenge"; nonce: string }
 export interface AuthMsg { t: "auth"; nodeId: string; nonce: string; certFp: string; signature: string }
-export interface WelcomeMsg { t: "welcome"; nodeId: string; serverTime: string }
+export interface WelcomeMsg { t: "welcome"; nodeId: string; serverTime: string; inferenceKey?: string }
 export interface HelloMsg {
   t: "hello";
   proto: number;
