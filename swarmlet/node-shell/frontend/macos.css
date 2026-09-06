@@ -3,28 +3,28 @@
   color-scheme:light;
   --font-display:-apple-system,BlinkMacSystemFont,'SF Pro Display',system-ui,sans-serif;
   --font-body:-apple-system,BlinkMacSystemFont,'SF Pro Text',system-ui,sans-serif;
-  --bg:rgba(246,249,248,.66); --bg-2:rgba(255,255,255,.66); --bg-3:rgba(236,242,239,.68);
-  --bg-deep:rgba(244,248,246,.72); --nav-bg:rgba(244,249,246,.2);
-  --line:rgba(64,90,79,.13); --line-soft:rgba(64,90,79,.08);
-  --text:#1a3028; --copy:#364d43; --muted:#536b60; --dim:#60766c;
-  --signal:#18785b; --accent-soft:rgba(219,242,230,.68);
+  --bg:#f5f5f7; --bg-2:#fff; --bg-3:#ededf0;
+  --bg-deep:#f5f5f7; --nav-bg:rgba(245,245,247,.90);
+  --line:rgba(28,28,32,.10); --line-soft:rgba(28,28,32,.06);
+  --text:#202024; --copy:#414148; --muted:#62626a; --dim:#6c6c74;
+  --signal:#18785b; --accent-soft:#edf5f1;
   --radius-sm:.65rem; --radius:1rem; --radius-lg:1.35rem;
   --sidebar:12.5rem; --native-corner:20px; --native-drag:28px;
-  --native-highlight:rgba(255,255,255,.78); --native-shadow:0 6px 24px rgba(31,58,43,.045);
-  --native-main:rgba(248,251,249,.62); --native-active:rgba(255,255,255,.58);
+  --native-highlight:rgba(255,255,255,.5); --native-shadow:0 2px 8px rgba(20,20,28,.035);
+  --native-main:#f5f5f7; --native-active:#fff;
   background:transparent !important; border-radius:var(--native-corner); overflow:hidden;
 }
-html[data-native-shell='macos'] body { background:transparent !important; border-radius:var(--native-corner); height:100dvh; overflow:hidden; }
-[data-native-shell='macos'] #app { height:100dvh; overflow-y:auto; overscroll-behavior:none; background:transparent; }
+html[data-native-shell='macos'] body { background:transparent !important; border-radius:var(--native-corner); height:100dvh; overflow:hidden; clip-path:inset(0 round var(--native-corner)); }
+[data-native-shell='macos'] #app { height:100dvh; overflow-y:auto; overscroll-behavior:none; background:transparent; border-radius:var(--native-corner); isolation:isolate; }
 [data-native-shell='macos'] .head { display:none; }
 [data-native-shell='macos'] .native-drag-surface { position:fixed; z-index:50; inset:0 0 auto; height:var(--native-drag); -webkit-user-select:none; user-select:none; cursor:default; }
 [data-native-shell='macos'] .sidebar { background:var(--nav-bg); border-color:var(--line-soft); padding-top:calc(var(--native-drag) + var(--s4)); }
 [data-native-shell='macos'] .brand { letter-spacing:-.04em; }
-[data-native-shell='macos'] .mark { border-radius:var(--radius-sm); background:var(--signal); box-shadow:inset 0 1px 0 var(--native-highlight); }
+[data-native-shell='macos'] .mark { border-radius:var(--radius-sm); background:var(--signal); box-shadow:none; }
 [data-native-shell='macos'] .brand-sub { font-size:var(--text-xs); letter-spacing:normal; }
 [data-native-shell='macos'] .nav-label { color:var(--muted); font-weight:var(--medium); }
 [data-native-shell='macos'] .tabs button { font-size:var(--text-sm); min-height:var(--touch); }
-[data-native-shell='macos'] .tabs button[aria-selected='true'] { background:var(--native-active); box-shadow:inset 0 1px 0 var(--native-highlight),var(--native-shadow); }
+[data-native-shell='macos'] .tabs button[aria-selected='true'] { background:var(--native-active); box-shadow:var(--native-shadow); }
 [data-native-shell='macos'] .sidebar-foot { display:flex; flex-direction:column; align-items:stretch; gap:var(--s3); border-top-color:var(--line); }
 [data-native-shell='macos'] .sidebar-foot > .workspace-avatar,[data-native-shell='macos'] .sidebar-foot > div:not(.head-status) { display:none; }
 [data-native-shell='macos'] .sidebar-foot .head-status { font-size:var(--text-xs); white-space:normal; line-height:var(--leading); }
@@ -33,13 +33,13 @@ html[data-native-shell='macos'] body { background:transparent !important; border
 [data-native-shell='macos'] .page-heading,[data-native-shell='macos'] .chat-heading { margin-bottom:var(--s5); }
 [data-native-shell='macos'] h1 { font-size:var(--text-3xl); font-weight:var(--semibold); letter-spacing:-.04em; }
 [data-native-shell='macos'] .chat-controls,[data-native-shell='macos'] .processing-panel,[data-native-shell='macos'] fieldset,[data-native-shell='macos'] .tile {
-  background:var(--bg-2); border-color:var(--line); box-shadow:inset 0 1px 0 var(--native-highlight),var(--native-shadow);
+  background:var(--bg-2); border-color:var(--line); box-shadow:var(--native-shadow);
 }
-[data-native-shell='macos'] .chat-transcript { background:var(--bg-2); border-color:var(--line); box-shadow:inset 0 1px 0 var(--native-highlight); }
+[data-native-shell='macos'] .chat-transcript { background:var(--bg-2); border-color:var(--line); box-shadow:none; }
 [data-native-shell='macos'] .chat-composer { background:var(--bg-2); border-color:var(--line); }
 [data-native-shell='macos'] .chat-message--user { background:var(--accent-soft); }
 [data-native-shell='macos'] .chat-composer textarea { background:rgba(255,255,255,.48); }
-[data-native-shell='macos'] .button { box-shadow:inset 0 1px 0 var(--native-highlight); }
+[data-native-shell='macos'] .button { box-shadow:none; }
 [data-native-shell='macos'] .button--signal { color:var(--white); background:var(--signal); box-shadow:inset 0 1px 0 rgba(255,255,255,.18),0 2px 7px rgba(24,120,91,.12); }
 [data-native-shell='macos'] .processing-node { border-color:var(--line-soft); }
 [data-native-shell='macos'] .response-rate strong { font-weight:var(--normal); }
@@ -50,11 +50,13 @@ html[data-native-shell='macos'] body { background:transparent !important; border
 [data-native-shell='macos'] .card .hint { display:none; }
 [data-native-shell='macos'] #msg { color:var(--muted); }
 @media (min-width:900px) {
-  [data-native-shell='macos'] main { border-radius:var(--native-corner) 0 0 var(--native-corner); border-left:1px solid var(--native-highlight); }
-  [data-native-shell='macos'] .sidebar { border-right:0; }
+  /* One clipped window, with scrolling content beside an in-flow sidebar. */
+  [data-native-shell='macos'] #app { display:grid; grid-template-columns:var(--sidebar) minmax(0,1fr); padding-left:0; overflow:hidden; }
+  [data-native-shell='macos'] main { width:100%; max-width:none; height:100dvh; min-height:0; margin:0; overflow:auto; border-radius:0; border:0; }
+  [data-native-shell='macos'] .sidebar { position:relative; inset:auto; width:auto; min-height:0; overflow:auto; border:0; border-radius:0; }
   [data-native-shell='macos'] .brand { margin-bottom:var(--s6); }
 }
 @media (prefers-reduced-transparency:reduce) {
-  :root[data-native-shell='macos'] { --nav-bg:#edf3ef; --native-main:#f6f9f7; --bg:#f3f7f4; --bg-2:#fff; --bg-3:#eaf1ec; --native-active:#fff; }
+  :root[data-native-shell='macos'] { --nav-bg:#eeeeF0; --native-main:#f5f5f7; --bg:#f5f5f7; --bg-2:#fff; --bg-3:#ededf0; --native-active:#fff; }
 }
 @media (prefers-reduced-motion:reduce) { [data-native-shell='macos'] * { animation:none !important; transition:none !important; scroll-behavior:auto !important; } }

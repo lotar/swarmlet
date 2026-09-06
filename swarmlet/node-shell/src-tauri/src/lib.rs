@@ -190,6 +190,7 @@ fn build_window(app: &AppHandle, visible: bool) -> tauri::Result<WebviewWindow> 
         let init = include_str!("../../frontend/macos.js").replace("__SWARMLET_NATIVE_CSS__", &css);
         builder
             .decorations(false)
+            .theme(Some(tauri::Theme::Light))
             .transparent(true)
             .shadow(true)
             .initialization_script(init)
