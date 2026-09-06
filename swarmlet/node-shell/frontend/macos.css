@@ -95,3 +95,21 @@ html[data-native-shell='macos'] body { background:transparent !important; border
   [data-native-shell='macos'] .processing-facts dd { max-width:5.5rem; overflow-wrap:anywhere; }
   [data-native-shell='macos'] .processing-source,[data-native-shell='macos'] .processing-footnote { margin-top:.25rem; }
 }
+/* A single model toolbar and a conversation with a clear reading rhythm. */
+[data-native-shell='macos'] .node-chat .chat-controls {
+  display:grid; grid-template-columns:minmax(0,1fr) auto; grid-template-areas:'model refresh' 'route refresh';
+  align-items:center; gap:.375rem .75rem; padding:.75rem; margin-bottom:.5rem;
+}
+[data-native-shell='macos'] .chat-controls .field { grid-area:model; display:flex; align-items:center; gap:.75rem; }
+[data-native-shell='macos'] .chat-controls .field .label { flex:none; }
+[data-native-shell='macos'] #chat-model { flex:1; width:100%; min-width:0; min-height:2.5rem; padding:.375rem .5rem; border:1px solid var(--line); border-radius:var(--radius-sm); background:var(--bg-2); }
+[data-native-shell='macos'] #chat-refresh { grid-area:refresh; align-self:center; }
+[data-native-shell='macos'] .chat-route { grid-area:route; min-width:0; overflow-wrap:anywhere; }
+[data-native-shell='macos'] .chat-transcript { scroll-padding:1rem; }
+[data-native-shell='macos'] .chat-message { width:fit-content; max-width:90%; margin:0 0 1.25rem; }
+[data-native-shell='macos'] .chat-message h3 { margin:0 0 .375rem; }
+[data-native-shell='macos'] .chat-message--user { margin-left:auto; padding:.625rem .875rem; border-radius:var(--radius) var(--radius) .375rem var(--radius); }
+[data-native-shell='macos'] .chat-message--assistant { margin-right:auto; padding:.25rem 0; }
+[data-native-shell='macos'] .chat-message--assistant + .chat-message--user { margin-top:1.5rem; }
+[data-native-shell='macos'] .chat-message:last-child { margin-bottom:.5rem; }
+[data-native-shell='macos'] .chat-message-text { line-height:1.55; }
