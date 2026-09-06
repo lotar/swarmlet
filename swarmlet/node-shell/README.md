@@ -16,7 +16,7 @@ node-shell/
 └── src-tauri/
     ├── Cargo.toml             crate swarmlet-node-shell (tauri 2 + tray-icon, plugin-shell, plugin-autostart)
     ├── tauri.conf.json        productName "Swarmlet Node", identifier ai.swarmlet.node, sidecar + engine resources
-    ├── capabilities/          core:default for the splash page only; the agent UI (remote origin) gets no IPC
+    ├── capabilities/          core:default for splash; macOS localhost UI gets window-drag permission only
     ├── icons/                 app-icon-1024.png is the source; the rest comes from `cargo tauri icon`
     │                          tray-template*.png are hand-drawn monochrome menu-bar icons (macOS template images)
     ├── src/lib.rs             all behaviour (window, tray, supervisor, HTTP client); main.rs just calls run()
@@ -163,3 +163,9 @@ serve the mesh with the app closed or before anyone logs in (`loginctl enable-li
   running instance through Launch Services).
 - Tray tooltips are not displayed by every Linux desktop; the status menu item carries the text.
 - The engine resources (~33 MB) and the Bun runtime inside the sidecar (~60 MB) dominate the bundle size.
+
+### macOS appearance
+
+The Mac shell uses a frameless transparent window with native Sidebar vibrancy and an embedded glass stylesheet. The upper 28-pixel strip moves the window; minimize/maximize/fullscreen title-bar buttons and the web breadcrumb header are absent. Connection status lives in the sidebar footer. The existing app menu and tray retain hide/quit controls. Linux and browser styling are unchanged.
+
+`frontend/macos.js` applies only to the bundled splash or exact `http://127.0.0.1:47800` origin. `capabilities/macos-drag.json` grants only `core:window:allow-start-dragging` to that origin on the Mac main window. It does not grant filesystem, shell, or general window-control access. The stylesheet is embedded in the shell, so appearance updates do not require an agent or model restart.

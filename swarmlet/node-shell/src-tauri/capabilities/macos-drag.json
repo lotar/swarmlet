@@ -1,0 +1,10 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "macos-drag",
+  "description": "The Mac node UI can drag its own frameless window. No other native command is exposed to the localhost UI.",
+  "platforms": ["macOS"],
+  "windows": ["main"],
+  "local": true,
+  "remote": { "urls": ["http://127.0.0.1:47800/*"] },
+  "permissions": ["core:window:allow-start-dragging"]
+}

@@ -1,7 +1,7 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "The splash page in the main window needs no IPC; core defaults only. The node UI at http://127.0.0.1:47800 is a remote origin and gets no Tauri IPC at all.",
+  "description": "The splash page in the main window needs no IPC; core defaults only. The node UI has no general native IPC; a separate macOS capability allows window dragging only.",
   "windows": ["main"],
   "permissions": ["core:default"]
 }

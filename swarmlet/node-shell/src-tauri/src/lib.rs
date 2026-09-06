@@ -177,13 +177,36 @@ pub fn run() {
 // ---------- window ----------
 
 fn build_window(app: &AppHandle, visible: bool) -> tauri::Result<WebviewWindow> {
-    let win = WebviewWindowBuilder::new(app, MAIN_WINDOW, WebviewUrl::App("index.html".into()))
+    let builder = WebviewWindowBuilder::new(app, MAIN_WINDOW, WebviewUrl::App("index.html".into()))
         .title("Swarmlet Node")
         .inner_size(1100.0, 760.0)
         .min_inner_size(720.0, 480.0)
         .visible(visible)
-        .center()
-        .build()?;
+        .center();
+    #[cfg(target_os = "macos")]
+    let builder = {
+        let css = serde_json::to_string(include_str!("../../frontend/macos.css"))
+            .expect("static Mac stylesheet serializes");
+        let init = include_str!("../../frontend/macos.js").replace("__SWARMLET_NATIVE_CSS__", &css);
+        builder
+            .decorations(false)
+            .transparent(true)
+            .shadow(true)
+            .initialization_script(init)
+    };
+    let win = builder.build()?;
+    #[cfg(target_os = "macos")]
+    {
+        use tauri::window::{Effect, EffectState, EffectsBuilder};
+        win.set_effects(
+            EffectsBuilder::new()
+                .effect(Effect::Sidebar)
+                .state(EffectState::FollowsWindowActiveState)
+                .radius(20.0)
+                .build(),
+        )?;
+        logln(app, format!("macOS glass window: decorated={}, native Sidebar vibrancy, drag surface enabled", win.is_decorated()?));
+    }
     // Closing the window only hides it; the app keeps running in the tray. Quit is in the tray menu.
     let w = win.clone();
     win.on_window_event(move |event| {
