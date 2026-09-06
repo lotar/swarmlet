@@ -121,20 +121,20 @@ def catalogue(repeats=5):
                 arms=ordered, blocked=blocked, faultOperator='real-rig-faults.py')
 
 
-def messages(workload, nonce):
+def messages(workload):
     if workload == 'greeting':
-        return [{'role':'user', 'content':'Reply with a short greeting. Request '+nonce}]
+        return [{'role':'user', 'content':'Reply with a short greeting.'}]
     if workload == 'conversation':
         return [{'role':'user','content':'Hi'}, {'role':'assistant','content':'Hello! How can I help you today?'},
                 {'role':'user','content':'Sup?'}, {'role':'assistant','content':"Hey! Just checking in. How is your day going?"},
-                {'role':'user','content':'What can you do? Request '+nonce}]
+                {'role':'user','content':'What can you do?'}]
     if workload == 'longchat':
         result=[]
         for i in range(15):
             result += [{'role':'user','content':f'Remember item {i}.'}, {'role':'assistant','content':f'Item {i} noted.'}]
-        return result+[{'role':'user','content':'Summarize the items briefly. Request '+nonce}]
+        return result+[{'role':'user','content':'Summarize the items briefly.'}]
     # Labels are targets, not claims about tokenization. /tokenize trims before requests.
-    return [{'role':'user','content':('A small mesh exchanges data between computers. ' * int(workload[4:])) + '\nSummarize briefly. Request '+nonce}]
+    return [{'role':'user','content':('A small mesh exchanges data between computers. ' * int(workload[4:])) + '\nSummarize briefly.'}]
 
 
 def stream_request(url, headers, body, timeout=180):
@@ -267,8 +267,8 @@ class Runner:
             if dep['plan']['tensorSplit']!=self.journal['baseline']['split']:raise RuntimeError('baseline split not restored')
         self.journal['restoredAt']=timestamp();self.save()
 
-    def body(self,cfg,nonce,endpoint):
-        history=messages(cfg['workload'],nonce)
+    def body(self,cfg,endpoint):
+        history=messages(cfg['workload'])
         # Apply chat template and count the ACTUAL prompt tokens. Reject overflow, never silently truncate a conversation.
         def tokenize():
             req=urllib.request.Request(endpoint+'/apply-template',data=json.dumps({'messages':history,'chat_template_kwargs':{'enable_thinking':False}}).encode(),headers={'Content-Type':'application/json'})
@@ -276,12 +276,12 @@ class Runner:
             req=urllib.request.Request(endpoint+'/tokenize',data=json.dumps({'content':prompt,'add_special':True}).encode(),headers={'Content-Type':'application/json'})
             with urllib.request.urlopen(req,timeout=30) as r:return len(json.load(r)['tokens'])
         if cfg['workload'].startswith('text'):
-            target=int(cfg['workload'][4:]);full=history[0]['content'];low,high=1,len(full)
+            target=int(cfg['workload'][4:]);full,instruction=history[0]['content'].rsplit('\n',1);suffix='\n'+instruction;low,high=1,len(full)
             while low<high:
-                mid=(low+high+1)//2;history[0]['content']=full[:mid]
+                mid=(low+high+1)//2;history[0]['content']=full[:mid]+suffix
                 if tokenize()<=target:low=mid
                 else:high=mid-1
-            history[0]['content']=full[:low]
+            history[0]['content']=full[:low]+suffix
         count=tokenize()
         if count+cfg['output']>cfg['ctx']//cfg['slots']:
             raise ValueError('prompt+output exceeds per-slot context')
@@ -303,7 +303,13 @@ class Runner:
             load=time.monotonic();self.api('/api/deployments/'+dep['id']+'/start','POST');dep=self.ready(dep['id'])
             endpoint='http://127.0.0.1:'+str(dep['endpoint']['port'])
             result={'rep':rep,'loadSeconds':time.monotonic()-load,'deployment':dep,'samples':[],'requests':[]}
-            body,tokens=self.body(cfg,f'{id}-{rep}',endpoint);result['promptTokens']=tokens
+            body,tokens=self.body(cfg,endpoint);result['promptTokens']=tokens
+            result['promptSha256']=digest(body['messages'])
+            inputs=self.journal.setdefault('workloadInputs',{})
+            observed={'promptSha256':result['promptSha256'],'promptTokens':tokens}
+            if inputs.setdefault(cfg['workload'],observed)!=observed:
+                raise RuntimeError('workload prompt drift: '+cfg['workload'])
+            self.save()
             base={'engine':endpoint,'node':'http://127.0.0.1:47800','router':self.args.control_url}[cfg['entry']]
             headers={'x-swarmlet-deployment':dep['id']}
             if cfg['entry']=='router':headers['Authorization']='Bearer '+self.token

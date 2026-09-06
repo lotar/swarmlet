@@ -171,3 +171,23 @@ exercised real cleanup: all 309 owned profiles removed, no owned test deployment
 remaining, and original 3/3/18 mesh ready. Journal `restoredAt`:
 2026-09-06T13:24:04.675956+00:00. The wrapper then reloaded production as designed.
 Completed repetitions remain checkpointed; the interrupted repetition is rerun.
+
+
+### Controlled-input correction
+
+Interval monitoring found arm IDs embedded in model prompts: the original
+3/3/18 baseline had 81 prompt tokens and an interleaved control had 68. The
+`mesh-matrix-full-20260906` campaign was stopped gracefully after 11 completed
+arms. Preserve those results as exploratory functional observations; they are
+superseded for controlled performance comparisons.
+
+The corrected runner uses fixed messages per workload, independent of arm and
+repetition. Synthetic text trimming preserves the summarization instruction.
+Each repetition records `promptSha256` and actual `promptTokens`; a journalled
+per-workload invariant rejects input drift before inference. Fresh engine starts
+still establish process-cold repetitions without adding prompt nonces.
+
+The replacement full campaign uses
+`~/.swarmlet/backups/mesh-matrix-controlled-20260906`. Its manifest and results
+are separate from the old campaign. Launch does not mean completion, and the
+17 blocked families remain explicitly untested.

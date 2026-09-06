@@ -68,6 +68,27 @@ class MatrixTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError,'invalid owned'):runner.restore()
             self.assertTrue(file.exists())
 
+    def test_same_workload_has_identical_inputs_across_arms_and_repeats(self):
+        runner=object.__new__(m.Runner);runner.prefix='test-model'
+        def api(req, **kwargs):
+            data=json.loads(req.data)
+            if req.full_url.endswith('/apply-template'):
+                return Response(json.dumps({'prompt':json.dumps(data['messages'])}).encode())
+            return Response(json.dumps({'tokens':list(range(len(data['content'])))}).encode())
+        with patch.object(m.urllib.request,'urlopen',side_effect=api):
+            for workload in ['greeting','conversation','longchat','text128','text512','text1024']:
+                inputs=[]
+                for arm in m.catalogue()['arms'][:3]+[a for a in m.catalogue()['arms'] if a['group']=='interleaved-baseline'][:1]:
+                    cfg={**arm['config'],'workload':workload,'ctx':8192}
+                    for rep in range(2):
+                        body,count=runner.body(cfg,'http://test')
+                        inputs.append((m.digest(body['messages']),count))
+                        self.assertNotIn(arm['id'],json.dumps(body['messages']))
+                        if workload.startswith('text'):
+                            self.assertTrue(body['messages'][0]['content'].endswith('Summarize briefly.'))
+                            self.assertLessEqual(count,int(workload[4:]))
+                self.assertEqual(len(set(inputs)),1)
+
     def test_atomic_results_are_readable(self):
         with tempfile.TemporaryDirectory() as d:
             p=Path(d)/'results.json';m.write_json(p,{'a':1});m.write_json(p,{'a':2})
