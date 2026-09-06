@@ -226,3 +226,9 @@ Node apps and the control dashboard share the same response-processing panel. It
 TPS is labeled as a stream estimate during generation, including reasoning deltas. Final engine timing replaces the estimate when available. Host CPU and GPU memory are separate resource measurements; missing, disconnected or stale telemetry shows unavailable. Completed or stopped reply summaries retain their serving deployment.
 
 `GET /v1/mesh?model=MODEL&deployment=DEPLOYMENT_ID` is a Swarmlet display-metadata extension. It uses the same inference-key protection as public `/v1` routes. The node's localhost API forwards it using the enrolled participant key, preferring its own ready deployment unless explicitly pinned. The response exposes selected node names, layer allocations and host metrics; it does not expose admin data, paths, addresses or credentials. The public dashboard remains closed.
+
+## Repeatable mesh experiments
+
+See [the permanent physical test matrix](MESH_TEST_MATRIX.md) for the full campaign,
+idle-window execution, result checkpoints, recovery and explicitly unavailable
+architecture variants. No experimental result automatically changes live placement.

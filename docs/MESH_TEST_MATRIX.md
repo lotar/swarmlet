@@ -1,0 +1,173 @@
+# Permanent physical mesh matrix
+
+The canonical operator is `swarmlet/e2e/mesh-matrix.py` (Python standard library).
+The matrix is a **screening campaign**, not a claim that every proposed architecture
+exists or that short-request throughput qualifies interactive chat.
+
+## Commands
+
+Run from the repository root. Evidence belongs outside the repository; it includes
+machine paths, engine logs, synthetic prompts and metrics, but no API credentials.
+
+```sh
+OUT="$HOME/.swarmlet/backups/mesh-matrix-$(date -u +%Y%m%dT%H%M%SZ)"
+python3 swarmlet/e2e/mesh-matrix.py plan --out "$OUT"
+python3 swarmlet/e2e/idle-window.py -- \
+  python3 swarmlet/e2e/mesh-matrix.py run --out "$OUT"
+python3 swarmlet/e2e/mesh-matrix.py status --out "$OUT"
+```
+
+The same `run --out` resumes completed arms/repetitions without repeating them.
+The manifest pins the runner source hash, seed and repetition count; changed
+inputs require a new output directory. Do not manually set `SWARMLET_IDLE_WINDOW`.
+The wrapper waits for 60 quiet seconds and invokes the existing maintenance
+client/ownership guard before stopping Flash-Next. It restores Flash-Next after
+the child exits. Never kill the wrapper with SIGKILL. TERM/INT lets owned cleanup
+finish; a second signal is ignored during baseline restoration.
+
+For a deliberately partial regression check, add `--only P0`. For a recovery from
+an uncatchable interruption, run `restore --out "$OUT"` through the same idle
+wrapper after verifying no previous campaign is alive. `restore` only deletes
+journalled profiles whose path, campaign prefix and content hash match. It restores
+the baseline's original running intent, not an assumed desired state.
+
+Do not use `--repeats 1` as qualification. Five is the screening default.
+The entire campaign can take many hours or days: deployments reload for each
+repetition and queued concurrent workloads can take minutes. No unmeasured ETA
+is implied. Results checkpoint after each repetition and arm, so interruptions
+do not erase completed evidence. A request timeout is retained as a failure.
+
+## Runnable coverage
+
+- Three first arms: Mac replica, 3/3/18, and the withdrawn 11/11/2 regression.
+- All 23 positive splits for Mac plus either one Legion.
+- All 11 balanced three-node splits in both worker orders.
+- Each placement over forced relay and automatic direct-with-relay-fallback.
+  Actual assignment transport details are recorded; `auto` is not labelled LAN.
+- Forwarding on/off × batched reads on/off × raw/F16/Q8 wire × auto/relay,
+  on representative 3/3/18, 6/6/12 and 11/11/2 placements.
+- Greeting, five-message chat, approximate 128/512/1024-token text and 31-message
+  conversation; 1/64/256 output limits; 1/2/4/8 simultaneous clients.
+- 1/2/4 execution slots with 2048 context positions per slot; batch/microbatch
+  128/32, 512/128 and 2048/512; direct engine, Mac node API and control API.
+- Each repetition restarts the deployment and sends a process-cold request group,
+  followed by an identical prefix-repeat group. This is **not** proof that every
+  repeated request hit the engine's prefix cache; use reported engine timings.
+- One baseline arm interleaved every ten arms. Compare these before attributing
+  differences to a tested knob. Old historical measurements are not controls.
+- Existing `real-rig-faults.py` runs after screening: channel pause/reconnect,
+  Legion1 service restart, control restart, intentional stop and real inference.
+
+This is staged coverage of dimensions, not the full Cartesian product of all
+network, model, placement, prompt and failure dimensions. The catalogue deduplicates
+identical configurations, except intentional interleaved baseline repetitions.
+
+## Explicitly incomplete coverage
+
+`manifest.json.blocked` is part of the result, not a list of successful skips:
+484 asymmetric allocation/order cases, Legion replicas/pools, coordinator
+relocation, persistent stage services, prefill/decode disaggregation, compatible
+speculative-model testing, independent public relay, truly separate-network peers,
+separate transport channels, scoped network impairment, graph-cache/prefill-engine
+variants, CPU thread adapter, routing policies, native visible clients, remote
+Legion client timing, full per-node/per-phase fault grid, and tail/soak qualification.
+
+Some need architecture work; some (thread sweep and remote-client timing) need
+additional runner adapters. These are not external-environment excuses and must
+not be reported as tested. UI automation is unavailable in this session; HTTP
+checks cannot establish that native windows render or remain interactive.
+Current worker offers do not allow replicas and no 2B file is registered on them;
+this runner does not silently rewrite persistent offers or install models.
+
+Trace limitations: current logs and telemetry report prompt/decode timings and
+resource/network samples. The runner does not yet enable per-command client/server
+RPC traces, GPU timelines, or request IDs across all internal stages. It therefore
+cannot fully apportion the 40-second prefill regression. Lossy wire arms report
+text and stream completion but are **not quality-qualified**; cross-run semantic
+and parity evaluation is still required. These gaps prevent production promotion.
+
+## Results and interpretation
+
+- `manifest.json`: exact ordered plan, seed, runner SHA256 and unavailable families.
+- `journal.json`: baseline state and only resources owned by this campaign.
+- `results.json`, `summary.json`: completed repetitions, errors, functional outcomes,
+  and latency gate failures. `status` is read-only while the campaign runs.
+- `arms/<arm-id>/<rep>.json`: plan, load time, prompt count, full SSE output,
+  first content time, per-content-chunk timestamps, finish reason, DONE evidence,
+  engine timing/usage fields when present, node samples, route details and logs.
+- `faults.json`: existing real-rig acceptance output after screening.
+
+Prompt labels are targets, not tokenizer claims. Synthetic text is trimmed using
+actual chat-template/tokenizer endpoints; actual prompt counts are recorded. Full
+conversations are rejected when prompt plus requested output exceeds per-slot
+context, never silently truncated. Load latency is reported separately. Request
+wall time includes the route; first content is not confused with receipt of headers.
+Null content role chunks and empty usage chunks are valid SSE.
+
+`pass` means functional stream completion with visible text, not latency success
+or correctness of the model's statements. Short-chat provisional latency limits:
+10 seconds process-cold, 5 seconds prefix-repeat. The runner also records these
+thresholds for longer workloads for comparison; they are not approved long-context
+SLOs. p95 is not inferred from five repetitions. Finalists need >=100 requests per
+representative condition, quality checks, the full fault grid and soak testing.
+The command exits **2** while blocked families remain or any runnable case fails;
+zero must never be interpreted as success by suppressing unavailable cases.
+
+## Implementation plan and review
+
+Owner: Lotar. Requirements retained: permanent reproducible operator, execute
+available cases, retain failures, save evidence, document reruns and recovery.
+Deleted: temporary one-off scripts, unsafe global network changes, claiming
+unimplemented variants as passes, and replacing runtime architecture inside a test.
+Simplified: reuse deployment lifecycle, profile loader and the existing idle/fault
+operators. Accelerated: deterministic manifest, checkpointed resume and deduplicated
+arms. Automated only available backend configurations, after capability enumeration.
+
+Pre-mortem: a failed experiment strands the live mesh or corrupts comparisons.
+Mitigations: output/global locks, journal-before-mutation, campaign ownership checks,
+try/finally restoration, original running intent, source-pinned manifest, full
+failure records and interleaved baselines. Test profiles are isolated by unique
+IDs and alias, loaded temporarily; the shipped qwen35-2b-q8 profile is never edited.
+No test result automatically changes production placement.
+
+Validation: `python3 -m unittest discover -s swarmlet/e2e -p 'test_*.py'` covers
+manifest enumeration, deterministic deduplication, SSE null/usage/error/EOF handling,
+atomic checkpoints and refusal to delete foreign/modified profiles. Live acceptance
+must include actual startup, SSE response and cleanup; unit success alone is insufficient.
+
+## 2026-09-06 campaign
+
+Launched the full runnable manifest (no `--only` filter), 309 arms including 28
+interleaved controls. Experimental arms have five repetitions; each interleaved
+control has one. Output directory on the operator Mac:
+`~/.swarmlet/backups/mesh-matrix-full-20260906`.
+
+```sh
+python3 swarmlet/e2e/mesh-matrix.py status \
+  --out "$HOME/.swarmlet/backups/mesh-matrix-full-20260906"
+tail -f "$HOME/.swarmlet/backups/mesh-matrix-full-20260906/campaign.log"
+```
+
+This entry records launch, not completion. The campaign has 17 blocked coverage
+families. The user-facing chat deployment is intentionally unavailable while
+experimental deployments own the hardware; the idle wrapper handles production
+maintenance and the runner restores the standing mesh at exit. Check journal and
+log before attempting any manual intervention.
+
+Review lenses: correctness—functional versus latency outcomes explicitly separate;
+contracts—uses existing server deployment API, strict profile schema and SSE;
+data safety—only owned, hash-matching temporary profiles/deployments are removed,
+restoration is idempotent and original baseline intent journalled; time—UTC labels
+and monotonic durations; concurrency—exclusive campaign locks and guarded idle
+entry; security—no tokens serialized or shell-interpolated; tests—30 operator
+tests passed, physical startup still to be observed; simplicity—existing idle and
+fault operators reused. Full coverage remains incomplete for the listed reasons.
+
+Live operator validation: five Mac-only repetitions completed with valid DONE
+streams. The first process-cold request's first content was 0.385 seconds; its
+prefix repeat was 0.067 seconds. These are preliminary observations, not qualified
+hardware rankings. A controlled SIGTERM to the idle wrapper during the next arm
+exercised real cleanup: all 309 owned profiles removed, no owned test deployment
+remaining, and original 3/3/18 mesh ready. Journal `restoredAt`:
+2026-09-06T13:24:04.675956+00:00. The wrapper then reloaded production as designed.
+Completed repetitions remain checkpointed; the interrupted repetition is rerun.
