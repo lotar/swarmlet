@@ -64,7 +64,7 @@ describe("control core", () => {
   let a!: FakeAgent, b!: FakeAgent;
 
   test("public web, API and diagnostics are closed even with valid admin credentials", async () => {
-    for (const path of ["/", "/index.html", "/app.js", "/style.css", "/login", "/logout", "/health", "/probe/ip", "/probe/down", "/probe/up", "/enroll", "/api/nodes", "/api/stream", "/agent"]) {
+    for (const path of ["/", "/index.html", "/app.js", "/style.css", "/processing.js", "/processing.css", "/login", "/logout", "/health", "/probe/ip", "/probe/down", "/probe/up", "/enroll", "/api/nodes", "/api/stream", "/agent"]) {
       for (const method of ["GET", "POST"]) {
         const res = await api(path, { method, headers: { "cf-ray": "public-edge", "x-forwarded-for": "127.0.0.1" } });
         expect(res.status).toBe(404);
@@ -82,6 +82,7 @@ describe("control core", () => {
     for (const headers of credentials) {
       const response = await fetch(base + "/v1/models", { headers: { ...headers, "cf-ray": "public-edge" } });
       expect(response.status).toBe(401);
+      expect((await fetch(base + "/v1/mesh?model=test", {headers:{...headers, "cf-ray":"public-edge"}})).status).toBe(401);
     }
     const key = ctl.reg.createApiKey("public-test");
     const response = await fetch(base + "/v1/models", { headers: { authorization: `Bearer ${key}`, "cf-ray": "public-edge" } });

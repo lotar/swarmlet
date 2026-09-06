@@ -7,6 +7,8 @@
   <meta name="robots" content="noindex">
   <title>Swarmlet · Mesh control</title>
   <link rel="stylesheet" href="/style.css">
+  <link rel="stylesheet" href="/processing.css">
+  <script src="/processing.js" defer></script>
   <script src="/app.js" defer></script>
 </head>
 <body>
@@ -89,10 +91,11 @@
           <div class="tile"><span class="label">Session</span><div class="value" id="chat-session">&mdash;</div><div class="sub" id="chat-session-sub">tok/s over all replies</div></div>
         </div>
         </div>
+        <div class="processing-rail"><aside id="chat-processing" class="processing-panel" aria-label="Response processing"></aside><details><summary>Deployment topology &amp; diagnostics</summary>
         <aside class="panel topo-panel" id="chat-topo" aria-labelledby="topology-heading"><div class="topo-heading"><h2 id="topology-heading">Deployment topology</h2><p class="hint">Route, workers &amp; live diagnostics</p></div><div class="topo-content">
           <div class="toolbar"><span class="label grow" id="chat-topo-title">Topology</span><span class="form-status" id="chat-topo-status"></span></div>
           <div id="chat-topo-body"><p class="hint">Pick a model: the deployments that can serve it appear here, and after each reply the one that actually served it.</p></div>
-        </div></aside>
+        </div></aside></details></div>
         </div>
       </section>
       <section class="tab" id="tab-deployments" data-tab="deployments" hidden>

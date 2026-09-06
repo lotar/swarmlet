@@ -22,6 +22,7 @@ import { Registry } from "./registry.ts";
 import { createRouter } from "./router.ts";
 import { TunnelPool } from "./tunnel.ts";
 import { serveUi } from "./ui/ui.ts";
+import { processingSnapshot } from "./processing.ts";
 
 export interface ControlDeps {
   cfg: ControlConfig;
@@ -199,6 +200,11 @@ export function createControlServer(deps: ControlDeps): Server<ConnData> {
           const key = bearer(req);
           if (!key || !reg.hasApiKey(key)) {
             if (!localRequest || !adminOk(req, cfg, srv.requestIP(req)?.address)) return json({ error: { message: "invalid api key", type: "auth" } }, 401);
+          }
+          if (path === "/v1/mesh") {
+            if (req.method !== "GET") return json({ error: { message: "GET required" } }, 405);
+            const snapshot = processingSnapshot(deps, url);
+            return snapshot ? json(snapshot) : json({ error: { message: "No deployment available for this model" } }, 404);
           }
           return deps.router(req, path);
         }

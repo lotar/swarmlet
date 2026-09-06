@@ -3,31 +3,32 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
-  <meta name="theme-color" content="#17221f">
+  <meta name="theme-color" content="#f5f7f8">
   <meta name="robots" content="noindex">
   <title>Swarmlet node</title>
+  <link rel="stylesheet" href="/workspace.css">
   <link rel="stylesheet" href="/style.css">
+  <link rel="stylesheet" href="/processing.css">
+  <script src="/processing.js" defer></script>
   <script src="/app.js" defer></script>
   <script src="/chat.js" defer></script>
 </head>
 <body>
-  <header class="head">
-    <div class="brand"><span class="mark" aria-hidden="true"></span><span>Swarmlet <b>node</b></span></div>
-    <div class="head-status"><i class="dot" id="head-dot" data-state="off" aria-hidden="true"></i><span id="head-conn">connecting to agent</span></div>
-  </header>
-  <nav class="tabs" role="tablist" aria-label="Sections">
-    <button type="button" role="tab" data-tab="status" aria-selected="true">Status</button>
-    <button type="button" role="tab" data-tab="chat" aria-selected="false">Chat</button>
-    <button type="button" role="tab" data-tab="resources" aria-selected="false">Resources</button>
-    <button type="button" role="tab" data-tab="models" aria-selected="false">Models</button>
-    <button type="button" role="tab" data-tab="connection" aria-selected="false">Connection</button>
-    <button type="button" role="tab" data-tab="logs" aria-selected="false">Logs</button>
-  </nav>
-  <main>
+  <a class="skip-link" href="#main-content">Skip to content</a>
+  <div id="app" class="node-workspace">
+  <header class="head"><div class="breadcrumb"><span>Workspace</span><span>/</span><strong id="node-page-name">Chat</strong></div><div class="head-status"><i class="dot" id="head-dot" data-state="off" aria-hidden="true"></i><span id="head-conn">Connecting to agent</span></div></header>
+  <aside class="sidebar"><a class="brand" href="#chat"><span class="mark" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M5 6h6v6H5zM13 12h6v6h-6zM11 9h5v3M8 12v3h5"/></svg></span><span>swarmlet<span class="brand-sub">Node workspace</span></span></a><span class="nav-label">Workspace</span><nav class="tabs" role="tablist" aria-label="Sections"><button type="button" role="tab" data-tab="chat" aria-selected="true"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 4h14v13H9l-5 4V5zM8 8h8M8 12h5"/></svg><span>Chat</span></button>
+<button type="button" role="tab" data-tab="status" aria-selected="false"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 4h6v6H4zM14 4h6v6h-6zM4 14h6v6H4zM14 14h6v6h-6z"/></svg><span>Status</span></button>
+<button type="button" role="tab" data-tab="resources" aria-selected="false"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 4v16M12 4v16M19 4v16M2 9h6M9 15h6M16 7h6"/></svg><span>Resources</span></button>
+<button type="button" role="tab" data-tab="models" aria-selected="false"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m12 3 9 5-9 5-9-5 9-5zM3 12l9 5 9-5M3 16l9 5 9-5"/></svg><span>Models</span></button>
+<button type="button" role="tab" data-tab="connection" aria-selected="false"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h11M12 4l3 3-3 3M20 17H9M12 14l-3 3 3 3"/></svg><span>Connection</span></button>
+<button type="button" role="tab" data-tab="logs" aria-selected="false"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5h3M11 5h9M4 12h3M11 12h9M4 19h3M11 19h9"/></svg><span>Logs</span></button>
+</nav><div class="sidebar-foot"><span class="workspace-avatar" aria-hidden="true">N</span><div><strong>Your contribution</strong><span>Shared intelligence</span></div></div></aside>
+  <main id="main-content">
     <div class="banner banner--error" id="agent-error" role="alert" hidden></div>
 
     <section class="tab" id="tab-status" data-tab="status">
-      <h2 class="label">This node</h2>
+      <div class="page-heading"><div><span class="eyebrow">Node overview</span><h1>Your machine</h1><p>Availability, resources and the work you contribute.</p></div></div><h2 class="label">This node</h2>
       <dl class="kv" id="status-kv"></dl>
       <div class="banner banner--error" id="status-offer-errors" hidden></div>
       <h2 class="label">Live metrics</h2>
@@ -42,15 +43,18 @@
     </section>
 
     <section class="tab node-chat" id="tab-chat" data-tab="chat" hidden>
-      <div class="chat-heading"><div><h1>Your mesh, in conversation.</h1><p class="hint">Use the models your machines make possible.</p></div><button type="button" class="button" id="chat-new">New chat</button></div>
+      <div class="chat-heading"><div><span class="eyebrow">Shared intelligence</span><h1>Chat with your mesh.</h1><p class="hint">Use the models your machines make possible.</p></div><button type="button" class="button" id="chat-new">New chat</button></div>
+      <div class="chat-workspace"><div class="chat-main">
       <div class="chat-controls"><label class="field"><span class="label">Model</span><select id="chat-model" aria-label="Chat model"><option value="">Loading models…</option></select></label><span id="chat-route" class="chat-route" role="status">Finding available models</span><button type="button" class="button" id="chat-refresh">Refresh</button></div>
       <div class="chat-transcript" id="chat-transcript" role="log" aria-label="Conversation" aria-live="polite"><div id="chat-empty" class="chat-empty"><h2>What are you working on?</h2><p>Ask a question, explore an idea, or work through a problem.</p></div></div>
       <div id="chat-error" class="banner banner--error" role="alert" hidden></div>
       <form id="chat-form" class="chat-composer"><label for="chat-input" class="label">Message</label><textarea id="chat-input" rows="3" placeholder="Ask your mesh…" required></textarea><div class="chat-actions"><span id="chat-status" class="hint" role="status">Enter to send · Shift+Enter for a new line</span><button type="button" class="button" id="chat-stop" hidden>Stop</button><button type="submit" class="button button--signal" id="chat-send" disabled>Send message</button></div></form>
       <details class="chat-api"><summary>Use this node from your apps</summary><p>Your local OpenAI-compatible base URL is <code id="chat-api-url"></code>. A ready local model server is used first; other requests use the internet mesh. Local access needs no key. If your client requires one, use <code>local</code>.</p><pre id="chat-api-example"></pre><button type="button" class="button" id="chat-copy">Copy example</button></details>
+      </div><aside class="processing-rail" aria-label="Response processing"><div id="chat-processing" class="processing-panel"></div></aside></div>
     </section>
 
     <section class="tab" id="tab-resources" data-tab="resources" hidden>
+      <div class="page-heading"><div><span class="eyebrow">Node workspace</span><h1>Share your resources</h1><p>Choose what this machine contributes to the mesh.</p></div></div>
       <p class="hint">What this machine offers to the mesh. Nothing above the measured totals is accepted; the OS reserve is kept out of reach.</p>
       <form id="offer-form" novalidate>
         <div class="switch-row">
@@ -90,6 +94,7 @@
     </section>
 
     <section class="tab" id="tab-models" data-tab="models" hidden>
+      <div class="page-heading"><div><span class="eyebrow">Node workspace</span><h1>Your models</h1><p>Model files available on this machine.</p></div></div>
       <div class="toolbar">
         <span class="grow mono small" id="models-dir"></span>
         <span class="form-status" id="models-status"></span>
@@ -104,6 +109,7 @@
     </section>
 
     <section class="tab" id="tab-connection" data-tab="connection" hidden>
+      <div class="page-heading"><div><span class="eyebrow">Node workspace</span><h1>Stay connected</h1><p>Manage your connection to the mesh.</p></div></div>
       <h2 class="label">Control plane</h2>
       <dl class="kv" id="conn-kv"></dl>
       <h2 class="label">Join a control plane</h2>
@@ -127,6 +133,7 @@
     </section>
 
     <section class="tab" id="tab-logs" data-tab="logs" hidden>
+      <div class="page-heading"><div><span class="eyebrow">Node workspace</span><h1>Activity logs</h1><p>Inspect this node and its assignments.</p></div></div>
       <div class="toolbar">
         <label class="field field--inline"><span class="label">Source</span><select id="logs-source"><option value="">Agent log</option></select></label>
         <label class="check check--inline"><input type="checkbox" id="logs-follow" checked> <span>Follow</span></label>
@@ -135,5 +142,6 @@
       <pre class="log" id="logs-out" aria-live="off"></pre>
     </section>
   </main>
+  </div>
 </body>
 </html>

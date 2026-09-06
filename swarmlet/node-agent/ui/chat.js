@@ -2,6 +2,7 @@
 (function () {
   'use strict';
   var D = document, $ = function (id) { return D.getElementById(id); };
+  var processing = window.SwarmletProcessing.create($('chat-processing'));
   var messages = [], busy = false, loading = false, controller = null, catalog = [], saved = {};
   var savedKey = 'swarmlet.node.chat.v1';
   try {
@@ -30,6 +31,7 @@
     var model = $('chat-model').value || 'MODEL_NAME';
     $('chat-api-url').textContent = location.origin + '/v1';
     $('chat-api-example').textContent = 'from openai import OpenAI\n\nclient = OpenAI(base_url="' + location.origin + '/v1", api_key="local")\nreply = client.chat.completions.create(\n    model=' + JSON.stringify(model) + ',\n    messages=[{"role": "user", "content": "Hello"}]\n)\nprint(reply.choices[0].message.content)';
+    processing.select($('chat-model').value);
     var chosen = catalog.find(function (m) { return m.id === model; });
     $('chat-route').textContent = chosen ? (chosen.route === 'local' ? 'Local model server · shortest route' : 'Internet mesh · shared model') : 'No model available';
   }
@@ -59,14 +61,16 @@
     var answer = { role: 'assistant', content: '' }; messages.push(answer); render();
     var output = $('chat-transcript').lastElementChild.querySelector('.chat-message-text');
     $('chat-input').value = ''; setBusy(true); save();
+    processing.begin($('chat-model').value);
     controller = new AbortController(); var start = performance.now(), route = '', done = false;
     $('chat-status').textContent = 'Waiting for the model…';
     var reader;
     try {
       var response = await fetch('/v1/chat/completions', { method: 'POST', headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ model: $('chat-model').value, messages: history, stream: true, max_tokens: 1024, chat_template_kwargs: { enable_thinking: false } }), signal: controller.signal });
+        body: JSON.stringify({ model: $('chat-model').value, messages: history, stream: true, stream_options: { include_usage: true }, max_tokens: 1024, chat_template_kwargs: { enable_thinking: false } }), signal: controller.signal });
       if (!response.ok) { var failure = await response.json(); throw new Error(failure.error && failure.error.message || 'Request failed (HTTP ' + response.status + ')'); }
       if (!response.body) throw new Error('The model returned no stream');
+      processing.served(response.headers);
       route = response.headers.get('x-swarmlet-route') === 'local' ? 'Local server' : 'Internet mesh';
       $('chat-status').textContent = route + ' · generating…';
       reader = response.body.getReader(); var decoder = new TextDecoder(), buffer = '';
@@ -75,6 +79,7 @@
         if (!data) return;
         if (data === '[DONE]') { done = true; return; }
         var payload = JSON.parse(data);
+        processing.feed(payload);
         if (payload.error) throw new Error(payload.error.message || 'Generation failed');
         var delta = payload.choices && payload.choices[0] && payload.choices[0].delta;
         if (delta && typeof delta.content === 'string') {
@@ -91,8 +96,10 @@
         while ((match = /\r?\n\r?\n/.exec(buffer))) { consume(buffer.slice(0, match.index)); buffer = buffer.slice(match.index + match[0].length); }
       }
       if (!done) throw new Error('Connection ended before the reply completed. You can retry.');
+      processing.finish('complete');
       $('chat-status').textContent = route + ' · ' + ((performance.now() - start) / 1000).toFixed(1) + ' s';
     } catch (e) {
+      processing.finish(e.name === 'AbortError' ? 'stopped' : 'error');
       if (e.name === 'AbortError') $('chat-status').textContent = 'Stopped';
       else { error(e.message); $('chat-status').textContent = 'Reply interrupted'; }
     } finally {
@@ -104,7 +111,7 @@
   $('chat-form').addEventListener('submit', send);
   $('chat-input').addEventListener('keydown', function (ev) { if (ev.key === 'Enter' && !ev.shiftKey && !ev.isComposing) { ev.preventDefault(); $('chat-form').requestSubmit(); } });
   $('chat-stop').addEventListener('click', function () { if (controller) controller.abort(); });
-  $('chat-new').addEventListener('click', function () { messages = []; render(); save(); error(''); $('chat-input').focus(); });
+  $('chat-new').addEventListener('click', function () { processing.reset(); messages = []; render(); save(); error(''); $('chat-input').focus(); });
   $('chat-refresh').addEventListener('click', loadModels);
   $('chat-model').addEventListener('change', function () { example(); save(); });
   $('chat-copy').addEventListener('click', async function () { try { await navigator.clipboard.writeText($('chat-api-example').textContent); $('chat-copy').textContent = 'Copied'; } catch (_) { $('chat-copy').textContent = 'Select the example to copy'; } });

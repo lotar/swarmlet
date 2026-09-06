@@ -5,7 +5,7 @@ const consumer = source.slice(source.indexOf("      function consume(frame)"), s
 function fixture() {
   const answer = { content: "" }, output = { textContent: "" };
   const view = { scrollHeight: 100, scrollTop: 0, clientHeight: 100 };
-  const use = new Function("answer", "output", "$", 'var done = false;\n' + consumer + '\nreturn {consume, done:()=>done};')(answer, output, () => view);
+  const use = new Function("answer", "output", "$", 'var done = false; var processing = {feed: function () {}};\n' + consumer + '\nreturn {consume, done:()=>done};')(answer, output, () => view);
   return { ...use, answer, output };
 }
 test("chat safely appends content, accepts CRLF and recognizes terminal SSE marker", () => {

@@ -805,6 +805,7 @@
   }
 
   function fillChatDeployments() {
+    if (chat.busy) return;
     var sel = $('chat-dep');
     var cands = chatCandidates().sort(function (a, b) { return ((b.nodes || []).length - (a.nodes || []).length) || (a.inflight - b.inflight); });
     var cur = sel.value;
@@ -833,6 +834,8 @@
     if (small) v.appendChild(el('small', { text: small }));
   }
 
+  var processing = window.SwarmletProcessing.create($('chat-processing'));
+
   function sendChat(text) {
     if (chat.busy) return;
     var model = $('chat-model').value;
@@ -845,6 +848,8 @@
     bubble.appendChild(meta);
     var reasoningNode = null;
     chat.busy = true;
+    processing.begin(model, $('chat-dep').value);
+    ['chat-model', 'chat-dep', 'chat-clear'].forEach(function (id) { $(id).disabled = true; });
     $('chat-send').disabled = true;
     $('chat-stop').disabled = false;
     var ctrl = new AbortController();
@@ -858,11 +863,14 @@
     note('chat-status', 'Sending to ' + model + '…');
 
     function handle(obj) {
+      processing.feed(obj);
+      if (obj.error) throw new Error(obj.error.message || 'Generation failed');
       if (obj.timings) timings = obj.timings;
       if (obj.usage) usage = obj.usage;
       var ch = obj.choices && obj.choices[0];
       var d = ch && ch.delta;
       if (!d) return;
+      if (d.content || d.reasoning_content) chunks++;
       if (d.reasoning_content) {
         reasoning += d.reasoning_content;
         if (!reasoningNode) {
@@ -874,7 +882,6 @@
       }
       if (d.content) {
         if (!tFirst) tFirst = performance.now();
-        chunks++;
         content += d.content;
         textNode.textContent = content;
         tEnd = performance.now();
@@ -887,15 +894,17 @@
 
     function finish(failed, why) {
       chat.busy = false;
+      var responseStats = processing.finish(failed ? (why === 'stopped' ? 'stopped' : 'error') : 'complete');
+      ['chat-model', 'chat-dep', 'chat-clear'].forEach(function (id) { $(id).disabled = false; });
       chat.abort = null;
       $('chat-send').disabled = false;
       $('chat-stop').disabled = true;
       if (!tEnd) tEnd = performance.now();
-      var n = (timings && isNum(timings.predicted_n)) ? timings.predicted_n : (usage && isNum(usage.completion_tokens)) ? usage.completion_tokens : chunks;
+      var n = responseStats.tokens;
       var promptN = (timings && isNum(timings.prompt_n)) ? timings.prompt_n : (usage && isNum(usage.prompt_tokens)) ? usage.prompt_tokens : null;
       var genSec = (timings && isNum(timings.predicted_ms)) ? timings.predicted_ms / 1000 : (tFirst ? (tEnd - tFirst) / 1000 : 0);
-      var tps = (timings && isNum(timings.predicted_per_second)) ? timings.predicted_per_second : (genSec > 0 ? n / genSec : 0);
-      var source = (timings && isNum(timings.predicted_per_second)) ? 'server timing' : 'measured in the browser';
+      var tps = responseStats.tps || 0;
+      var source = responseStats.estimated ? 'stream estimate' : 'server timing';
       var ttft = tFirst ? Math.round(tFirst - t0) : null;
       if (content || reasoning) chat.messages.push({ role: 'assistant', content: content });
       else chat.messages.pop();
@@ -924,26 +933,27 @@
       served = { node: res.headers.get('x-swarmlet-node'), dep: res.headers.get('x-swarmlet-deployment') };
       if (res.status === 401) { showLogin(); throw new Error('not logged in'); }
       if (!res.ok) return res.text().then(function (t) { throw new Error('HTTP ' + res.status + ': ' + t.slice(0, 200)); });
+      processing.served(res.headers);
       var reader = res.body.getReader();
-      var dec = new TextDecoder();
-      var buf = '';
-      function pump() {
-        return reader.read().then(function (r) {
-          if (r.done) return;
-          buf += dec.decode(r.value, { stream: true });
-          var parts = buf.split('\n\n');
-          buf = parts.pop();
-          parts.forEach(function (p) {
-            p.split('\n').forEach(function (line) {
-              if (line.indexOf('data:') !== 0) return;
-              var data = line.slice(5).trim();
-              if (!data || data === '[DONE]') return;
-              try { handle(JSON.parse(data)); } catch (_) { /* partial frame */ }
-            });
-          });
-          $('chat-log').scrollTop = $('chat-log').scrollHeight;
-          return pump();
-        });
+      var dec = new TextDecoder(), buf = '', done = false;
+      function frame(text) {
+        var data = text.split(/\r?\n/).filter(function (line) { return line.indexOf('data:') === 0; }).map(function (line) { return line.slice(5).trimStart(); }).join('\n');
+        if (!data) return;
+        if (data === '[DONE]') { done = true; return; }
+        handle(JSON.parse(data));
+      }
+      async function pump() {
+        try {
+          while (!done) {
+            var r = await reader.read();
+            if (r.done) { buf += dec.decode(); if (buf.trim()) frame(buf); break; }
+            buf += dec.decode(r.value, { stream: true });
+            var match;
+            while ((match = /\r?\n\r?\n/.exec(buf))) { frame(buf.slice(0, match.index)); buf = buf.slice(match.index + match[0].length); }
+            $('chat-log').scrollTop = $('chat-log').scrollHeight;
+          }
+          if (!done) throw new Error('Connection ended before the reply completed');
+        } finally { await reader.cancel().catch(function () {}); }
       }
       return pump();
     }).then(function () { finish(false); }).catch(function (e) { finish(true, e.name === 'AbortError' ? 'stopped' : e.message); });
@@ -962,6 +972,7 @@
   $('chat-stop').addEventListener('click', function () { if (chat.abort) chat.abort.abort(); });
   $('chat-clear').addEventListener('click', function () {
     if (chat.abort) chat.abort.abort();
+    processing.reset();
     chat.messages = [];
     chat.stats = { tokens: 0, seconds: 0, replies: 0 };
     replace($('chat-log'), el('p', { class: 'hint', text: 'New conversation. The model keeps no memory of the previous one.' }));
@@ -1125,6 +1136,7 @@
 
   /** Topology of what can serve the selected model (before any reply). */
   function loadTopologyForModel() {
+    processing.select($('chat-model').value, $('chat-dep').value);
     var model = $('chat-model').value;
     if (!model) { replace($('chat-topo-body'), el('p', { class: 'hint', text: 'No model selected.' })); return Promise.resolve(); }
     var cands = chatCandidates();

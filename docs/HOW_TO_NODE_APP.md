@@ -218,3 +218,11 @@ These are an operator-controlled refresh and rollback procedure, not auto-update
 The source manifest labels uncommitted builds `-dirty`; the binary SHA-256 is the
 exact artifact identity. Record final source status and all three installed hashes
 with the acceptance evidence.
+
+### Response processing in chat
+
+Node apps and the control dashboard share the same response-processing panel. It follows the deployment returned by the chat response, shows each participating node and its assigned layer share, and reports shared pipeline TPS. For the 24-layer 2B split, 18/3/3 layers means 75%/12.5%/12.5%. This is model allocation, not measured compute-time share or a fraction of answer text. Exact answer-completion progress cannot be known before generation ends.
+
+TPS is labeled as a stream estimate during generation, including reasoning deltas. Final engine timing replaces the estimate when available. Host CPU and GPU memory are separate resource measurements; missing, disconnected or stale telemetry shows unavailable. Completed or stopped reply summaries retain their serving deployment.
+
+`GET /v1/mesh?model=MODEL&deployment=DEPLOYMENT_ID` is a Swarmlet display-metadata extension. It uses the same inference-key protection as public `/v1` routes. The node's localhost API forwards it using the enrolled participant key, preferring its own ready deployment unless explicitly pinned. The response exposes selected node names, layer allocations and host metrics; it does not expose admin data, paths, addresses or credentials. The public dashboard remains closed.

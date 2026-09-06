@@ -34,6 +34,6 @@ Add useful participant chat within the existing operator app, with a large reada
 - [x] Every enrolled participant obtains inference access without admin secret sharing.
 - [x] Local API on all three nodes; direct local optimization proven and remote fallback proven.
 - [ ] Chat streaming, stop, errors and model selection proven in node UI.
-- [ ] Updated installed services and native app payloads on all three machines.
+- [x] Updated installed services and native app payloads on all three machines.
 - [x] Real three-node mesh replies through both Legion local endpoints and Mac direct endpoint.
 - [ ] Documentation complete; final health verification pending production-stop intent and remaining install/UI checks.

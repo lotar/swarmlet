@@ -131,11 +131,12 @@
 
   /* ---------- tabs ---------- */
   var TABS = ['status', 'chat', 'resources', 'models', 'connection', 'logs'];
-  var active = 'status';
+  var active = 'chat';
 
   function showTab(name) {
-    if (TABS.indexOf(name) < 0) name = 'status';
+    if (TABS.indexOf(name) < 0) name = 'chat';
     active = name;
+    $('node-page-name').textContent = name.charAt(0).toUpperCase() + name.slice(1);
     TABS.forEach(function (t) { $('tab-' + t).hidden = t !== name; });
     [].forEach.call(D.querySelectorAll('.tabs [role="tab"]'), function (b) {
       b.setAttribute('aria-selected', b.getAttribute('data-tab') === name ? 'true' : 'false');
@@ -149,6 +150,8 @@
   [].forEach.call(D.querySelectorAll('.tabs [role="tab"]'), function (b) {
     b.addEventListener('click', function () { showTab(b.getAttribute('data-tab')); });
   });
+
+  D.querySelector('.brand').addEventListener('click', function (ev) { ev.preventDefault(); showTab('chat'); });
 
   /* ---------- header ---------- */
   function renderHead(s) {
@@ -477,7 +480,7 @@
     });
   }
 
-  showTab((location.hash || '#status').slice(1));
+  showTab((location.hash || '#chat').slice(1));
   tick();
   setInterval(tick, POLL_MS);
 }());

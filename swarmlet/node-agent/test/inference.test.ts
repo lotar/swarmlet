@@ -93,3 +93,20 @@ test("local HTTP API rejects foreign browser origins and DNS-rebinding Host", as
   expect((await fetch(url, { headers: { origin: new URL(url).origin } })).status).toBe(200);
   expect((await fetch(url)).status).toBe(200); expect(calls).toBe(2);
 });
+
+test('participant telemetry follows local preference or explicit actual deployment without forwarding caller secrets', async () => {
+  const seen: string[] = [];
+  const remote=serve(req=>{
+    expect(req.headers.get('authorization')).toBe('Bearer participant'); expect(req.headers.get('cookie')).toBeNull();
+    const u=new URL(req.url); expect(u.pathname).toBe('/v1/mesh'); expect(u.searchParams.get('model')).toBe('shared');
+    expect(u.searchParams.has('upstream')).toBe(false); seen.push(u.searchParams.get('deployment')!);
+    return Response.json({deployment:{id:u.searchParams.get('deployment')}, nodes:[]});
+  });
+  const handler=createNodeInference({local:()=>[{model:'shared',deploymentId:'local',url:'http://unused',created:1}], remote:()=>({url:remote,key:'participant'}), nodeId:()=> 'node'});
+  for(const query of ['model=shared&upstream=evil','model=shared&deployment=actual']) {
+    const res=await handler(new Request('http://localhost/v1/mesh?'+query,{headers:{cookie:'private',authorization:'Bearer admin'}}),'/v1/mesh'); expect(res.status).toBe(200); await res.json();
+  }
+  expect(seen).toEqual(['local','actual']);
+  const offline=createNodeInference({local:()=>[],remote:()=>null,nodeId:()=> 'n'});
+  expect((await offline(new Request('http://localhost/v1/mesh'),'/v1/mesh')).status).toBe(503);
+});

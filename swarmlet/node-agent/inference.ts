@@ -13,6 +13,19 @@ export function createNodeInference(deps: InferenceDeps) {
   return async (req: Request, path: string): Promise<Response> => {
     const local = deps.local();
     const remote = deps.remote();
+    if (path === "/v1/mesh") {
+      if (req.method !== "GET") return error("GET required", 405);
+      if (!remote) return error("Mesh telemetry unavailable while disconnected", 503);
+      const input = new URL(req.url), url = new URL("/v1/mesh", remote.url);
+      const model = input.searchParams.get("model");
+      if (model) url.searchParams.set("model", model);
+      const pinned = input.searchParams.get("deployment") || local.find((t) => t.model === model)?.deploymentId;
+      if (pinned) url.searchParams.set("deployment", pinned);
+      try {
+        const res = await fetch(url, { headers: { authorization: `Bearer ${remote.key}` }, redirect: "error", signal: AbortSignal.any([req.signal, AbortSignal.timeout(5000)]) });
+        return json(await res.json(), res.status);
+      } catch { return error("Mesh telemetry unavailable", 503); }
+    }
     if (path === "/v1/models") {
       if (req.method !== "GET") return error("GET required", 405);
       const models = new Map(local.map((target) => [target.model, { id: target.model, object: "model", created: target.created, owned_by: "swarmlet", route: "local" }]));

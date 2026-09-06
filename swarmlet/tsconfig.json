@@ -15,6 +15,6 @@
     "skipLibCheck": true,
     "types": ["bun"]
   },
-  "include": ["protocol/**/*.ts", "control/**/*.ts", "node-agent/**/*.ts", "../sin-harness/core/sign.ts"],
+  "include": ["shared/**/*.ts", "protocol/**/*.ts", "control/**/*.ts", "node-agent/**/*.ts", "../sin-harness/core/sign.ts"],
   "exclude": ["node_modules", "**/node_modules", "node-shell", "engine", "**/dist"]
 }
