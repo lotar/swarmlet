@@ -1,5 +1,7 @@
 # Legion-heavy 2B placement — 2026-09-06
 
+**WITHDRAWN from the live profile after a chat latency regression.** See the follow-up below.
+
 ## Scope and plan
 
 Owner: Lotar. Keep Qwen3.5-2B, both Legions, Mac coordinator, context 4096,
@@ -91,3 +93,34 @@ row; the latter retains the previous envelope.
 The first operator readiness wait exceeded 150 seconds while the healthy engine
 was still transferring uncached weights through the internet relay; it did not
 stop or restart the engine. Runtime loading budget was retained.
+
+
+## Follow-up: streaming chat latency regression
+
+Lotar reported that chat did not reply after rollout. All nodes remained online
+and the engine completed the user request, but prompt evaluation alone took
+40.70 seconds for 115 tokens, before 23.06 seconds of generation. A five-message
+conversation sent through the actual node gateway on :47800 reproduced HTTP
+headers and first content only after 40.06 seconds; completion took 49.37 seconds.
+This refutes a disconnected-worker/dead-engine diagnosis and demonstrates that
+short non-streaming smoke tests did not establish acceptable interactive latency.
+
+The added 11-layer profile row was removed; the prior profile and tests restored.
+This deliberately prioritizes responsive chat over maximum equal worker share.
+No UI buffering or transport-auth change is being assumed from this evidence.
+The restored split must be checked with the identical multi-turn streaming request.
+
+Rollback proof: same five-message request through :47800 returned streaming HTTP
+200 headers after 11.86 seconds on the first run. That operator script then
+failed on a valid `delta.content: null` role chunk (a probe bug, not app failure);
+its parser was corrected to treat null as no text. The repeat completed with
+`done: true`, first visible content at 3.04 seconds, total 12.37 seconds (64-token
+cap). This repeat benefits from prompt caching; do not compare it as a cold
+benchmark against the 40.06-second before result. The actual chat path now
+streams and completes. Deployment remains ready at 3/3/18.
+
+Post-rollback typecheck passed; full suite: `145 pass`, `0 fail`,
+`697 expect() calls`. The temporary 11-layer regression test was removed with
+the withdrawn profile behavior; pre-change planner coverage is restored intact.
+Review: correctness/contracts/data safety/time/concurrency/security/tests/
+simplicity clean for the rollback; no runtime algorithms or credentials changed.
