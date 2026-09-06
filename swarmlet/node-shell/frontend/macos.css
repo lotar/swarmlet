@@ -97,7 +97,7 @@ html[data-native-shell='macos'] body { background:transparent !important; border
 }
 /* A single model toolbar and a conversation with a clear reading rhythm. */
 [data-native-shell='macos'] .node-chat .chat-controls {
-  display:grid; grid-template-columns:minmax(0,1fr) auto; grid-template-areas:'model refresh' 'route refresh';
+  display:grid; grid-template-columns:minmax(0,1fr) auto; grid-template-areas:'model refresh' 'route route';
   align-items:center; gap:.375rem .75rem; padding:.75rem; margin-bottom:.5rem;
 }
 [data-native-shell='macos'] .chat-controls .field { grid-area:model; display:flex; align-items:center; gap:.75rem; }
