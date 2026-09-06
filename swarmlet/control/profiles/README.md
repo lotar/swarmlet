@@ -39,9 +39,10 @@ the planner passes it through only when the spec asks for it.
 | `coordinatorHostMiB` | 1024 | no host-side table ("none" in the §6 table); 1 GiB covers KV cache and scratch at ctx 4096 × parallel 8 |
 | `boundaryBytes` | 8192 | "2 × 4 KiB" in the control-plane doc §6 table |
 | `workerMarginMiB` | 512 | compute buffers on a 4 GB card at ctx 4096 × parallel 8; 3 × 80 + 512 = 752 MiB per worker |
-| envelope | 3 or 2 layers per worker, ctx ≤ 4096, parallel ≤ 8, chain 0 | 4 GB workers held 2–3 layers in the measured multi-stream ring runs at ctx 2048 (8-stream ring benchmark); "any split, ctx ≤ 4096" in the §6 table; no MTP head exists for this model |
+| Legion-heavy envelope | 11 layers per worker, ctx ≤ 4096, parallel ≤ 2, chain 0 | 2026-09-06 live 11/11/2 internet-relay validation; see `docs/LEGION_2B_SPLIT_20260906.md`; maximum equal worker share while retaining coordinator layers |
+| fallback envelope | 3 or 2 layers per worker, ctx ≤ 4096, parallel ≤ 8, chain 0 | 4 GB workers held 2–3 layers in the measured multi-stream ring runs at ctx 2048 (8-stream ring benchmark); "any split, ctx ≤ 4096" in the §6 table; no MTP head exists for this model |
 
-The second row exists so that many small workers still leave the coordinator at least one layer (the
+The smaller rows preserve higher-concurrency placement and allow many small workers to leave the coordinator at least one layer (the
 planner refuses a row whose `workerLayers × workers` reaches `layers`).
 
 ## qwen36-35b-a3b-q4km (Qwen3.6-35B-A3B Q4_K_M)

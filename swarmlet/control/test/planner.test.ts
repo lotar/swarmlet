@@ -246,6 +246,17 @@ describe("split placement on the real rig", () => {
     expect(refused({ spec: { name: "rig", profile: tiny.id, kind: "split", chain: 1 }, profile: tiny }).message).toMatch(/profile qwen35-2b-q8 has no mtpPattern/);
   });
 
+  test("2B gives both Legions the largest balanced share at the live context and parallelism", () => {
+    const request = { name: "legion-heavy", profile: tiny.id, kind: "split" as const, ctx: 4096, parallel: 2 };
+    const p = plan({ spec: request, profile: tiny });
+    expect(p.tensorSplit).toEqual([11, 11, 2]);
+    expect(p.workers.every((w) => w.layers === 11)).toBe(true);
+    const limited = legion1({ offer: { ...legionOffer(), gpu: [{ id: "cuda:0", memMiB: 1000 }] } });
+    const fallback = plan({ spec: request, profile: tiny, nodes: [m5(), limited, legion2()] });
+    expect(fallback.tensorSplit).toEqual([3, 3, 18]);
+    expect(fallback.reasons.join("\n")).toMatch(/needs 1392 MiB/);
+  });
+
   test("a row that leaves the coordinator no layer is skipped for the next one", () => {
     const eight = Array.from({ length: 8 }, (_, i) => legion1({ id: `a1b2c3d4e5f6001${i}`, hostname: `w${i}`, rttMs: 10 + i }));
     const p = plan({ spec: { name: "rig", profile: tiny.id, kind: "split", ctx: 2048 }, profile: tiny, nodes: [m5(), ...eight] });
@@ -256,12 +267,12 @@ describe("split placement on the real rig", () => {
 
   test("a linux coordinator checks layers against its GPU offer and the host part against RAM", () => {
     const coord = legion1({ id: "a1b2c3d4e5f60020", hostname: "legion0", offer: { ...legionOffer(), roles: { worker: false, coordinator: true, replica: false } }, models: [TINY] });
-    const p = plan({ spec: { name: "rig", profile: tiny.id, kind: "split" }, profile: tiny, nodes: [coord, legion1(), legion2()] });
+    const p = plan({ spec: { name: "rig", profile: tiny.id, kind: "split", parallel: 4 }, profile: tiny, nodes: [coord, legion1(), legion2()] });
     expect(p.coordinatorNodeId).toBe(coord.id);
     expect(p.coordinatorDevice).toBe("CUDA0");
     expect(p.tensorSplit).toEqual([3, 3, 18]);
     expect(p.reasons.join("\n")).toMatch(/keeps 18 of 24 layers on CUDA0: 18 × 80 = 1440 MiB of 3700 MiB GPU offered/);
-    const e = refused({ spec: { name: "rig", profile: tiny.id, kind: "split" }, profile: tiny, nodes: [{ ...coord, offer: { ...coord.offer!, gpu: [{ id: "cuda:0", memMiB: 1000 }], ramMiB: 512 } }, legion1(), legion2()] });
+    const e = refused({ spec: { name: "rig", profile: tiny.id, kind: "split", parallel: 4 }, profile: tiny, nodes: [{ ...coord, offer: { ...coord.offer!, gpu: [{ id: "cuda:0", memMiB: 1000 }], ramMiB: 512 } }, legion1(), legion2()] });
     expect(text(e)).toMatch(/cannot hold 18 of 24 layers: 18 × 80 = 1440 MiB exceeds the 1000 MiB GPU offered on CUDA0/);
     expect(text(e)).toMatch(/host side: 1024 MiB exceeds the 512 MiB RAM offered/);
   });

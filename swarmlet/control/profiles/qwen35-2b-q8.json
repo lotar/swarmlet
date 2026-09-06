@@ -9,6 +9,7 @@
   "boundaryBytes": 8192,
   "workerMarginMiB": 512,
   "envelope": [
+    { "workerLayers": 11, "maxCtx": 4096, "maxParallel": 2, "maxChain": 0 },
     { "workerLayers": 3, "maxCtx": 4096, "maxParallel": 8, "maxChain": 0 },
     { "workerLayers": 2, "maxCtx": 4096, "maxParallel": 8, "maxChain": 0 }
   ],
