@@ -50,3 +50,17 @@ Layer share is allocation, not measured compute or portions of answer text. Labe
 - Simplicity: one shared component and stylesheet serve both chats. Node app imports the existing web workspace stylesheet; its own stylesheet contains node-specific layout only.
 
 Browser visual acceptance remains unverified: the permitted tool rejected the web reference URL because it could not verify the admin-enforced policy. No alternate rendering automation was used.
+
+## Deployment evidence
+
+Feature revision `21ef595` is installed in the Mac app/service, both Legion services and Debian packages, and the control web service. The installer waited for 60 quiet seconds, paused only the idle 2B mesh, updated services and restored the same deployment to ready. All three nodes are online through the existing Cloudflare relay. Production8099 was already unavailable before the update and was not changed.
+
+`bun test protocol control node-agent`: **143 pass, 0 fail, 678 expectations**. `bun test e2e`: **6 pass, 0 fail, 62 expectations**. JavaScript syntax, HTML nesting/unique IDs/panel containment and CSS token references passed. These checks do not substitute for rendered visual verification.
+
+`uv run --with openai==3.8.0 python ~/.swarmlet/backups/node-processing-21ef595/verify-processing.py` returned “SDK works.” for Mac/local, Legion1/mesh, Legion2/mesh and public/keyed. Each response's actual deployment returned `[75, 12.5, 12.5]` layer shares and live node telemetry, with real final `predicted_per_second` values present. Smoke-test rates are not comparative benchmarks.
+
+Linux packaged/service/running SHA256: `cfc8b386d8d563f85610a99da1593a29f3753c585a3531ebd0b396b0116d8b84` on both Legions; `dpkg --verify swarmlet-node` clean. Mac signed app/service SHA256: `ba79a78d0d109724f6f23bcc1377cffaeccd809fa95708fef7f44bbed64d2729`; `codesign --verify --deep --strict` passed. Both Legions serve identical shared processing assets and the web workspace stylesheet. Canonical installers are in `swarmlet/dist/shell/{darwin,linux}`.
+
+The live public `/v1/mesh` rejects missing, invalid and admin credentials with401; the participant-key SDK check succeeds. Public dashboard/admin/probes remain404 and valid keyed `/v1/models` remains200.
+
+Evidence: `~/.swarmlet/backups/node-processing-21ef595/{install.json,sdk-processing.json,tests.log,e2e.log,mac-build.log}`. The deployed browser check at `http://127.0.0.1:47800/#chat` was again denied by the admin-policy verifier. Remaining: permitted visual inspection of both chat views at desktop/narrow sizes and interaction checks (send, stop, model selection, empty/error states); then address any visual findings. Reopen existing node windows and refresh existing web tabs to load the new assets.
