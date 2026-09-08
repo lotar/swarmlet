@@ -57,6 +57,26 @@ class IdleGateTests(unittest.TestCase):
             self.assertEqual(module.main(), 7)
         self.assertEqual(commands, ["stop", "start", "check-only"])
 
+    def test_explicit_stopped_mode_preserves_stopped_production(self):
+        child=Mock();child.wait.return_value=2;child.poll.return_value=2
+        with patch.object(module.sys,'argv',['idle-window.py','--allow-stopped','--','true']), \
+             patch.object(module,'stopped_sample',return_value=self.metrics()), \
+             patch.object(module.QuietGate,'observe',return_value=True), \
+             patch.object(module.signal,'signal'), \
+             patch.object(module,'run_maintenance') as maintenance, \
+             patch.object(module.subprocess,'Popen',return_value=child):
+            self.assertEqual(module.main(),2)
+            maintenance.assert_not_called()
+
+    def test_stopped_mode_rejects_loaded_owner_or_listener(self):
+        with patch.object(module.subprocess,'run',return_value=Mock(returncode=0)):
+            with self.assertRaisesRegex(ValueError,'owner'):
+                module.stopped_sample(Path('/unused'))
+        with patch.object(module.subprocess,'run',return_value=Mock(returncode=113,stderr='Could not find service')), \
+             patch.object(module.socket,'create_connection',return_value=Mock()):
+            with self.assertRaisesRegex(ValueError,'listener'):
+                module.stopped_sample(Path('/unused'))
+
     def test_interrupted_stop_attempt_restores(self):
         commands = []
         def run(script, action):

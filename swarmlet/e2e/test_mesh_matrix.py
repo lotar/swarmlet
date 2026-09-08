@@ -89,6 +89,36 @@ class MatrixTests(unittest.TestCase):
                             self.assertLessEqual(count,int(workload[4:]))
                 self.assertEqual(len(set(inputs)),1)
 
+    def test_cleanup_retries_pending_ack_but_not_invalid_request(self):
+        runner=object.__new__(m.Runner);runner.journal={};runner.save=lambda:None
+        from unittest.mock import Mock
+        runner.api=Mock(side_effect=[RuntimeError('HTTP 400: cleanup pending acknowledgement: worker'),{'ok':True}])
+        with patch.object(m.time,'sleep'):
+            self.assertEqual(runner.cleanup_call('/stop','POST'),{'ok':True})
+        self.assertEqual(runner.api.call_count,2)
+        runner.api=Mock(side_effect=RuntimeError('HTTP 400: invalid profile'))
+        with self.assertRaisesRegex(RuntimeError,'invalid profile'):
+            runner.cleanup_call('/stop','POST')
+        self.assertEqual(runner.api.call_count,1)
+
+    def test_cleanup_deadline_preserves_pending_state(self):
+        runner=object.__new__(m.Runner);runner.journal={};runner.save=lambda:None
+        from unittest.mock import Mock
+        runner.api=Mock(side_effect=RuntimeError('cleanup pending acknowledgement: worker'))
+        with patch.object(m.time,'monotonic',side_effect=[0,1,1201]), patch.object(m.time,'sleep'):
+            with self.assertRaisesRegex(RuntimeError,'cleanup pending'):
+                runner.cleanup_call('/stop','POST')
+        self.assertIn('cleanupPending',runner.journal)
+
+    def test_http_error_includes_server_reason(self):
+        runner=object.__new__(m.Runner)
+        from types import SimpleNamespace
+        runner.args=SimpleNamespace(control_url='http://test');runner.token='secret'
+        error=m.urllib.error.HTTPError('http://test',400,'Bad Request',{},io.BytesIO(b'{"error":"cleanup pending acknowledgement: worker"}'))
+        with patch.object(m.urllib.request,'urlopen',side_effect=error):
+            with self.assertRaisesRegex(RuntimeError,'cleanup pending acknowledgement: worker'):
+                runner.api('/stop','POST')
+
     def test_atomic_results_are_readable(self):
         with tempfile.TemporaryDirectory() as d:
             p=Path(d)/'results.json';m.write_json(p,{'a':1});m.write_json(p,{'a':2})

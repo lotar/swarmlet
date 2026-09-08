@@ -191,3 +191,40 @@ The replacement full campaign uses
 `~/.swarmlet/backups/mesh-matrix-controlled-20260906`. Its manifest and results
 are separate from the old campaign. Launch does not mean completion, and the
 17 blocked families remain explicitly untested.
+
+
+### September 8 recovery and resume
+
+The controlled campaign exited September 7 at 04:38 UTC after 170 successful
+arms and one incomplete arm (two of five repetitions saved). HTTP 400 occurred
+in deployment stop; immediate cleanup and final restoration repeated the error.
+The original runner discarded the server response body, so the exact historical
+server reason is unavailable. Retrying the same stop on September 8 succeeded.
+
+Stop/delete now retry transient cleanup acknowledgements and connection failures
+for at most 20 minutes, journal the pending operation, and retain server error
+bodies. Invalid requests still fail immediately. The control plane continues to
+require acknowledged stops before releasing assignments or deleting deployments.
+
+Resume a reviewed runner-only repair using `--accept-runner-update`; this archives
+the previous manifest and requires the entire workload catalogue to be unchanged.
+Use `--retry-incomplete` to finish errored arms with missing repetitions, retaining
+the previous error and completed evidence. These options do not qualify different
+benchmark inputs as comparable; review the code change before accepting it.
+
+```sh
+python3 swarmlet/e2e/idle-window.py --allow-stopped -- \
+  python3 swarmlet/e2e/mesh-matrix.py run \
+  --out "$HOME/.swarmlet/backups/mesh-matrix-controlled-20260906" \
+  --accept-runner-update --retry-incomplete
+```
+
+`--allow-stopped` is explicit: it requires the production launch service to be
+unloaded, its port to refuse connections, and router requests to remain idle.
+It preserves that stopped state. Omit this flag when production is running;
+the normal idle guard will stop and restore it. The campaign independently
+checks the standing mesh for active local requests before taking it down.
+
+The separate report monitor writes local files every 1800 seconds. It does not
+deliver chat notifications or automatically restart failed campaigns. Its final
+report marks an exited runner; inspect restoration and errors before resuming.

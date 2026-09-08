@@ -7,6 +7,7 @@ maintenance script retains its final connected-client guard. Production is
 restored in finally after the owned command exits, including on TERM/INT.
 """
 import argparse
+import socket
 import json
 import os
 from pathlib import Path
@@ -49,6 +50,23 @@ def sample(base, control_config):
     return metrics
 
 
+def stopped_sample(control_config):
+    """Explicit stopped-service mode requires an unloaded owner and absent listener."""
+    owner=subprocess.run(['launchctl','print',f'gui/{os.getuid()}/com.lotar.llm-flashnext'],capture_output=True,text=True)
+    if owner.returncode==0 or 'Could not find service' not in owner.stderr:
+        raise ValueError('production owner is loaded or unknown')
+    try:
+        connection=socket.create_connection(('127.0.0.1',8099),timeout=2)
+    except ConnectionRefusedError:
+        pass
+    else:
+        connection.close()
+        raise ValueError('production listener exists')
+    cfg=json.loads(control_config.read_text())
+    routing=read_json('http://127.0.0.1:47900/api/routing',{'Authorization':'Bearer '+cfg['adminToken']})
+    return dict(requests_processing=0,requests_deferred=0,tokens_predicted_total=0,router_inflight=routing['totals']['inflight'])
+
+
 class QuietGate:
     def __init__(self, seconds):
         self.seconds = seconds
@@ -87,6 +105,7 @@ def main():
     parser.add_argument("--quiet-seconds", type=float, default=60)
     parser.add_argument("--timeout", type=float, default=43200)
     parser.add_argument("--poll", type=float, default=10)
+    parser.add_argument("--allow-stopped", action="store_true", help="Require production owner unloaded and port absent; preserve its stopped state")
     parser.add_argument("--check", action="store_true", help="one read-only observation; never stops production")
     parser.add_argument("--maintenance", type=Path, default=Path(__file__).resolve().parents[2] / "sin-harness/scripts/flashnext-maintenance.sh")
     parser.add_argument("--control-config", type=Path, default=Path.home() / ".swarmlet/control/control.json")
@@ -108,7 +127,7 @@ def main():
     try:
         while time.monotonic() < deadline:
             try:
-                metrics = sample("http://127.0.0.1:8099", args.control_config)
+                metrics = stopped_sample(args.control_config) if args.allow_stopped else sample("http://127.0.0.1:8099", args.control_config)
                 ready = gate.observe(metrics, time.monotonic())
                 print("IDLE_SAMPLE " + json.dumps(metrics) + " quiet=" + str(ready), flush=True)
             except Exception as exc:
@@ -119,6 +138,13 @@ def main():
                     return 2
             if args.check:
                 return 0 if all(metrics[k] == 0 for k in ("requests_processing", "requests_deferred", "router_inflight")) else 1
+            if ready and args.allow_stopped:
+                stopped_sample(args.control_config)  # Recheck immediately before starting.
+                print('MAINTENANCE_WINDOW_OPEN production already stopped',flush=True)
+                env=dict(os.environ,SWARMLET_IDLE_WINDOW='1')
+                child=subprocess.Popen(command,env=env,start_new_session=True)
+                result=child.wait()
+                break
             if ready:
                 # Never override this script's open-client/PID ownership checks.
                 # A signal or partial stop must still trigger restoration.

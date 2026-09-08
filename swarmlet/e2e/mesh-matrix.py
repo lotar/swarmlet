@@ -22,6 +22,7 @@ import subprocess
 import sys
 import time
 import urllib.request
+import urllib.error
 
 ROOT = Path(__file__).resolve().parents[2]
 PROFILES = ROOT / 'swarmlet/control/profiles'
@@ -202,8 +203,30 @@ class Runner:
         req=urllib.request.Request(self.args.control_url+path, method=method,
             data=json.dumps(body).encode() if body is not None else (b'' if method=='POST' else None),
             headers={'Authorization':'Bearer '+self.token,'Content-Type':'application/json','Connection':'close'})
-        with urllib.request.urlopen(req,timeout=timeout) as response:
-            return json.load(response)
+        try:
+            with urllib.request.urlopen(req,timeout=timeout) as response:
+                return json.load(response)
+        except urllib.error.HTTPError as exc:
+            with exc:
+                detail=exc.read(4096).decode(errors='replace')
+            raise RuntimeError(f'{method} {path}: HTTP {exc.code}: {detail}') from exc
+
+    def cleanup_call(self,path,method):
+        # Stop/delete are idempotent. Never retry creation or inference here.
+        deadline=time.monotonic()+1200
+        while True:
+            try:return self.api(path,method,timeout=120)
+            except (RuntimeError,TimeoutError,urllib.error.URLError) as exc:
+                if method=='DELETE' and 'HTTP 404:' in str(exc):return {'alreadyAbsent':True}
+                transient=(isinstance(exc,(TimeoutError,urllib.error.URLError)) or
+                           'cleanup pending acknowledgement:' in str(exc) or
+                           'control is shutting down' in str(exc) or
+                           any(f'HTTP {code}:' in str(exc) for code in [502,503,504]))
+                if not transient or time.monotonic()>=deadline:raise
+                self.journal['cleanupPending']={'at':timestamp(),'path':path,'error':str(exc)}
+                self.save();print('CLEANUP_WAIT',str(exc),flush=True)
+                time.sleep(10)
+
 
     def wait(self, check, seconds=600):
         deadline=time.monotonic()+seconds
@@ -233,9 +256,9 @@ class Runner:
         # Discover creations whose POST response might have been lost before journalling.
         for dep in self.api('/api/deployments')['deployments']:
             if dep['spec']['name'].startswith(self.prefix+'-'):
-                self.api('/api/deployments/'+dep['id']+'/stop','POST',timeout=120)
-                self.api('/api/deployments/'+dep['id'],'DELETE')
-        self.journal['deployment']=None;self.save()
+                self.cleanup_call('/api/deployments/'+dep['id']+'/stop','POST')
+                self.cleanup_call('/api/deployments/'+dep['id'],'DELETE')
+        self.journal['deployment']=None;self.journal.pop('cleanupPending',None);self.save()
 
     def install_profiles(self):
         base=json.loads((PROFILES/'qwen35-2b-q8.json').read_text())
@@ -358,6 +381,7 @@ class Runner:
         if dep['state']=='ready':
             metrics=urllib.request.urlopen('http://127.0.0.1:'+str(dep['endpoint']['port'])+'/metrics',timeout=5).read().decode()
             if '\nllamacpp:requests_processing 0\n' not in metrics or '\nllamacpp:requests_deferred 0\n' not in metrics:raise RuntimeError('baseline has active local requests')
+        self.journal.pop('restoredAt',None);self.save()
         try:
             self.api('/api/deployments/'+self.args.deployment_id+'/stop','POST',timeout=120)
             self.retire();self.install_profiles()
@@ -387,6 +411,8 @@ def main():
     p=argparse.ArgumentParser(description=__doc__)
     p.add_argument('command',choices=['plan','run','status','restore'])
     p.add_argument('--out',type=Path,required=True)
+    p.add_argument('--accept-runner-update',action='store_true',help='Archive prior runner manifest when only runner code changed; workloads must match')
+    p.add_argument('--retry-incomplete',action='store_true',help='Retry errored arms with unfinished repetitions, preserving completed evidence')
     p.add_argument('--repeats',type=int,default=5)
     p.add_argument('--only',nargs='+',help='Explicit partial run by group; never labelled full coverage')
     p.add_argument('--control-url',default='http://127.0.0.1:47900')
@@ -408,11 +434,23 @@ def main():
             global_lock=(Path.home()/'.swarmlet/mesh-matrix.lock').open('w')
             fcntl.flock(global_lock,fcntl.LOCK_EX|fcntl.LOCK_NB)
         target=args.out/'manifest.json'
-        if target.exists() and json.loads(target.read_text())!=manifest:raise RuntimeError('manifest mismatch; use a fresh output directory')
+        if target.exists() and json.loads(target.read_text())!=manifest:
+            previous=json.loads(target.read_text())
+            unchanged=lambda value:{k:v for k,v in value.items() if k not in ['runnerSha256','fingerprint']}
+            if not args.accept_runner_update or unchanged(previous)!=unchanged(manifest):
+                raise RuntimeError('manifest mismatch; use a fresh output directory or explicitly accept a runner-only update')
+            write_json(args.out/'manifest-history'/(previous['fingerprint']+'.json'),previous)
         write_json(target,manifest)
         print('PLAN',len(manifest['arms']),'runnable arms;',len(manifest['blocked']),'blocked families;',args.repeats,'repeats',flush=True)
         if args.command=='plan':return 0
         runner=Runner(args,manifest)
+        if args.retry_incomplete:
+            for arm in manifest['arms']:
+                record=runner.results.get(arm['id'],{})
+                if record.get('error') and len(record.get('repetitions',[]))<arm['repeats']:
+                    record.setdefault('priorErrors',[]).append({'at':timestamp(),'error':record.pop('error')})
+                    record.update(complete=False,status='running')
+            runner.save()
         def interrupt(signum,frame):raise KeyboardInterrupt('signal '+str(signum))
         signal.signal(signal.SIGTERM,interrupt)
         if args.command=='restore':runner.restore()
