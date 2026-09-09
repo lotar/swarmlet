@@ -200,6 +200,7 @@ export class DeploymentManager {
   async create(spec: DeploymentSpec): Promise<{ id: string }> {
     if (!spec.name || !/^[a-zA-Z0-9._-]{1,64}$/.test(spec.name)) throw new Error("name must be 1-64 chars of [a-zA-Z0-9._-]");
     if (spec.kind === "external") {
+      this.assertExternalOptions(spec);
       if (!spec.external?.nodeId || !spec.external.url || !spec.external.modelName) throw new Error("external needs external.nodeId, url, modelName");
       this.assertUniqueExternal(spec);
     } else if (!this.deps.profiles.has(spec.profile)) {
@@ -220,7 +221,7 @@ export class DeploymentManager {
     if (this.closed) throw new Error("control is shutting down");
     if (this.operations.has(id)) throw new Error("deployment operation already in progress");
     if (!["planned", "stopped", "failed"].includes(dep.state) && !(recovering && this.reconnecting.has(id) && dep.state === "loading")) throw new Error(`cannot start from state ${dep.state}`);
-    if (dep.spec.kind === "external") this.assertUniqueExternal(dep.spec, id);
+    if (dep.spec.kind === "external") { this.assertExternalOptions(dep.spec); this.assertUniqueExternal(dep.spec, id); }
     this.reconnecting.delete(id);
     this.deps.reg.setDeploymentIntent(id, { running: true, ...(recovering ? {} : { attempts: 0, retryAt: 0 }) });
     const generation = this.generations.get(id) ?? 0;
@@ -334,7 +335,13 @@ export class DeploymentManager {
     this.deps.reg.updateDeployment(dep.id, { plan, state: "loading" });
     const node = this.node(plan.coordinatorNodeId);
     const port = this.freePort(node.id, serverPortBase(), this.usedPorts());
-    const a: ReplicaAssignment = { kind: "replica", id: newId("as"), deploymentId: dep.id, port, model: { path: plan.modelPath }, modelName: profile.modelName, ctx: plan.ctx, parallel: plan.parallel, extraArgs: profile.extraArgs, allow: [] };
+    const a: ReplicaAssignment = {
+      kind: "replica", id: newId("as"), deploymentId: dep.id, port,
+      model: { path: plan.modelPath }, modelName: profile.modelName,
+      ctx: plan.ctx, parallel: plan.parallel, device: plan.coordinatorDevice,
+      mtp: plan.chain > 0 && plan.mtpPath ? { path: plan.mtpPath, chain: plan.chain } : undefined,
+      speculation: plan.speculation, extraArgs: profile.extraArgs, allow: [],
+    };
     await this.dispatch(node.id, a, ["ready"], COORDINATOR_TIMEOUT_MS);
     this.assertRunning(dep.id, generation);
     this.deps.reg.updateDeployment(dep.id, { state: "ready", endpoint: { nodeId: node.id, port, modelName: profile.modelName } });
@@ -373,8 +380,9 @@ export class DeploymentManager {
     const c: CoordinatorAssignment = {
       kind: "coordinator", id: newId("as"), deploymentId: dep.id, model: { path: plan.modelPath },
       rpc: workers.map(({ w, node }) => endpointFor(node, w.port)), devices: [...workers.map((_, i) => `RPC${i}`), plan.coordinatorDevice],
-      tensorSplit: plan.tensorSplit, ctx: plan.ctx, parallel: plan.parallel,
+      tensorSplit: plan.engineTensorSplit ?? plan.tensorSplit, ctx: plan.ctx, parallel: plan.parallel,
       mtp: plan.chain > 0 && plan.mtpPath ? { path: plan.mtpPath, chain: plan.chain } : undefined,
+      speculation: plan.speculation,
       env: plan.env, extraArgs: profile.extraArgs, port, modelName: profile.modelName,
       fitMiB: coord.os === "darwin" ? coordLayers * profile.layerMiB + profile.coordinatorHostMiB : undefined,
       stopExternal: externals[0]?.spec.name, allow: [], enforce: { ramMiB: coord.offer?.ramMiB, cpuCores: coord.offer?.cpuCores },
@@ -444,6 +452,12 @@ export class DeploymentManager {
   }
 
   // ---------- helpers ----------
+
+  private assertExternalOptions(spec: DeploymentSpec): void {
+    if (spec.workerLayers !== undefined || spec.speculation !== undefined || (spec.chain !== undefined && spec.chain !== 0)) {
+      throw new Error("external deployments cannot configure workerLayers, speculation or an MTP chain");
+    }
+  }
 
   private assertUniqueExternal(spec: DeploymentSpec, except?: string): void {
     const ext = spec.external!;

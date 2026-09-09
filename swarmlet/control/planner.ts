@@ -6,9 +6,8 @@
 // Sizes are MiB, as everywhere in the protocol.
 //
 // The envelope rows are measured facts (docs/FLASHNEXT_RING_LEVERS_20260904.md, control/profiles/README.md):
-// the planner picks the row with the most layers per worker that the request and every worker's GPU offer
-// allow, and never clamps a request to fit. Anything outside the envelope is refused with the limit that
-// blocked it.
+// automatic placement picks the row with the most layers every worker can hold. Explicit workerLayers
+// must each match a complete row and fit that worker's GPU offer. Neither path clamps a request to fit.
 
 import { readdirSync, readFileSync } from "node:fs";
 import { basename, join } from "node:path";
@@ -199,7 +198,10 @@ function requireNode(c: Ctx, id: string, role: Role, needModel: boolean): NodeRo
 
 /** MTP draft head for chain > 0: the node running llama-server must hold a file matching the profile's mtpPattern. */
 function draftHead(c: Ctx, n: NodeRow): string | undefined {
-  if (c.chain === 0) { c.reasons.push("chain 0: no speculative decoding."); return undefined; }
+  if (c.chain === 0) {
+    c.reasons.push(c.spec.speculation ? "ngram-simple speculative decoding: draft proposals from repeated token sequences; no MTP draft head required." : "chain 0: no speculative decoding.");
+    return undefined;
+  }
   if (!c.mtp) { c.errors.push(`chain ${c.chain} requested but profile ${c.profile.id} has no mtpPattern (no draft head for this model).`); return undefined; }
   const f = findModel(n, c.mtp);
   if (!f) { c.errors.push(`chain ${c.chain} needs a draft head matching ${c.profile.mtpPattern} on ${n.hostname}; none of its ${n.models.length} model files match.`); return undefined; }
@@ -295,7 +297,25 @@ function planReplica(c: Ctx): Plan {
     ctx: c.ctx, parallel: c.parallel, chain: c.chain, env, modelPath: findModel(node, c.gguf)!.path, reasons: c.reasons,
   };
   if (mtpPath !== undefined) plan.mtpPath = mtpPath;
+  if (spec.speculation !== undefined) plan.speculation = { ...spec.speculation };
   return plan;
+}
+
+/** Explicit placement keeps each count inside one complete envelope row and its own GPU offer. */
+function requestedLayers(c: Ctx, slots: WorkerSlot[]): number[] {
+  const layers = c.spec.workerLayers!;
+  for (const [i, s] of slots.entries()) {
+    const count = layers[i]!;
+    const row = c.profile.envelope.find((r) => r.workerLayers === count && c.ctx <= r.maxCtx && c.parallel <= r.maxParallel && c.chain <= r.maxChain);
+    if (!row) c.errors.push(`Worker ${s.node.hostname}: no envelope row for requested ${count} layers fits ctx ${c.ctx}, parallel ${c.parallel}, chain ${c.chain}.`);
+    const need = count * c.profile.layerMiB + c.profile.workerMarginMiB;
+    if (need > s.gpu.memMiB) c.errors.push(`Worker ${s.node.hostname} needs ${need} MiB for requested ${count} layers but offers ${s.gpu.memMiB} MiB on ${s.gpu.engineName}.`);
+    if (row && need <= s.gpu.memMiB) c.reasons.push(`Worker ${s.node.hostname}: requested ${count} layers fit envelope (maxCtx ${row.maxCtx}, maxParallel ${row.maxParallel}, maxChain ${row.maxChain}) and ${need} MiB fits its ${s.gpu.memMiB} MiB GPU offer.`);
+  }
+  const total = layers.reduce((sum, count) => sum + count, 0);
+  if (total >= c.profile.layers) c.errors.push(`Requested worker layers total ${total} must leave the coordinator at least one of the ${c.profile.layers} layers.`);
+  if (c.errors.length) throw new PlanError(c.headline, c.errors);
+  return layers;
 }
 
 function planSplit(c: Ctx): Plan {
@@ -337,9 +357,14 @@ function planSplit(c: Ctx): Plan {
   if (!coord || c.errors.length) throw new PlanError(c.headline, c.errors);
 
   const mtpPath = draftHead(c, coord);
-  const row = chooseRow(c, slots);
-  if (!row) throw new PlanError(c.headline, c.errors);
-  const remaining = profile.layers - row.workerLayers * slots.length;
+  let layers: number[];
+  if (spec.workerLayers !== undefined) layers = requestedLayers(c, slots);
+  else {
+    const row = chooseRow(c, slots);
+    if (!row) throw new PlanError(c.headline, c.errors);
+    layers = slots.map(() => row.workerLayers);
+  }
+  const remaining = profile.layers - layers.reduce((sum, count) => sum + count, 0);
   const device = placeResident(c, coord, remaining, "Coordinator");
   if (c.errors.length) throw new PlanError(c.headline, c.errors);
 
@@ -347,14 +372,20 @@ function planSplit(c: Ctx): Plan {
   const workers: PlanWorker[] = slots.map(({ node, gpu }, i) => {
     const port = pickPort(c.usedPorts.get(node.id));
     const threads = Math.max(1, Math.min(node.offer!.cpuCores, MAX_WORKER_THREADS));
-    const w: PlanWorker = { nodeId: node.id, device: gpu.engineName, layers: row.workerLayers, port, threads, memCapMiB: gpu.memMiB };
+    const w: PlanWorker = { nodeId: node.id, device: gpu.engineName, layers: layers[i]!, port, threads, memCapMiB: gpu.memMiB };
     if (forwarding) w.peerPort = port + 1;
-    c.reasons.push(`RPC${i} ${node.hostname}: ${row.workerLayers} layer(s) on ${gpu.engineName}, rpc port ${port}${forwarding ? `, peer port ${port + 1}` : ""}, ${threads} threads (min of ${node.offer!.cpuCores} offered and ${MAX_WORKER_THREADS}), mem cap ${gpu.memMiB} MiB.`);
+    c.reasons.push(`RPC${i} ${node.hostname}: ${w.layers} layer(s) on ${gpu.engineName}, rpc port ${port}${forwarding ? `, peer port ${port + 1}` : ""}, ${threads} threads (min of ${node.offer!.cpuCores} offered and ${MAX_WORKER_THREADS}), mem cap ${gpu.memMiB} MiB.`);
     return w;
   });
   const env = envFor(spec, slots.length);
   const tensorSplit = [...workers.map((w) => w.layers), remaining];
+  // llama.cpp distributes block_count + 1 slots, including the output projection.
+  // Exact transformer counts therefore need one extra engine weight on the coordinator.
+  // Preserve historical automatic weights until those placements are requalified.
+  const engineTensorSplit = spec.workerLayers !== undefined ? [...layers, remaining + 1] : undefined;
   c.reasons.push(`Devices ${[...workers.map((_, i) => `RPC${i}`), device].join(",")}, tensor split ${tensorSplit.join(",")}.`);
+  if (engineTensorSplit) c.reasons.push(`Exact transformer placement ${tensorSplit.join("/")}; engine tensor weights ${engineTensorSplit.join(",")} include the coordinator's output slot (${profile.layers + 1} total slots).`);
+  else c.reasons.push("Automatic tensor split retains historical engine weights; weights are not exact transformer layer counts because the engine also distributes an output slot.");
   if (forwarding) c.reasons.push("Push forwarding on: each worker pushes the boundary tensors to the next worker (peer port = rpc port + 1).");
   else c.reasons.push(spec.forwarding === false ? "Push forwarding off by request." : "Push forwarding off: a single worker has no next hop.");
   if (spec.batchedGets === false) c.reasons.push("Batched boundary GETs off by request (each boundary tensor is fetched with its own round trip).");
@@ -365,7 +396,9 @@ function planSplit(c: Ctx): Plan {
     coordinatorNodeId: coord.id, coordinatorDevice: device, workers, tensorSplit,
     ctx: c.ctx, parallel: c.parallel, chain: c.chain, env, modelPath: findModel(coord, c.gguf)!.path, reasons: c.reasons,
   };
+  if (engineTensorSplit !== undefined) plan.engineTensorSplit = engineTensorSplit;
   if (mtpPath !== undefined) plan.mtpPath = mtpPath;
+  if (spec.speculation !== undefined) plan.speculation = { ...spec.speculation };
   return plan;
 }
 
@@ -380,8 +413,21 @@ export function planDeployment(input: PlanInput): Plan {
   if (!Number.isInteger(ctx) || ctx < 1) errors.push(`ctx must be a positive integer, got ${String(spec.ctx)}.`);
   if (!Number.isInteger(parallel) || parallel < 1) errors.push(`parallel must be a positive integer, got ${String(spec.parallel)}.`);
   if (!Number.isInteger(chain) || chain < 0) errors.push(`chain must be an integer >= 0, got ${String(spec.chain)}.`);
+  if (spec.kind === "replica" && chain > 0) errors.push("Replica MTP is not qualified: draft-head residency is not included in the replica memory admission check; use chain 0.");
+  if (spec.speculation !== undefined) {
+    const s = spec.speculation;
+    if (!s || typeof s !== "object" || Array.isArray(s) || s.type !== "ngram-simple" || Object.keys(s).some((k) => k !== "type")) errors.push('speculation must be { type: "ngram-simple" }.');
+    if (chain > 0) errors.push("speculation cannot be combined with an MTP chain > 0.");
+  }
   if (spec.wire !== undefined && !WIRE_MODES.has(spec.wire)) errors.push(`wire must be off, f16 or q8, got ${String(spec.wire)}.`);
   if (spec.kind !== "split" && spec.kind !== "replica") errors.push(`kind "${spec.kind}" is not placed by the planner; external deployments are registered, not planned.`);
+  if (spec.workerNodeIds !== undefined && (!Array.isArray(spec.workerNodeIds) || spec.workerNodeIds.some((id) => typeof id !== "string" || !id))) errors.push("workerNodeIds must be an array of non-empty node IDs.");
+  if (spec.workerLayers !== undefined) {
+    if (chain > 0) errors.push("Exact workerLayers with MTP is not qualified; use chain 0 until target block-count and draft residency are qualified together.");
+    if (spec.kind !== "split") errors.push("workerLayers is only valid for split deployments.");
+    if (!Array.isArray(spec.workerLayers) || spec.workerLayers.length === 0 || spec.workerLayers.some((n) => !Number.isSafeInteger(n) || n < 1)) errors.push("workerLayers must be a non-empty array of positive safe integers.");
+    if (!Array.isArray(spec.workerNodeIds) || !Array.isArray(spec.workerLayers) || spec.workerNodeIds.length !== spec.workerLayers.length) errors.push("workerLayers requires explicit workerNodeIds with the same length and order.");
+  }
   if (errors.length) throw new PlanError(headline, errors);
 
   const dflt = (v: unknown): string => (v === undefined ? " (default)" : "");

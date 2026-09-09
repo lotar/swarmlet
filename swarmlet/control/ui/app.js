@@ -446,6 +446,7 @@
       spec.kind === 'split' ? ['Workers', (spec.workerNodeIds || []).map(nodeName).join(', ')] : null,
       spec.kind === 'replica' ? ['Replica node', nodeName(spec.replicaNodeId)] : null,
       spec.kind !== 'external' ? ['Context', 'ctx ' + (spec.ctx || 'default') + ', parallel ' + (spec.parallel || 'default') + ', chain ' + (spec.chain == null ? 'default' : spec.chain)] : null,
+      spec.speculation ? ['Speculation', spec.speculation.type] : null,
       spec.kind === 'split' ? ['Boundaries', 'wire ' + (spec.wire || 'off') + (spec.batchedGets === false ? ', unbatched GETs' : ', batched GETs') + (spec.forwarding === false ? ', no forwarding' : ', forwarding')] : null,
       spec.stopExternal ? ['External server', el('span', { class: 'err', text: 'stopped for the run, restarted after' })] : null,
       spec.external ? ['External', spec.external.url + ' (' + spec.external.healthPath + ') on ' + nodeName(spec.external.nodeId) + ' as ' + spec.external.modelName] : null,
@@ -488,12 +489,14 @@
   function renderPlan(p) {
     var out = [el('dl', { class: 'kv' }, kv([
       ['Coordinator', nodeName(p.coordinatorNodeId) + ' on ' + p.coordinatorDevice],
-      ['Tensor split', (p.tensorSplit || []).join(' / ')],
+      [p.engineTensorSplit ? 'Transformer layers' : 'Tensor weights', (p.tensorSplit || []).join(' / ')],
+      p.engineTensorSplit ? ['Engine weights', p.engineTensorSplit.join(' / ')] : null,
       ['Context', p.ctx + ' tokens, ' + p.parallel + ' parallel, chain ' + (p.chain ? p.chain : 'off')],
+      p.speculation ? ['Speculation', p.speculation.type] : null,
       ['Model', p.modelPath],
       p.mtpPath ? ['MTP head', p.mtpPath] : null,
     ]))];
-    out.push(buildTable(['Worker', 'Device', 'Layers', 'Port', 'Peer port', 'Threads', 'Mem cap'], (p.workers || []).map(function (w) {
+    out.push(buildTable(['Worker', 'Device', p.engineTensorSplit ? 'Layers' : 'Weight', 'Port', 'Peer port', 'Threads', 'Mem cap'], (p.workers || []).map(function (w) {
       return el('tr', null, [
         td(nodeName(w.nodeId), 'strong', w.nodeId),
         td(w.device, 'mono'),
@@ -1079,10 +1082,11 @@
       var threadsAt = coordArgs.indexOf('-t');
       if (threadsAt < 0) threadsAt = coordArgs.indexOf('--threads');
       var threads = threadsAt >= 0 && coordArgs[threadsAt + 1] ? coordArgs[threadsAt + 1] : 'Engine default';
-      var runtime = plan.ctx + ' / ' + plan.parallel + (plan.chain ? ' · MTP ' + plan.chain : '');
+      var runtime = plan.ctx + ' / ' + plan.parallel + (plan.chain ? ' · MTP ' + plan.chain : '') + (plan.speculation ? ' · ' + plan.speculation.type : '');
+      var layerPrefix = spec.kind === 'split' && !plan.engineTensorSplit ? 'Weight ' : '';
       row.appendChild(machineTopology(plan.coordinatorNodeId, {
         role: spec.kind === 'replica' ? 'Replica' : 'Coordinator', device: plan.coordinatorDevice,
-        layers: coordLayers + ' / ' + total,
+        layers: layerPrefix + coordLayers + ' / ' + total,
         weights: prof ? fmtGiB(coordLayers * prof.layerMiB) + ' GiB · estimated' : 'Not reported',
         gpu: offeredMiB == null ? 'Not reported' : fmtGiB(offeredMiB) + ' GiB · offered',
         runtime: runtime, threads: threads,
@@ -1096,7 +1100,7 @@
         var bytes = prof && isNum(prof.boundaryBytes) ? ' · ' + fmtBytes(prof.boundaryBytes) + '/token' : '';
         row.appendChild(topoEdge('RPC' + i + ' · ' + path + bytes));
         row.appendChild(machineTopology(w.nodeId, {
-          role: 'Worker', device: w.device, layers: w.layers + ' / ' + total,
+          role: 'Worker', device: w.device, layers: layerPrefix + w.layers + ' / ' + total,
           weights: prof ? fmtGiB(w.layers * prof.layerMiB) + ' GiB · estimated' : 'Not reported',
           gpu: isNum(w.memCapMiB) ? fmtGiB(w.memCapMiB) + ' GiB · cap' : 'Not reported',
           runtime: runtime, threads: isNum(w.threads) ? String(w.threads) : 'Not reported',

@@ -51,6 +51,42 @@ function rig(path = ":memory:", reconnectGraceMs = 30_000, stopTimeoutMs = 15) {
 
 async function settle() { await Bun.sleep(25); }
 
+test("asymmetric speculative split reaches the actual coordinator assignment", async () => {
+  const f = rig();
+  const { id } = await f.manager.create({ ...split, workerLayers: [2, 3], speculation: { type: "ngram-simple" } });
+  await f.manager.start(id);
+  const a = f.sent.find((x) => x.a.kind === "coordinator")!.a;
+  expect(a.kind).toBe("coordinator");
+  if (a.kind !== "coordinator") throw new Error("coordinator assignment missing");
+  expect(a.tensorSplit).toEqual([2, 3, 20]); // 19 coordinator blocks plus the output slot.
+  expect(a.speculation).toEqual({ type: "ngram-simple" });
+  expect(a.mtp).toBeUndefined();
+  expect(f.reg.getDeployment(id)?.state).toBe("ready");
+});
+
+test("replica assignment honors planned device and speculation", async () => {
+  const f = rig();
+  const { id } = await f.manager.create({ name: "spec-replica", kind: "replica", profile: split.profile, replicaNodeId: "mac", ctx: 1024, parallel: 1, speculation: { type: "ngram-simple" } });
+  await f.manager.start(id);
+  const a = f.sent.find((x) => x.a.kind === "replica")!.a;
+  if (a.kind !== "replica") throw new Error("replica assignment missing");
+  expect(a.device).toBe("MTL0");
+  expect(a.speculation).toEqual({ type: "ngram-simple" });
+  expect(f.manager.routing()[0]?.deployments[0]?.id).toBe(id);
+});
+
+test("external deployments reject execution options before persisting or starting", async () => {
+  const f = rig();
+  const external: DeploymentSpec = { name: "external", profile: "external", kind: "external", external: { nodeId: "mac", url: "http://127.0.0.1:8099", healthPath: "/health", modelName: "external" } };
+  for (const options of [{ speculation: { type: "ngram-simple" as const } }, { workerLayers: [2, 3] }, { chain: 1 }]) {
+    await expect(f.manager.create({ ...external, ...options })).rejects.toThrow("cannot configure");
+  }
+  expect(f.reg.listDeployments()).toEqual([]);
+  f.reg.createDeployment("legacy-external", { ...external, speculation: { type: "ngram-simple" } });
+  await expect(f.manager.start("legacy-external")).rejects.toThrow("cannot configure");
+  expect(f.sent).toEqual([]);
+});
+
 test("offline worker is not falsely stopped; reconnect cleans it before fresh three-node placement", async () => {
   const f = rig(); const { id } = await f.manager.create(split); await f.manager.start(id);
   const old = f.reg.listAssignments(id), l1 = old.find((a) => a.nodeId === "l1")!;

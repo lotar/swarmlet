@@ -267,6 +267,89 @@ describe("split placement on the real rig", () => {
   });
 });
 
+describe("explicit asymmetric placement", () => {
+  const explicit = (over: Partial<DeploymentSpec> = {}): DeploymentSpec => ({ name: "unequal", profile: tiny.id, kind: "split", coordinatorNodeId: M5, workerNodeIds: [L2, L1], workerLayers: [2, 3], ctx: 2048, parallel: 4, ...over });
+
+  test("requested counts preserve node order and exact layer total; legacy selection stays uniform", () => {
+    const p = plan({ spec: explicit(), profile: tiny });
+    expect(p.tensorSplit).toEqual([2, 3, 19]);
+    expect(p.engineTensorSplit).toEqual([2, 3, 20]);
+    expect(p.workers.map((w) => [w.nodeId, w.layers])).toEqual([[L2, 2], [L1, 3]]);
+    expect(p.tensorSplit.reduce((a, b) => a + b)).toBe(tiny.layers);
+    expect(plan({ spec: explicit({ workerLayers: undefined }), profile: tiny }).tensorSplit).toEqual([3, 3, 18]);
+    expect(plan({ spec: explicit({ workerLayers: undefined }), profile: tiny }).engineTensorSplit).toBeUndefined();
+  });
+
+  test("explicit weights place the requested transformer blocks under the native float32 loader rule", () => {
+    for (const counts of [[2, 3], [3, 2], [2, 2], [3, 3]]) {
+      const p = plan({ spec: explicit({ workerLayers: counts }), profile: tiny });
+      const weights = p.engineTensorSplit!;
+      let cumulative = 0;
+      const boundaries = weights.map((w) => cumulative = Math.fround(cumulative + w)).map((w) => Math.fround(w / cumulative));
+      const devices = Array.from({ length: tiny.layers + 1 }, (_, layer) => boundaries.findIndex((b) => b > Math.fround(layer / (tiny.layers + 1))));
+      expect(weights.reduce((a, b) => a + b)).toBe(tiny.layers + 1);
+      expect(weights.map((_, i) => devices.slice(0, tiny.layers).filter((d) => d === i).length)).toEqual(p.tensorSplit);
+      expect(devices[tiny.layers]).toBe(weights.length - 1);
+    }
+    expect(text(refused({ spec: explicit({ chain: 1 }), profile: tiny }))).toMatch(/Exact workerLayers with MTP is not qualified/);
+  });
+
+  test("each worker checks its own envelope row and memory without silently reducing a request", () => {
+    const fits = [m5(), legion1(), legion2({ offer: legionOffer(680) })];
+    expect(plan({ spec: explicit(), profile: tiny, nodes: fits }).tensorSplit).toEqual([2, 3, 19]);
+    expect(text(refused({ spec: explicit({ workerLayers: [3, 2] }), profile: tiny, nodes: fits }))).toMatch(/legion2 needs 752 MiB/);
+    expect(text(refused({ spec: explicit({ workerLayers: [1, 3] }), profile: tiny }))).toMatch(/no envelope row for requested 1 layers/);
+    expect(text(refused({ spec: explicit({ ctx: 4097 }), profile: tiny }))).toMatch(/no envelope row.*ctx 4097/);
+    const profile = { ...tiny, envelope: [{ workerLayers: 2, maxCtx: 4096, maxParallel: 1, maxChain: 0 }, { workerLayers: 2, maxCtx: 1024, maxParallel: 8, maxChain: 0 }, tiny.envelope[0]!] };
+    expect(text(refused({ spec: explicit(), profile }))).toMatch(/no envelope row for requested 2 layers/);
+  });
+
+  test("sum leaves coordinator a layer and remaining residency must fit", () => {
+    expect(text(refused({ spec: explicit(), profile: { ...tiny, layers: 5 } }))).toMatch(/total 5 must leave the coordinator at least one/);
+    expect(text(refused({ spec: explicit(), profile: tiny, nodes: [m5({ offer: m5Offer(2500) }), legion1(), legion2()] }))).toMatch(/cannot hold 19 of 24 layers/);
+  });
+
+  test("invalid arrays, count pairs, replica usage and duplicate node IDs are refused", () => {
+    for (const values of [[], [2], [2, 0], [2, -1], [2, 1.5], [2, NaN], [2, Infinity], [2, Number.MAX_SAFE_INTEGER + 1]]) {
+      expect(() => plan({ spec: explicit({ workerLayers: values }), profile: tiny })).toThrow(PlanError);
+    }
+    for (const value of [null, "2,3", { 0: 2, 1: 3 }]) {
+      expect(text(refused({ spec: explicit({ workerLayers: value as unknown as number[] }), profile: tiny }))).toMatch(/workerLayers must be/);
+    }
+    expect(text(refused({ spec: explicit({ workerNodeIds: undefined }), profile: tiny }))).toMatch(/requires explicit workerNodeIds/);
+    expect(text(refused({ spec: explicit({ workerNodeIds: [L1, L1] }), profile: tiny }))).toMatch(/listed twice/);
+    expect(text(refused({ spec: explicit({ workerNodeIds: [L1, M5] }), profile: tiny }))).toMatch(/cannot also be a worker/);
+    expect(text(refused({ spec: explicit({ kind: "replica" }), profile: tiny }))).toMatch(/only valid for split/);
+  });
+
+  test("explicit coordinator relocation keeps Legion local layers and checks its offer", () => {
+    const coord = legion1({ offer: { ...legionOffer(), roles: { worker: true, coordinator: true, replica: true } }, models: [TINY] });
+    const s = explicit({ coordinatorNodeId: L1, workerNodeIds: [L2], workerLayers: [2] });
+    expect(plan({ spec: s, profile: tiny, nodes: [m5(), coord, legion2()] })).toMatchObject({ coordinatorNodeId: L1, coordinatorDevice: "CUDA0", tensorSplit: [2, 22] });
+    expect(text(refused({ spec: s, profile: tiny, nodes: [m5(), { ...coord, offer: { ...coord.offer!, ramMiB: 512 } }, legion2()] }))).toMatch(/host side: 1024 MiB exceeds/);
+  });
+});
+
+describe("ngram speculative placement", () => {
+  test("split and replica retain ngram with no MTP head and maxChain zero", () => {
+    for (const kind of ["split", "replica"] as const) {
+      const p = plan({ spec: { name: "ngram", profile: tiny.id, kind, speculation: { type: "ngram-simple" } }, profile: tiny });
+      expect(p.speculation).toEqual({ type: "ngram-simple" });
+      expect(p.chain).toBe(0);
+      expect(p.mtpPath).toBeUndefined();
+      expect(p.reasons.join("\n")).toMatch(/ngram-simple speculative decoding/);
+    }
+  });
+
+  test("ngram rejects MTP combination and malformed or unrecognized options", () => {
+    expect(text(refused({ spec: spec({ speculation: { type: "ngram-simple" } }) }))).toMatch(/cannot be combined with an MTP chain/);
+    for (const value of [null, "ngram-simple", [], {}, { type: "draft" }, { type: "ngram-simple", draft: 4 }]) {
+      expect(text(refused({ spec: spec({ chain: 0, speculation: value as DeploymentSpec["speculation"] }) }))).toMatch(/speculation must be/);
+    }
+    expect(plan({ spec: spec({ chain: 0 }) }).speculation).toBeUndefined();
+  });
+});
+
 describe("replica placement", () => {
   test("replica kind plans the whole model on the M5 with an empty tensor split", () => {
     const p = plan({ spec: spec({ kind: "replica", chain: 0, parallel: 2 }) });
@@ -278,15 +361,15 @@ describe("replica placement", () => {
     expect(plan({ spec: spec({ kind: "replica", chain: 0 }) })).toEqual(plan({ spec: spec({ kind: "replica", chain: 0 }), nodes: rig().reverse() }));
   });
 
-  test("replica: requested node validated, memory checked, draft head required for chain > 0", () => {
-    expect(text(refused({ spec: spec({ kind: "replica", replicaNodeId: L1 }) }))).toMatch(/Requested replica node legion1 does not offer the replica role, holds no model matching/);
+  test("replica: requested node validated, memory checked, unqualified MTP refused", () => {
+    expect(text(refused({ spec: spec({ kind: "replica", replicaNodeId: L1, chain: 0 }) }))).toMatch(/Requested replica node legion1 does not offer the replica role, holds no model matching/);
     expect(plan({ spec: spec({ kind: "replica", chain: 0, replicaNodeId: M5 }) }).coordinatorNodeId).toBe(M5);
     const e = refused({ spec: spec({ kind: "replica", chain: 0 }), nodes: [m5({ offer: m5Offer(70000) })] });
     expect(text(e)).toMatch(/Replica m5 cannot hold 48 of 48 layers: 48 × 1608 \+ 2048 MiB host = 79232 MiB exceeds the 70000 MiB RAM offered/);
-    expect(plan({ spec: spec({ kind: "replica", chain: 4 }) })).toMatchObject({ chain: 4, mtpPath: MTP.path });
-    expect(refused({ spec: spec({ kind: "replica", chain: 4 }), nodes: [m5({ models: [shard(1)] })] }).message).toMatch(/needs a draft head matching/);
-    expect(refused({ spec: spec({ kind: "replica" }), nodes: [] }).message).toMatch(/No online node offers the replica role/);
-    expect(refused({ spec: spec({ kind: "replica" }), nodes: [m5({ online: false }), legion1()] }).message).toMatch(/No online node offers the replica role/);
+    expect(refused({ spec: spec({ kind: "replica", chain: 4 }) }).message).toMatch(/Replica MTP is not qualified/);
+    expect(refused({ spec: spec({ kind: "replica", chain: 4 }), nodes: [m5({ models: [shard(1)] })] }).message).toMatch(/Replica MTP is not qualified/);
+    expect(refused({ spec: spec({ kind: "replica", chain: 0 }), nodes: [] }).message).toMatch(/No online node offers the replica role/);
+    expect(refused({ spec: spec({ kind: "replica", chain: 0 }), nodes: [m5({ online: false }), legion1()] }).message).toMatch(/No online node offers the replica role/);
   });
 
   test("a linux replica keeps the layers on its GPU offer", () => {
@@ -298,5 +381,16 @@ describe("replica placement", () => {
 
   test("kind external is not planned", () => {
     expect(refused({ spec: spec({ kind: "external" }) }).message).toMatch(/kind "external" is not placed by the planner/);
+  });
+
+  test("both Legion pool members can be selected individually and each must hold the complete model", () => {
+    const offer = { ...legionOffer(), roles: { worker: true, coordinator: true, replica: true } };
+    const nodes = [m5(), legion1({ offer, models: [TINY] }), legion2({ offer, models: [TINY] })];
+    for (const id of [L1, L2]) {
+      const s: DeploymentSpec = { name: `replica-${id}`, profile: tiny.id, kind: "replica", replicaNodeId: id };
+      expect(plan({ spec: s, profile: tiny, nodes })).toMatchObject({ coordinatorNodeId: id, coordinatorDevice: "CUDA0", workers: [], tensorSplit: [] });
+      const undersized = nodes.map((n) => n.id === id ? { ...n, offer: { ...offer, gpu: [{ id: "cuda:0", memMiB: 1900 }] } } : n);
+      expect(text(refused({ spec: s, profile: tiny, nodes: undersized }))).toMatch(/cannot hold 24 of 24 layers/);
+    }
   });
 });

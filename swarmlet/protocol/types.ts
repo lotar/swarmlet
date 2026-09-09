@@ -117,6 +117,9 @@ export interface WorkerAssignment {
   cache?: boolean;
 }
 
+/** Draft proposals from repeated token sequences; no separate draft model is required. */
+export interface NgramSpeculation { type: "ngram-simple" }
+
 export interface CoordinatorAssignment {
   kind: "coordinator";
   id: string;
@@ -128,6 +131,7 @@ export interface CoordinatorAssignment {
   ctx: number;
   parallel: number;
   mtp?: { path: string; chain: number };
+  speculation?: NgramSpeculation;
   env: Record<string, string>;
   extraArgs: string[];
   port: number;
@@ -152,6 +156,9 @@ export interface ReplicaAssignment {
   modelName?: string;
   ctx?: number;
   parallel?: number;
+  device?: string;
+  mtp?: { path: string; chain: number };
+  speculation?: NgramSpeculation;
   extraArgs?: string[];
   allow: string[];
 }
@@ -178,11 +185,14 @@ export interface DeploymentSpec {
   kind: DeploymentKind;
   coordinatorNodeId?: string;
   workerNodeIds?: string[];
+  /** Exact layer counts paired with workerNodeIds, in the same order; each must fit a profile envelope row. */
+  workerLayers?: number[];
   replicaNodeId?: string;
   ctx?: number;
   parallel?: number;
   /** MTP chain length; 0 = no speculative decoding. */
   chain?: number;
+  speculation?: NgramSpeculation;
   wire?: "off" | "f16" | "q8";
   batchedGets?: boolean;
   forwarding?: boolean;
@@ -207,9 +217,13 @@ export interface Plan {
   coordinatorDevice: string;
   workers: PlanWorker[];
   tensorSplit: number[];
+  /** Explicit placements only: engine weights include the output slot on the coordinator.
+   * tensorSplit remains requested transformer counts; automatic plans retain historical weights. */
+  engineTensorSplit?: number[];
   ctx: number;
   parallel: number;
   chain: number;
+  speculation?: NgramSpeculation;
   env: Record<string, string>;
   modelPath: string;
   mtpPath?: string;

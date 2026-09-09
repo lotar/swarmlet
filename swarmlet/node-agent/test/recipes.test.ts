@@ -37,6 +37,24 @@ describe("recipes", () => {
     const r = replicaArgv("/eng", { kind: "replica", id: "r", deploymentId: "d", port: 8100, model: { path: "/m/x.gguf" }, modelName: "x", ctx: 4096, parallel: 4, extraArgs: ["-fa", "on"], allow: [] });
     expect(r.argv).toEqual(["/eng/llama-server", "-m", "/m/x.gguf", "--host", "127.0.0.1", "--port", "8100", "-ngl", "999", "--metrics", "-c", "4096", "--parallel", "4", "--alias", "x", "-fa", "on"]);
   });
+
+  test("both serving roles launch native ngram verification without a draft model", () => {
+    const common = { id: "s", deploymentId: "d", port: 8100, model: { path: "/m/x.gguf" }, ctx: 4096, parallel: 1, allow: [], speculation: { type: "ngram-simple" as const } };
+    const replica = replicaArgv("/eng", { ...common, kind: "replica", device: "CUDA0" });
+    const coordinator = coordinatorArgv("/eng", { ...common, kind: "coordinator", rpc: [], devices: ["MTL0"], tensorSplit: [24], env: {}, extraArgs: [] }, []);
+    for (const r of [replica, coordinator]) {
+      expect(r.argv.join(" ")).toContain("--spec-type ngram-simple --spec-ngram-simple-size-n 3 --spec-ngram-simple-size-m 4 --spec-ngram-simple-min-hits 3");
+      expect(r.argv).not.toContain("-md");
+    }
+    expect(replica.argv.join(" ")).toContain("--device CUDA0");
+    expect(replicaArgv("/eng", { ...common, kind: "replica", speculation: undefined }).argv).not.toContain("--spec-type");
+  });
+
+  test("replica honors MTP and refuses conflicting speculation", () => {
+    const a = { kind: "replica" as const, id: "r", deploymentId: "d", port: 8100, model: { path: "/m/x.gguf" }, allow: [], mtp: { path: "/m/head.gguf", chain: 4 } };
+    expect(replicaArgv("/eng", a).argv.join(" ")).toContain("--spec-type draft-mtp -md /m/head.gguf --spec-draft-n-max 4 -ngld 999");
+    expect(() => replicaArgv("/eng", { ...a, speculation: { type: "ngram-simple" } })).toThrow("cannot be combined");
+  });
 });
 
 describe("enforcement", () => {

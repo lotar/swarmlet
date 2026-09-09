@@ -6,6 +6,17 @@ import type { CoordinatorAssignment, ReplicaAssignment, WorkerAssignment } from 
 
 export interface WorkerRecipe { argv: string[]; env: Record<string, string> }
 
+function speculationArgs(a: Pick<CoordinatorAssignment, "mtp" | "speculation">): string[] {
+  if (a.mtp && a.speculation) throw new Error("MTP and ngram speculation cannot be combined");
+  if (a.mtp) return ["--spec-type", "draft-mtp", "-md", a.mtp.path, "--spec-draft-n-max", String(a.mtp.chain), "-ngld", "999"];
+  if (a.speculation) {
+    if (a.speculation.type !== "ngram-simple") throw new Error("unsupported speculation type");
+    // Small fixed horizon: no second model, and every proposed token is target-verified.
+    return ["--spec-type", "ngram-simple", "--spec-ngram-simple-size-n", "3", "--spec-ngram-simple-size-m", "4", "--spec-ngram-simple-min-hits", "3"];
+  }
+  return [];
+}
+
 /** ggml-rpc-server for a worker slab. `peerLocalPorts[i]` is the local port dialed to peers[i]. */
 export function workerArgv(engine: string, a: WorkerAssignment, peerLocalPorts: number[]): WorkerRecipe {
   const argv = [`${engine}/ggml-rpc-server`, "-H", "127.0.0.1", "-p", String(a.port), "-d", a.device, "-t", String(a.threads)];
@@ -25,7 +36,7 @@ export function coordinatorArgv(engine: string, a: CoordinatorAssignment, rpcLoc
     "-ngl", "999", "-c", String(a.ctx), "--parallel", String(a.parallel), "--metrics", "--temp", "0",
   ];
   if (a.modelName) argv.push("--alias", a.modelName);
-  if (a.mtp) argv.push("--spec-type", "draft-mtp", "-md", a.mtp.path, "--spec-draft-n-max", String(a.mtp.chain), "-ngld", "999");
+  argv.push(...speculationArgs(a));
   argv.push(...a.extraArgs);
   const env: Record<string, string> = {
     GGML_RPC_FORWARD: "1", GGML_RPC_PIPELINE: "1", GGML_SCHED_PIPELINED_COPY: "1", GGML_RPC_GET_PIPELINE: "1", GGML_RPC_WIRE: "off",
@@ -41,6 +52,8 @@ export function replicaArgv(engine: string, a: ReplicaAssignment): WorkerRecipe 
   if (a.ctx) argv.push("-c", String(a.ctx));
   if (a.parallel) argv.push("--parallel", String(a.parallel));
   if (a.modelName) argv.push("--alias", a.modelName);
+  if (a.device) argv.push("--device", a.device);
+  argv.push(...speculationArgs(a));
   argv.push(...(a.extraArgs ?? []));
   return { argv, env: {} };
 }
