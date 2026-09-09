@@ -59,6 +59,7 @@ test("asymmetric speculative split reaches the actual coordinator assignment", a
   expect(a.kind).toBe("coordinator");
   if (a.kind !== "coordinator") throw new Error("coordinator assignment missing");
   expect(a.tensorSplit).toEqual([2, 3, 20]); // 19 coordinator blocks plus the output slot.
+  expect(a.env.LLAMA_ARG_LOG_VERBOSITY).toBe("4");
   expect(a.speculation).toEqual({ type: "ngram-simple" });
   expect(a.mtp).toBeUndefined();
   expect(f.reg.getDeployment(id)?.state).toBe("ready");
@@ -89,6 +90,7 @@ test("external deployments reject execution options before persisting or startin
 
 test("offline worker is not falsely stopped; reconnect cleans it before fresh three-node placement", async () => {
   const f = rig(); const { id } = await f.manager.create(split); await f.manager.start(id);
+  expect((f.sent.find((s) => s.a.kind === "coordinator")!.a as import("../../protocol/types.ts").CoordinatorAssignment).env.LLAMA_ARG_LOG_VERBOSITY).toBeUndefined();
   const old = f.reg.listAssignments(id), l1 = old.find((a) => a.nodeId === "l1")!;
   f.online.delete("l1"); f.manager.onOffline("l1");
   expect(f.reg.getDeployment(id)?.state).toBe("loading");

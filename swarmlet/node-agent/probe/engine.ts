@@ -5,6 +5,7 @@ import { join } from "node:path";
 import type { Capabilities, GpuDevice } from "../../protocol/types.ts";
 import type { Logger } from "../../control/log.ts";
 import { CODE_NOT_FOUND, exec } from "./exec.ts";
+import { sha256File } from "./models.ts";
 
 /** RPC protocol the shipped engine speaks (push forwarding + wire compression). */
 export const ENGINE_PROTO = "8.1";
@@ -71,9 +72,24 @@ export async function engineInfo(enginePath: string, log: Logger): Promise<Capab
     return undefined;
   }
   const manifest = Bun.file(join(enginePath, "sha256.txt"));
+  const info: NonNullable<Capabilities["engine"]> = { proto: ENGINE_PROTO, sha256: {} };
   if (!(await manifest.exists())) {
     log.warn("engine: sha256.txt missing; binary hashes unknown", { enginePath });
-    return { proto: ENGINE_PROTO, sha256: {} };
+  } else info.sha256 = parseShaManifest(await manifest.text());
+  // This optional worker has its own source ABI. A stale manifest alone must not advertise it.
+  delete info.sha256["mesh-stage-worker"];
+  const stage = join(enginePath, "mesh-stage-worker");
+  if (await Bun.file(stage).exists()) {
+    try {
+      const [result, binarySha256] = await Promise.all([exec([stage, "--identity"], { timeoutMs: 10_000 }), sha256File(stage)]);
+      if (result.code !== 0) throw new Error(`identity probe exited ${result.code}`);
+      const identity = JSON.parse(result.stdout);
+      if (identity.schema !== 1 || !/^[a-f0-9]{64}$/.test(identity.engine) || identity.binary_sha256 !== binarySha256) throw new Error("invalid native build identity");
+      info.stages = { engine: identity.engine };
+      info.sha256["mesh-stage-worker"] = binarySha256;
+    } catch (e) {
+      log.warn("native stage worker omitted", { err: (e as Error).message });
+    }
   }
-  return { proto: ENGINE_PROTO, sha256: parseShaManifest(await manifest.text()) };
+  return info;
 }

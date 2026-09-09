@@ -2,15 +2,17 @@
 // (-> failed from anywhere). Turns a Plan into assignments (workers first, coordinator last), waits
 // for the states the agents report, and tears everything down on any failure or node loss.
 
-import { AGENT_DATA_PORT, type Assignment, type AssignmentState, type CoordinatorAssignment, type Deployment, type DeploymentSpec, type Endpoint, type ModelProfile, type Plan, type ReplicaAssignment, type WorkerAssignment } from "../protocol/types.ts";
+import { AGENT_DATA_PORT, type Assignment, type AssignmentState, type CoordinatorAssignment, type Deployment, type DeploymentSpec, type Endpoint, type ModelProfile, type NativeExecutionPlan, type Plan, type ReplicaAssignment, type StageAssignment, type WorkerAssignment } from "../protocol/types.ts";
 import type { AgentChannel } from "./channel.ts";
 import type { Logger } from "./log.ts";
 import { PlanError, planDeployment } from "./planner.ts";
 import type { NodeRow, Registry } from "./registry.ts";
+import type { Qwen35NativeQualification } from "./profiles/qwen35-native.ts";
 
 export interface DeploymentDeps {
   reg: Registry; channel: AgentChannel; profiles: Map<string, ModelProfile>; log: Logger;
   recoveryDelayMs?: number; stopTimeoutMs?: number; reconnectGraceMs?: number;
+  nativeQualifications?: readonly Qwen35NativeQualification[];
 }
 
 /** First port for coordinator / replica llama-servers on a node (SWARMLET_SERVER_PORT_BASE; tests use another base). */
@@ -25,12 +27,17 @@ function newId(prefix: string): string {
   return `${prefix}-${[...b].map((x) => x.toString(16).padStart(2, "0")).join("")}`;
 }
 
+function planNodes(plan: Plan): string[] {
+  return plan.nativeExecution ? plan.nativeExecution.endpoints.map(e => e.nodeId) : [plan.coordinatorNodeId, ...plan.workers.map(w => w.nodeId)];
+}
+
 export class DeploymentManager {
   private waiters = new Map<string, Array<(s: AssignmentState, detail?: string) => void>>();
   private inflight = new Map<string, number>();
   private operations = new Map<string, Promise<void>>();
   private generations = new Map<string, number>();
   private closed = false;
+  private nativeLifetimes = new Map<string, AbortController>();
   // A channel loss invalidates relay RPC state. Keep routing withdrawn while acknowledged
   // teardown and bounded reconnect run, then build a fresh placement (never resume RPC state).
   private reconnecting = new Map<string, { deadline: number; cleanupDeadline?: number; nodes: string[]; reason: string }>();
@@ -87,11 +94,11 @@ export class DeploymentManager {
       }
       if (!intent.running || (dep.state !== "failed" && !reconnect) || this.operations.has(dep.id) || intent.attempts >= MAX_RECOVERY_ATTEMPTS || Date.now() < intent.retryAt) return;
       let required = dep.spec.external ? [dep.spec.external.nodeId] : dep.plan
-        ? [dep.plan.coordinatorNodeId, ...dep.plan.workers.map((w) => w.nodeId)]
+        ? planNodes(dep.plan)
         : [dep.spec.coordinatorNodeId ?? dep.spec.replicaNodeId, ...(dep.spec.workerNodeIds ?? [])].filter((n): n is string => !!n);
       if (!required.length) {
         // An automatic placement may have failed before it ever had a plan (for example, no nodes online).
-        try { const candidate = this.plan(dep.spec, this.usedPorts()); required = [candidate.coordinatorNodeId, ...candidate.workers.map((w) => w.nodeId)]; }
+        try { const candidate = this.plan(dep.spec, this.usedPorts()); required = planNodes(candidate); }
         catch { return; } // wait for a viable offer instead of burning retries while the rig is absent
       }
       if (required.some((n) => !this.deps.channel.isOnline(n) || !this.deps.reg.getNode(n)?.online)) return;
@@ -186,7 +193,7 @@ export class DeploymentManager {
       }
       const reason = `node ${nodeId} went offline`;
       this.cancel(dep.id);
-      const nodes = dep.plan ? [dep.plan.coordinatorNodeId, ...dep.plan.workers.map(w => w.nodeId)]
+      const nodes = dep.plan ? planNodes(dep.plan)
         : [...new Set(this.deps.reg.listAssignments(dep.id).filter(a => !a.retired).map(a => a.nodeId))];
       this.reconnecting.set(dep.id, { deadline: Date.now() + (this.deps.reconnectGraceMs ?? 30_000), nodes, reason });
       this.deps.reg.updateDeployment(dep.id, { state: "loading", endpoint: null, error: `${reason}; reconnecting with fresh placement required` });
@@ -232,6 +239,7 @@ export class DeploymentManager {
         this.assertRunning(id, generation);
         if (dep.spec.kind === "external") await this.startExternal(dep, generation);
         else if (dep.spec.kind === "replica") await this.startReplica(dep, generation);
+        else if (dep.spec.kind === "stages" || dep.spec.kind === "prefill-decode") await this.startNative(dep, generation);
         else await this.startSplit(dep, generation);
       } catch (e) {
         if (!this.closed && generation === (this.generations.get(id) ?? 0)) {
@@ -271,7 +279,7 @@ export class DeploymentManager {
       if (dep.state !== "ready" || !dep.endpoint) continue;
       const node = this.deps.reg.getNode(dep.endpoint.nodeId);
       const list = byModel.get(dep.endpoint.modelName) ?? [];
-      const nodes = dep.plan ? [dep.plan.coordinatorNodeId, ...dep.plan.workers.map((w) => w.nodeId)] : [dep.endpoint.nodeId];
+      const nodes = dep.plan ? planNodes(dep.plan) : [dep.endpoint.nodeId];
       list.push({ id: dep.id, name: dep.spec.name, kind: dep.spec.kind, nodeId: dep.endpoint.nodeId, port: dep.endpoint.port, nodes, inflight: this.inflight.get(dep.id) ?? 0, tokPerSec: this.liveTokPerSec(dep.id), rttMs: node?.caps?.net?.rttMs });
       byModel.set(dep.endpoint.modelName, list);
       const registered = Math.floor(Date.parse(dep.createdAt) / 1000);
@@ -281,6 +289,17 @@ export class DeploymentManager {
   }
 
   trackInflight(id: string, delta: number): void { this.inflight.set(id, Math.max(0, (this.inflight.get(id) ?? 0) + delta)); }
+
+  nativeExecution(id: string): { plan: NativeExecutionPlan; signal: AbortSignal } | null {
+    const dep = this.deps.reg.getDeployment(id), lifetime = this.nativeLifetimes.get(id);
+    if (dep?.state !== "ready" || !dep.plan?.nativeExecution || !lifetime || lifetime.signal.aborted) return null;
+    return { plan: dep.plan.nativeExecution, signal: lifetime.signal };
+  }
+
+  async nativeExecutionFailed(id: string, reason: string, expectedLifetime?: AbortSignal): Promise<void> {
+    if (expectedLifetime && this.nativeLifetimes.get(id)?.signal !== expectedLifetime) return;
+    await this.fail(id, reason);
+  }
 
   /** Tokens the router saw stream out of each deployment, in 1 s buckets, for a live rate. */
   private tokenBuckets = new Map<string, Map<number, number>>();
@@ -348,6 +367,30 @@ export class DeploymentManager {
     this.deps.reg.event("deployment", `ready (replica on ${node.hostname})`, { deploymentId: dep.id });
   }
 
+  private async startNative(dep: Deployment, generation: number): Promise<void> {
+    const profile = this.deps.profiles.get(dep.spec.profile)!;
+    const plan = this.plan(dep.spec, this.usedPorts());
+    if (!plan.nativeExecution) throw new Error("native execution plan missing");
+    this.deps.reg.updateDeployment(dep.id, { plan, state: "loading" });
+    const assignments = plan.nativeExecution.endpoints.map(e => ({ nodeId: e.nodeId, a: {
+      kind: "stage", id: newId("as"), deploymentId: dep.id,
+      model: { path: e.modelPath, sha256: e.identity.model_sha256 }, port: e.port,
+      ctx: plan.ctx, gpuLayers: 999, identity: e.identity, binarySha256: e.binarySha256,
+      fitMiB: e.fitMiB, allow: [], enforce: e.enforce,
+    } satisfies StageAssignment }));
+    // Start all resident contexts, then wait for every node's loaded-identity check.
+    for (const { nodeId, a } of assignments) {
+      this.assertRunning(dep.id, generation);
+      if (!this.deps.channel.assign(nodeId, a)) throw new Error(`node ${nodeId} is offline`);
+    }
+    await Promise.all(assignments.map(({ a }) => this.waitFor(a.id, ["ready"], COORDINATOR_TIMEOUT_MS)));
+    this.assertRunning(dep.id, generation);
+    const first = plan.nativeExecution.endpoints[0]!;
+    this.nativeLifetimes.set(dep.id, new AbortController());
+    this.deps.reg.updateDeployment(dep.id, { state: "ready", endpoint: { nodeId: first.nodeId, port: first.port, modelName: profile.modelName } });
+    this.deps.reg.event("deployment", `ready (${dep.spec.kind}: ${assignments.map(a => this.node(a.nodeId).hostname).join(" > ")})`, { deploymentId: dep.id });
+  }
+
   private async startSplit(dep: Deployment, generation: number): Promise<void> {
     const profile = this.deps.profiles.get(dep.spec.profile)!;
     const used = this.usedPorts();
@@ -383,7 +426,8 @@ export class DeploymentManager {
       tensorSplit: plan.engineTensorSplit ?? plan.tensorSplit, ctx: plan.ctx, parallel: plan.parallel,
       mtp: plan.chain > 0 && plan.mtpPath ? { path: plan.mtpPath, chain: plan.chain } : undefined,
       speculation: plan.speculation,
-      env: plan.env, extraArgs: profile.extraArgs, port, modelName: profile.modelName,
+      env: plan.engineTensorSplit ? { ...plan.env, LLAMA_ARG_LOG_VERBOSITY: "4" } : plan.env,
+      extraArgs: profile.extraArgs, port, modelName: profile.modelName,
       fitMiB: coord.os === "darwin" ? coordLayers * profile.layerMiB + profile.coordinatorHostMiB : undefined,
       stopExternal: externals[0]?.spec.name, allow: [], enforce: { ramMiB: coord.offer?.ramMiB, cpuCores: coord.offer?.cpuCores },
     };
@@ -491,6 +535,8 @@ export class DeploymentManager {
   }
 
   private cancel(id: string): void {
+    this.nativeLifetimes.get(id)?.abort(new Error("native deployment retired"));
+    this.nativeLifetimes.delete(id);
     this.generations.set(id, (this.generations.get(id) ?? 0) + 1);
     for (const row of this.deps.reg.listAssignments(id)) {
       for (const w of [...(this.waiters.get(row.id) ?? [])]) w("failed", "deployment operation cancelled");
@@ -505,7 +551,7 @@ export class DeploymentManager {
     const profile = this.deps.profiles.get(spec.profile);
     if (!profile) throw new Error(`unknown profile ${spec.profile}`);
     try {
-      return planDeployment({ spec, profile, nodes: this.deps.reg.listNodes().map((n) => ({ ...n, online: n.online && this.deps.channel.isOnline(n.id) })), usedPorts });
+      return planDeployment({ spec, profile, nodes: this.deps.reg.listNodes().map((n) => ({ ...n, online: n.online && this.deps.channel.isOnline(n.id) })), usedPorts, nativeQualifications: this.deps.nativeQualifications });
     } catch (e) {
       if (e instanceof PlanError) throw new Error(`no plan: ${e.message}`); // message already carries every reason
       throw e as Error;
@@ -519,7 +565,7 @@ export class DeploymentManager {
       const s = used.get(r.nodeId) ?? new Set<number>();
       const b = r.body;
       if (b.kind === "worker") { s.add(b.port); if (b.peerPort) s.add(b.peerPort); }
-      if (b.kind === "coordinator" || b.kind === "replica") s.add(b.port);
+      if (b.kind === "coordinator" || b.kind === "replica" || b.kind === "stage") s.add(b.port);
       used.set(r.nodeId, s);
     }
     return used;

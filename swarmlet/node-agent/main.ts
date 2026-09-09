@@ -8,6 +8,7 @@
 //   swarmlet-node ui                           open http://127.0.0.1:47800 in the browser
 // Env: SWARMLET_HOME (state dir), SWARMLET_ENGINE (engine binaries dir), SWARMLET_LOG (debug|info|warn).
 
+import { join as joinPath } from "node:path";
 import { hostname as osHostname } from "node:os";
 import { makeLogger } from "../control/log.ts";
 import { validateOffer } from "../protocol/validate.ts";
@@ -56,7 +57,7 @@ export class AgentRuntime {
     });
     await this.runner.recover();
     await this.refreshCaps();
-    this.models = await listModels(this.cfg.offer.modelsDir);
+    this.models = await listModels(this.cfg.offer.modelsDir, { cacheFile: joinPath(this.paths.stateDir, "model-hashes.json") });
   }
 
   async refreshCaps(): Promise<Capabilities> {
@@ -131,10 +132,10 @@ export class AgentRuntime {
       }),
       caps: () => this.caps,
       offer: () => this.cfg.offer,
-      setOffer: async (offer) => { this.cfg.offer = offer; saveNodeConfig(this.paths, this.cfg); this.models = await listModels(offer.modelsDir); this.client?.sendOffer(); this.client?.sendModels(); },
+      setOffer: async (offer) => { this.cfg.offer = offer; saveNodeConfig(this.paths, this.cfg); this.models = await listModels(offer.modelsDir, { cacheFile: joinPath(this.paths.stateDir, "model-hashes.json") }); this.client?.sendOffer(); this.client?.sendModels(); },
       setEnabled: async (enabled) => { this.cfg.offer.enabled = enabled; saveNodeConfig(this.paths, this.cfg); this.client?.sendOffer(); },
       models: () => ({ modelsDir: this.cfg.offer.modelsDir, models: this.models }),
-      rescanModels: async () => { this.models = await listModels(this.cfg.offer.modelsDir, { hash: true }); this.client?.sendModels(); return this.models; },
+      rescanModels: async () => { this.models = await listModels(this.cfg.offer.modelsDir, { hash: true, cacheFile: joinPath(this.paths.stateDir, "model-hashes.json") }); this.client?.sendModels(); return this.models; },
       join: (url, code) => this.join(url, code),
       measureNet: () => this.measure(),
       logs: (assignment, lines = 200) => (assignment ? this.runner.recentLog(assignment, lines) : this.agentLog.slice(-lines)),

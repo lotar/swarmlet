@@ -1,0 +1,98 @@
+{
+  "note": "Example artifact inventory from native worker build; this is not qualification evidence. Controller admission must independently match installed binaries and registered proofs.",
+  "hosts": {
+    "19d7c8f75e54726a": "lotar@192.168.1.243",
+    "6474b864aaf6fa5d": "lotar@192.168.1.220"
+  },
+  "cases": [
+    {
+      "id": "stage2-legion-mac",
+      "spec": {
+        "profile": "qwen35-2b-q8",
+        "ctx": 1024,
+        "parallel": 1,
+        "chain": 0,
+        "transport": "relay",
+        "kind": "stages",
+        "stages": [
+          {
+            "nodeId": "19d7c8f75e54726a",
+            "modelPath": "/home/lotar/swarmlet/models/stages/stage-0-3.gguf",
+            "modelSha256": "c57aea57890507cc8baf08691349ad6be21052fa1611f56974f41b2946c01e46",
+            "start": 0,
+            "end": 3
+          },
+          {
+            "nodeId": "30f05a2670c368d0",
+            "modelPath": "/Users/lotar/.swarmlet/models/stages/stage-3-24.gguf",
+            "modelSha256": "228c3c76c249a24da4746afe76d7144bdb4f12b2520f8acc2e863766f9227f6b",
+            "start": 3,
+            "end": 24
+          }
+        ]
+      }
+    },
+    {
+      "id": "stage3-legions-mac",
+      "spec": {
+        "profile": "qwen35-2b-q8",
+        "ctx": 1024,
+        "parallel": 1,
+        "chain": 0,
+        "transport": "relay",
+        "kind": "stages",
+        "stages": [
+          {
+            "nodeId": "19d7c8f75e54726a",
+            "modelPath": "/home/lotar/swarmlet/models/stages/stage-0-3.gguf",
+            "modelSha256": "c57aea57890507cc8baf08691349ad6be21052fa1611f56974f41b2946c01e46",
+            "start": 0,
+            "end": 3
+          },
+          {
+            "nodeId": "6474b864aaf6fa5d",
+            "modelPath": "/home/lotar/swarmlet/models/stages/stage-3-6.gguf",
+            "modelSha256": "f979c19916871ac08ce9f37d55c19513b35db1773a086feed4def9eaa0028593",
+            "start": 3,
+            "end": 6
+          },
+          {
+            "nodeId": "30f05a2670c368d0",
+            "modelPath": "/Users/lotar/.swarmlet/models/stages/stage-6-24.gguf",
+            "modelSha256": "d1baa07f6abececc46f9fe31212448a26933b79aa3bac2285e4e1241272fa40c",
+            "start": 6,
+            "end": 24
+          }
+        ]
+      }
+    },
+    {
+      "id": "pd-mac-legion",
+      "spec": {
+        "profile": "qwen35-2b-q8",
+        "ctx": 1024,
+        "parallel": 1,
+        "chain": 0,
+        "transport": "relay",
+        "kind": "prefill-decode",
+        "prefillNodeId": "30f05a2670c368d0",
+        "decodeNodeId": "19d7c8f75e54726a",
+        "modelSha256": "1b04acba824817554f4ce23639bc8495ff70453b8fcb047900c731521021f2c1"
+      }
+    },
+    {
+      "id": "pd-legion-mac",
+      "spec": {
+        "profile": "qwen35-2b-q8",
+        "ctx": 1024,
+        "parallel": 1,
+        "chain": 0,
+        "transport": "relay",
+        "kind": "prefill-decode",
+        "prefillNodeId": "19d7c8f75e54726a",
+        "decodeNodeId": "30f05a2670c368d0",
+        "modelSha256": "1b04acba824817554f4ce23639bc8495ff70453b8fcb047900c731521021f2c1"
+      }
+    }
+  ]
+}

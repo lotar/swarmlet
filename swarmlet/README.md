@@ -8,7 +8,7 @@ Design: [`docs/NODE_APPS_CONTROL_PLANE_20260904.md`](../docs/NODE_APPS_CONTROL_P
 protocol/      shared types, validators, Ed25519 identity helpers, binary stream mux (zero deps)
 control/       control plane: config, SQLite registry, enrollment, agent channel + relay, planner,
                deployments, OpenAI router, web UI (control/ui)
-node-agent/    daemon + CLI: identity, probes, offer, enforcement, roles (worker/coordinator/replica),
+node-agent/    daemon + CLI: identity, probes, offer, enforcement, roles (worker/coordinator/replica/stage),
                TLS data listener + dialer, local web UI (node-agent/ui), service install
 node-shell/    Tauri v2 desktop shell (window + tray + autostart) around the agent's local UI
 engine/        patched llama.cpp build (ggml-rpc-server, llama-server, llama-ring-bench)
@@ -31,6 +31,45 @@ Create a deployment in the control UI (Deployments > New), preview the plan, sta
 curl -s http://127.0.0.1:47900/v1/chat/completions -H "Authorization: Bearer <api key>" \
   -d '{"model":"qwen3.8-flash-next","messages":[{"role":"user","content":"hello"}]}'
 ```
+
+## Placement and execution options
+
+The deployment API accepts `POST /api/deployments/plan-preview` with a deployment
+spec, then `POST /api/deployments` and `POST /api/deployments/<id>/start`.
+Use the control admin token for these operations.
+
+- **Exact asymmetric placement:** a `split` spec can pair ordered `workerNodeIds`
+  with `workerLayers`, for example `[2,3]`. `coordinatorNodeId` selects the node
+  holding the remaining blocks. The plan distinguishes transformer-block counts
+  from native tensor weights, whose final device also holds the output layer.
+  Automatic placement retains its historical weight semantics.
+- **Replicas and pools:** create one `replica` deployment per selected
+  `replicaNodeId`. Ready deployments serving the same model form a pool in the
+  existing router. `x-swarmlet-deployment` pins an individual deployment.
+- **Speculation:** `speculation: {"type":"ngram-simple"}` enables verified ngram
+  draft/accept decoding on `split` or `replica`. It requires no additional model
+  and cannot be combined with an MTP chain.
+- **Resident stages and prefill/decode:** `stages` and `prefill-decode` use the
+  native worker and controller-owned qualification records. See
+  [native example specs](e2e/native-rig-cases.example.json) for the explicit node,
+  artifact path/hash and stage-interval fields. Admission requires an exact
+  qualified artifact/binary combination; request JSON cannot bypass it.
+
+After staging native artifacts, rescan models through each node's owner interface
+(`POST /api/models/rescan`) to populate its verified inventory. Hashes persist
+across restart and offer refresh when file metadata is unchanged. Replaced or
+changed files require another rescan; workers verify the actual file before load.
+
+Native execution initially supports Qwen3.5-2B Q8_0, context 1024, one active
+request per deployment, greedy text generation and 1–128 output tokens. Both
+`/v1/completions` and text-only `/v1/chat/completions` support streaming and JSON
+responses. Unsupported sampling, tool, image and template options are rejected.
+A busy native deployment returns 429. Cancellation resets its resident contexts;
+failed cleanup withdraws the route and recovery creates fresh contexts. Raw native
+worker ports are private implementation endpoints, not OpenAI servers.
+
+Physical acceptance and outstanding gates are recorded in the
+[placement/execution report](../docs/reports/PLACEMENT_EXECUTION_PLAN_20260909.md).
 
 ## Tests
 

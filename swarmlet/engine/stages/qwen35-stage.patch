@@ -1,0 +1,207 @@
+diff --git a/ggml/src/ggml-cuda/ggml-cuda.cu b/ggml/src/ggml-cuda/ggml-cuda.cu
+index f4af826..3d88731 100644
+--- a/ggml/src/ggml-cuda/ggml-cuda.cu
++++ b/ggml/src/ggml-cuda/ggml-cuda.cu
+@@ -1622,6 +1622,34 @@ static void ggml_cuda_mul_mat_cublas_impl(ggml_backend_cuda_context & ctx, const
+     }
+ }
+ 
++// Qwen35 native stages retain Q8_0 weight bytes but use F32 activations and accumulation.
++// Tile output rows so the 248320-row vocabulary head never allocates a full F32 copy.
++static void ggml_cuda_mul_mat_q8_f32(ggml_backend_cuda_context & ctx,
++        const ggml_tensor * src0, const ggml_tensor * src1, ggml_tensor * dst) {
++    GGML_ASSERT(src0->type == GGML_TYPE_Q8_0 && src1->type == GGML_TYPE_F32 && dst->type == GGML_TYPE_F32);
++    GGML_ASSERT(src0->ne[2] == 1 && src0->ne[3] == 1 && src1->ne[2] == 1 && src1->ne[3] == 1);
++    GGML_ASSERT(ggml_is_contiguous(src0) && ggml_is_contiguous(dst) && src1->nb[0] == sizeof(float));
++    constexpr int64_t max_tile_elements = 8LL*1024*1024; // 32 MiB maximum dequantization workspace.
++    const int64_t columns = src0->ne[0];
++    const int64_t tile_rows = std::min(src0->ne[1], std::max<int64_t>(1, max_tile_elements/columns));
++    ggml_cuda_pool_alloc<float> weights(ctx.pool(), tile_rows*columns);
++    const to_fp32_cuda_t dequantize = ggml_get_to_fp32_cuda(GGML_TYPE_Q8_0);
++    const float alpha = 1.0f, beta = 0.0f;
++    cublasHandle_t handle = ctx.cublas_handle();
++    cublasMath_t previous_math;
++    CUBLAS_CHECK(cublasGetMathMode(handle, &previous_math));
++    CUBLAS_CHECK(cublasSetMathMode(handle, CUBLAS_PEDANTIC_MATH));
++    for (int64_t first = 0; first < src0->ne[1]; first += tile_rows) {
++        const int64_t rows = std::min(tile_rows, src0->ne[1] - first);
++        dequantize((const char *) src0->data + first*src0->nb[1], weights.get(), rows*columns, ctx.stream());
++        CUBLAS_CHECK(cublasSgemm(handle, CUBLAS_OP_T, CUBLAS_OP_N,
++            rows, src1->ne[1], columns, &alpha, weights.get(), columns,
++            (const float *) src1->data, src1->nb[1]/sizeof(float), &beta,
++            (float *) dst->data + first, dst->ne[0]));
++    }
++    CUBLAS_CHECK(cublasSetMathMode(handle, previous_math));
++}
++
+ static void ggml_cuda_mul_mat_cublas(ggml_backend_cuda_context & ctx, const ggml_tensor * src0, const ggml_tensor * src1, ggml_tensor * dst) {
+     ggml_type compute_type = src0->type;
+     if (ggml_is_quantized(compute_type)) {
+@@ -1787,6 +1815,10 @@ static bool ggml_cuda_should_fuse_mul_mat_vec_f(const ggml_tensor * tensor) {
+ }
+ 
+ static bool ggml_cuda_should_fuse_mul_mat_vec_q(const ggml_tensor * tensor) {
++    // Native stage ABI: Q8_0 uses F32 cuBLAS to avoid additional activation quantization.
++    if (tensor->src[0]->type == GGML_TYPE_Q8_0) {
++        return false;
++    }
+     ggml_tensor *       src0 = tensor->src[0];
+     ggml_tensor *       src1 = tensor->src[1];
+     const ggml_tensor * dst  = tensor;
+@@ -1823,6 +1855,12 @@ static void ggml_cuda_mul_mat(ggml_backend_cuda_context & ctx, const ggml_tensor
+         return;
+     }
+ 
++    // Keep the original Q8_0 weights, but do not round stage activations to Q8_1.
++    if (src0->type == GGML_TYPE_Q8_0) {
++        ggml_cuda_mul_mat_q8_f32(ctx, src0, src1, dst);
++        return;
++    }
++
+     // If src0 is a temporary compute buffer it may have some padding that needs to be cleared for mul_mat_vec_q or mul_mat_q.
+     // But if src0 is also a view of another tensor then this cannot be done safely because it may overwrite valid tensor data.
+     // Therefore, in such cases use cuBLAS.
+diff --git a/src/llama-graph.cpp b/src/llama-graph.cpp
+index 6b7eec1..20d096f 100644
+--- a/src/llama-graph.cpp
++++ b/src/llama-graph.cpp
+@@ -1084,22 +1084,29 @@ void llm_graph_input_attn_cross::set_input(const llama_ubatch * ubatch) {
+ }
+ 
+ void llm_graph_input_mem_hybrid::set_input(const llama_ubatch * ubatch) {
+-    mctx->get_attn()->set_input_k_idxs(inp_attn->self_k_idxs, ubatch);
+-    mctx->get_attn()->set_input_v_idxs(inp_attn->self_v_idxs, ubatch);
++    // A shard can have no attention layers; unused inputs are pruned from its graph.
++    if (inp_attn->self_k_idxs && inp_attn->self_k_idxs->buffer) {
++        mctx->get_attn()->set_input_k_idxs(inp_attn->self_k_idxs, ubatch);
++    }
++    if (inp_attn->self_v_idxs && inp_attn->self_v_idxs->buffer) {
++        mctx->get_attn()->set_input_v_idxs(inp_attn->self_v_idxs, ubatch);
++    }
+ 
+-    mctx->get_attn()->set_input_kq_mask(inp_attn->self_kq_mask, ubatch, cparams.causal_attn);
++    if (inp_attn->self_kq_mask && inp_attn->self_kq_mask->buffer) {
++        mctx->get_attn()->set_input_kq_mask(inp_attn->self_kq_mask, ubatch, cparams.causal_attn);
++    }
+ 
+-    if (inp_attn->self_k_rot) {
++    if (inp_attn->self_k_rot && inp_attn->self_k_rot->buffer) {
+         mctx->get_attn()->set_input_k_rot(inp_attn->self_k_rot);
+     }
+ 
+-    if (inp_attn->self_v_rot) {
++    if (inp_attn->self_v_rot && inp_attn->self_v_rot->buffer) {
+         mctx->get_attn()->set_input_v_rot(inp_attn->self_v_rot);
+     }
+ 
+     const int64_t n_rs = mctx->get_recr()->get_n_rs();
+ 
+-    if (inp_rs->s_copy) {
++    if (inp_rs->s_copy && inp_rs->s_copy->buffer) {
+         GGML_ASSERT(ggml_backend_buffer_is_host(inp_rs->s_copy->buffer));
+         int32_t * data = (int32_t *) inp_rs->s_copy->data;
+ 
+@@ -2316,6 +2323,15 @@ ggml_tensor * llm_graph_context::build_inp_embd(ggml_tensor * tok_embd) const {
+     cb(inp->embd, "inp_embd", -1);
+     ggml_set_input(inp->embd);
+ 
++    if (tok_embd == nullptr) {
++        // Resident middle/final mesh stages accept activations only; no vocabulary matrix.
++        res->t_inp_embd = inp->embd;
++        auto * cur = inp->embd;
++        res->add_input(std::move(inp));
++        ggml_build_forward_expand(gf, cur);
++        return cur;
++    }
++
+     // select one of the 2 inputs, based on the batch contents
+     // ref: https://github.com/ggml-org/llama.cpp/pull/18550
+     std::array<ggml_tensor *, 2> inps;
+@@ -2646,6 +2662,7 @@ ggml_tensor * llm_graph_context::build_attn_mha(
+         }
+ 
+         ggml_tensor * kqv = ggml_mul_mat(ctx0, v, kq);
++        ggml_mul_mat_set_prec(kqv, GGML_PREC_F32);
+         cb(kqv, "kqv", il);
+ 
+         // for MLA with the absorption optimization, we need to "decompress" from MQA back to MHA
+diff --git a/src/models/models.h b/src/models/models.h
+index 9b87a40..e953bc4 100644
+--- a/src/models/models.h
++++ b/src/models/models.h
+@@ -2230,6 +2230,9 @@ struct llama_model_qwen3next : public llama_model_base {
+ 
+ 
+ struct llama_model_qwen35 : public llama_model_base {
++    uint32_t mesh_stage_start = 0;
++    uint32_t mesh_stage_end = 0;
++    uint32_t mesh_stage_total = 0;
+     llama_model_qwen35(const struct llama_model_params & params) : llama_model_base(params) {}
+     void load_arch_hparams(llama_model_loader & ml) override;
+     void load_arch_tensors(llama_model_loader & ml) override;
+diff --git a/src/models/qwen35.cpp b/src/models/qwen35.cpp
+index 0b92109..3e85ffa 100644
+--- a/src/models/qwen35.cpp
++++ b/src/models/qwen35.cpp
+@@ -12,6 +12,13 @@ void llama_model_qwen35::load_arch_hparams(llama_model_loader & ml) {
+     ml.get_key(LLM_KV_SSM_TIME_STEP_RANK, hparams.ssm_dt_rank);
+     ml.get_key(LLM_KV_SSM_GROUP_COUNT,    hparams.ssm_n_group);
+ 
++    ml.get_key("mesh.stage.start", mesh_stage_start, false);
++    ml.get_key("mesh.stage.end", mesh_stage_end, false);
++    ml.get_key("mesh.stage.total", mesh_stage_total, false);
++    if (mesh_stage_total && (mesh_stage_start >= mesh_stage_end || mesh_stage_end > mesh_stage_total ||
++            mesh_stage_end - mesh_stage_start != hparams.n_layer())) {
++        throw std::runtime_error("invalid mesh stage layer interval");
++    }
+     // Mark recurrent layers (linear attention layers). MTP layers are dense
+     // attention-only and must be flagged non-recurrent.
+     if (!ml.get_key_or_arr(LLM_KV_ATTENTION_RECURRENT_LAYERS, hparams.is_recr_impl, hparams.n_layer_all, false)) {
+@@ -37,14 +44,15 @@ void llama_model_qwen35::load_arch_tensors(llama_model_loader & ml) {
+     const int trunk_flags = mtp_only ? TENSOR_NOT_REQUIRED : 0;
+     int mtp_flags = !ml.load_mtp ? TENSOR_SKIP : 0;
+ 
+-    tok_embd = create_tensor(tn(LLM_TENSOR_TOKEN_EMBD, "weight"), { n_embd, n_vocab }, 0);
++    tok_embd = create_tensor(tn(LLM_TENSOR_TOKEN_EMBD, "weight"), { n_embd, n_vocab }, mesh_stage_start ? (TENSOR_SKIP | TENSOR_NOT_REQUIRED) : 0);
+ 
+     // output
+-    output_norm = create_tensor(tn(LLM_TENSOR_OUTPUT_NORM, "weight"), { n_embd }, 0);
+-    output = create_tensor(tn(LLM_TENSOR_OUTPUT, "weight"), { n_embd, n_vocab }, TENSOR_NOT_REQUIRED);
++    const bool stage_middle = mesh_stage_total && mesh_stage_end < mesh_stage_total;
++    output_norm = create_tensor(tn(LLM_TENSOR_OUTPUT_NORM, "weight"), { n_embd }, stage_middle ? (TENSOR_SKIP | TENSOR_NOT_REQUIRED) : 0);
++    output = create_tensor(tn(LLM_TENSOR_OUTPUT, "weight"), { n_embd, n_vocab }, stage_middle ? (TENSOR_SKIP | TENSOR_NOT_REQUIRED) : TENSOR_NOT_REQUIRED);
+ 
+     // if output is NULL, init from the input tok embed
+-    if (output == NULL) {
++    if (output == NULL && !stage_middle) {
+         output = create_tensor(tn(LLM_TENSOR_TOKEN_EMBD, "weight"), { n_embd, n_vocab }, TENSOR_DUPLICATED);
+     }
+ 
+@@ -148,8 +156,12 @@ llama_model_qwen35::graph::graph(const llama_model & model, const llm_graph_para
+ 
+     auto * inp = build_inp_mem_hybrid();
+ 
+-    ggml_tensor * inp_pos     = build_inp_pos();
+-    ggml_tensor * inp_out_ids = build_inp_out_ids();
++    const auto & stage_model = static_cast<const llama_model_qwen35 &>(model);
++    const bool stage_middle = stage_model.mesh_stage_total && stage_model.mesh_stage_end < stage_model.mesh_stage_total;
++    bool has_attn = false;
++    for (int il = 0; il < n_layer; ++il) { has_attn |= !hparams.is_recr(il); }
++    ggml_tensor * inp_pos     = has_attn ? build_inp_pos() : nullptr;
++    ggml_tensor * inp_out_ids = stage_middle ? nullptr : build_inp_out_ids();
+ 
+     // MTP/NextN layers are loaded as extra decoder blocks but not executed in the main pass.
+     for (int il = 0; il < n_layer; ++il) {
+@@ -202,6 +214,12 @@ llama_model_qwen35::graph::graph(const llama_model & model, const llm_graph_para
+         inpL = cur;
+     }
+     cur = inpL;
++    if (stage_middle) {
++        // Boundary values must precede final RMS normalization and the vocabulary head.
++        res->t_embd = cur;
++        ggml_build_forward_expand(gf, cur);
++        return;
++    }
+ 
+     cur = build_norm(cur, model.output_norm, nullptr, LLM_NORM_RMS, -1);
+ 

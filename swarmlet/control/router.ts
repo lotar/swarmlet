@@ -7,6 +7,8 @@ import { inferenceStream } from "../protocol/inference-stream.ts";
 import type { DeploymentManager } from "./deployments.ts";
 import type { Logger } from "./log.ts";
 import type { TunnelPool } from "./tunnel.ts";
+import { StageExecutor } from "./stage-execution.ts";
+import { createNativeResponse, parseNativeRequest } from "./stage-router.ts";
 
 const json = (body: unknown, status = 200): Response => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
 const HOP_HEADERS = new Set(["host", "authorization", "connection", "content-length", "transfer-encoding", "keep-alive", "upgrade"]);
@@ -46,8 +48,18 @@ class TokenCounter {
 }
 
 export function createRouter(deps: { deployments: DeploymentManager; tunnels: TunnelPool; log: Logger }) {
+  const nativeLifetimes = new Map<string, AbortSignal>();
+  const nativeReady = new Map<string, AbortSignal>();
+  const native = new StageExecutor({
+    localPort: (nodeId, port) => deps.tunnels.localPort(nodeId, port),
+    onUnsafeCleanup: async (id, failures) => {
+      const lifetime = nativeLifetimes.get(id);
+      if (lifetime) await deps.deployments.nativeExecutionFailed(id, `native cleanup failed: ${failures.map(f => `${f.nodeId} ${f.operation}: ${f.error}`).join("; ")}`, lifetime);
+    },
+  });
+  const isNative = (kind: string) => kind === "stages" || kind === "prefill-decode";
   return async (req: Request, path: string): Promise<Response> => {
-    const table = deps.deployments.routing();
+    let table = deps.deployments.routing();
     if (path === "/v1/models") {
       return json({ object: "list", data: table.map((m) => ({ id: m.modelName, object: "model", created: m.created, owned_by: "swarmlet", ready: m.deployments.length })) });
     }
@@ -55,14 +67,32 @@ export function createRouter(deps: { deployments: DeploymentManager; tunnels: Tu
     if (req.method !== "POST") return json({ error: { message: "POST required", type: "invalid_request_error" } }, 405);
     const bodyText = await req.text();
     let model: string | undefined;
-    try { model = (JSON.parse(bodyText) as { model?: string }).model; } catch { return json({ error: { message: "body is not JSON", type: "invalid_request_error" } }, 400); }
-    const candidates = model ? table.find((m) => m.modelName === model)?.deployments ?? [] : (table.length === 1 ? table[0]!.deployments : []);
+    let parsedBody: unknown;
+    try { parsedBody = JSON.parse(bodyText); model = (parsedBody as { model?: string }).model; } catch { return json({ error: { message: "body is not JSON", type: "invalid_request_error" } }, 400); }
+    table = deps.deployments.routing(); // body reads can overlap another request acquiring its native lease
+    let candidates = model ? table.find((m) => m.modelName === model)?.deployments ?? [] : (table.length === 1 ? table[0]!.deployments : []);
     if (!candidates.length) return json({ error: { message: model ? `no ready deployment serves model '${model}'` : "specify a model (see /v1/models)", type: "invalid_request_error", available: table.map((m) => m.modelName) } }, 404);
     // a client may pin a deployment (header x-swarmlet-deployment, id or name); otherwise least in-flight, then lowest rtt
     const pinned = req.headers.get("x-swarmlet-deployment");
+    // Native workers implement a bounded greedy contract. Other pool members may serve broader requests.
+    if (candidates.some(c => isNative(c.kind))) {
+      try { parseNativeRequest(parsedBody, path); }
+      catch (error) {
+        if (pinned && candidates.some(c => isNative(c.kind) && (c.id === pinned || c.name === pinned))) return json({ error: { message: (error as Error).message, type: "invalid_request_error" } }, 400);
+        candidates = candidates.filter(c => !isNative(c.kind));
+        if (!candidates.length) return json({ error: { message: (error as Error).message, type: "invalid_request_error" } }, 400);
+      }
+    }
     let pick = pinned ? candidates.find((c) => c.id === pinned || c.name === pinned) : undefined;
     if (pinned && !pick) return json({ error: { message: `deployment '${pinned}' is not ready for model '${model}'`, type: "invalid_request_error", candidates: candidates.map((c) => c.id) } }, 409);
-    if (!pick) pick = [...candidates].sort((a, b) => (a.inflight - b.inflight) || ((a.rttMs ?? 1e9) - (b.rttMs ?? 1e9)))[0]!;
+    if (!pick) pick = candidates.filter(c => !isNative(c.kind) || !native.isBusy(c.id)).sort((a, b) => (a.inflight - b.inflight) || ((a.rttMs ?? 1e9) - (b.rttMs ?? 1e9)))[0];
+    if (!pick || isNative(pick.kind) && native.isBusy(pick.id)) return json({ error: { message: "native deployment is busy; retry after the active request finishes", type: "server_error" } }, 429);
+    const nativeExecution = isNative(pick.kind) ? deps.deployments.nativeExecution(pick.id) : null;
+    if (isNative(pick.kind) && !nativeExecution) return json({ error: { message: "native deployment is no longer ready", type: "server_error" } }, 503);
+    if (nativeExecution && nativeReady.get(pick.id) !== nativeExecution.signal) {
+      native.acknowledgeRecovery(pick.id);
+      nativeReady.set(pick.id, nativeExecution.signal);
+    }
     const requestId = req.headers.get("x-request-id")?.match(/^[A-Za-z0-9._:-]{1,128}$/)?.[0] ?? crypto.randomUUID();
     const headers = new Headers();
     for (const [k, v] of req.headers) if (!HOP_HEADERS.has(k.toLowerCase())) headers.set(k, v);
@@ -71,7 +101,7 @@ export function createRouter(deps: { deployments: DeploymentManager; tunnels: Tu
     deps.deployments.trackInflight(pick.id, +1);
     const t0 = Date.now();
     const abort = new AbortController();
-    const signal = AbortSignal.any([req.signal, abort.signal, AbortSignal.timeout(30 * 60_000)]);
+    const signal = AbortSignal.any([req.signal, abort.signal, AbortSignal.timeout(30 * 60_000), ...(nativeExecution ? [nativeExecution.signal] : [])]);
     let released = false;
     const release = () => {
       if (released) return;
@@ -79,9 +109,23 @@ export function createRouter(deps: { deployments: DeploymentManager; tunnels: Tu
       signal.removeEventListener("abort", release);
       deps.deployments.trackInflight(pick.id, -1);
     };
-    signal.addEventListener("abort", release, { once: true });
-    if (signal.aborted) release();
+    // Native cancellation still owns the resident contexts until reset/cleanup is acknowledged.
+    if (!nativeExecution) {
+      signal.addEventListener("abort", release, { once: true });
+      if (signal.aborted) release();
+    }
     try {
+      if (nativeExecution) {
+        const id = pick.id;
+        nativeLifetimes.set(id, nativeExecution.signal);
+        const out = new Headers({ "x-request-id": requestId, "x-swarmlet-deployment": id, "x-swarmlet-node": pick.nodeId });
+        return await createNativeResponse({ executor: native, plan: { ...nativeExecution.plan, deploymentId: id }, request: req,
+          body: parsedBody, path, headers: out, signal,
+          onFinish: () => { release(); if (nativeLifetimes.get(id) === nativeExecution.signal) nativeLifetimes.delete(id); },
+          onTokens: n => deps.deployments.recordTokens(id, n),
+          onError: error => deps.log.warn("native execution failed", { requestId, deployment: id, err: String(error) }),
+        });
+      }
       const local = await deps.tunnels.localPort(pick.nodeId, pick.port);
       const upstream = await fetch(`http://127.0.0.1:${local}${path}`, { method: "POST", headers, body: bodyText, signal });
       const out = new Headers(upstream.headers);

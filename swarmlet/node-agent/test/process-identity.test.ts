@@ -36,3 +36,76 @@ test("Linux exec preserves birth identity across systemd-run launcher", async ()
   });
   expect(signals).toEqual(["SIGTERM"]);
 });
+
+test("changed command before TERM remains ambiguous and receives no signal", async () => {
+  const signals: string[] = [];
+  await expect(stopRecordedProcess(123, owned, {
+    identify: () => ({ ...owned, command: "unrelated" }), signal: (_, s) => { signals.push(s); }, sleep: async () => {}, now: () => 0,
+  })).rejects.toThrow("ownership is ambiguous");
+  expect(signals).toEqual([]);
+});
+
+test("transient command change after TERM waits for exit without another signal", async () => {
+  let ticks = 0, signalled = false;
+  const signals: string[] = [];
+  await stopRecordedProcess(123, owned, {
+    identify: () => !signalled ? owned : ticks < 2 ? { ...owned, command: "(bun)" } : null,
+    signal: (_, s) => { signals.push(s); signalled = true; }, sleep: async () => { ticks++; }, now: () => ticks * 100,
+  });
+  expect(ticks).toBe(2);
+  expect(signals).toEqual(["SIGTERM"]);
+});
+
+test("persistent ambiguity after TERM fails closed without KILL", async () => {
+  let ticks = 0, signalled = false;
+  const signals: string[] = [];
+  await expect(stopRecordedProcess(123, owned, {
+    identify: () => signalled ? { ...owned, command: "unrelated" } : owned,
+    signal: (_, s) => { signals.push(s); signalled = true; }, sleep: async () => { ticks++; }, now: () => ticks * 1000,
+  })).rejects.toThrow("ownership is ambiguous");
+  expect(ticks).toBe(10);
+  expect(signals).toEqual(["SIGTERM"]);
+});
+
+test("post-TERM ambiguity followed by PID reuse never signals the replacement", async () => {
+  let ticks = 0, signalled = false;
+  const signals: string[] = [];
+  await stopRecordedProcess(123, owned, {
+    identify: () => !signalled ? owned : ticks ? { ...owned, started: "later" } : { ...owned, command: "(bun)" },
+    signal: (_, s) => { signals.push(s); signalled = true; }, sleep: async () => { ticks++; }, now: () => ticks * 100,
+  });
+  expect(signals).toEqual(["SIGTERM"]);
+});
+
+test("same owned command returning after ambiguity cannot reauthorize KILL", async () => {
+  let ticks = 0, signalled = false;
+  const signals: string[] = [];
+  await expect(stopRecordedProcess(123, owned, {
+    identify: () => signalled && !ticks ? { ...owned, command: "(bun)" } : owned,
+    signal: (_, s) => { signals.push(s); signalled = true; }, sleep: async () => { ticks++; }, now: () => ticks * 1000,
+  })).rejects.toThrow("ownership is ambiguous");
+  expect(signals).toEqual(["SIGTERM"]);
+});
+
+test("confirmed owned process receives KILL after TERM deadline, then waits through exit ambiguity", async () => {
+  let ticks = 0, killedAt: number | undefined;
+  const signals: string[] = [];
+  await stopRecordedProcess(123, owned, {
+    identify: () => killedAt === undefined ? owned : ticks === killedAt ? { ...owned, command: "(bun)" } : null,
+    signal: (_, s) => { signals.push(s); if (s === "SIGKILL") killedAt = ticks; },
+    sleep: async () => { ticks++; }, now: () => ticks * 1000,
+  });
+  expect(signals).toEqual(["SIGTERM", "SIGKILL"]);
+  expect(ticks).toBe(11);
+});
+
+test("failed TERM delivery does not authorize waiting through ambiguous ownership", async () => {
+  let attempted = false;
+  const signals: string[] = [];
+  await expect(stopRecordedProcess(123, owned, {
+    identify: () => attempted ? { ...owned, command: "unrelated" } : owned,
+    signal: (_, s) => { signals.push(s); attempted = true; throw new Error("signal failed"); },
+    sleep: async () => { throw new Error("must not wait"); }, now: () => 0,
+  })).rejects.toThrow("ownership is ambiguous");
+  expect(signals).toEqual(["SIGTERM"]);
+});

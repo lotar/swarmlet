@@ -3,9 +3,9 @@
 // replica (whole-model llama-server, or an external server we only health-check), stop.
 // Every state change is reported to control and mirrored in state/assignments.json.
 
-import { existsSync, readFileSync, writeFileSync, renameSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync, renameSync, mkdirSync, chmodSync, rmSync } from "node:fs";
 import { join } from "node:path";
-import type { Assignment, AssignmentState, CoordinatorAssignment, Endpoint, NodeMetrics, ReplicaAssignment, WorkerAssignment } from "../protocol/types.ts";
+import type { Assignment, AssignmentState, CoordinatorAssignment, Endpoint, NodeMetrics, ReplicaAssignment, StageAssignment, WorkerAssignment } from "../protocol/types.ts";
 import type { MuxStream } from "../protocol/frame.ts";
 import type { Logger } from "../control/log.ts";
 import type { ExternalService, NodeConfig } from "./config.ts";
@@ -15,6 +15,8 @@ import { coordinatorArgv, replicaArgv, workerArgv } from "./roles/recipes.ts";
 import { Dialer } from "./transport/dial.ts";
 import { stopRecordedProcess, type ProcessIdentity } from "./roles/identity.ts";
 import { AssignmentLogs } from "./assignment-logs.ts";
+import { sha256File } from "./probe/models.ts";
+import { assertStageHealth, assertStagePortFree, assertStageProcess, stageArgv, stageStateDirectory } from "./roles/stage.ts";
 
 export interface RunnerDeps {
   cfg: () => NodeConfig;
@@ -65,7 +67,7 @@ export class AssignmentRunner {
     if (!existsSync(file)) return;
     const prev = JSON.parse(readFileSync(file, "utf8")) as AssignmentSnapshot[];
     if (!Array.isArray(prev) || prev.some((p) => !p || typeof p.id !== "string" || typeof p.deploymentId !== "string"
-        || !["worker", "coordinator", "replica", "stop"].includes(p.kind)
+        || !["worker", "coordinator", "replica", "stage", "stop"].includes(p.kind)
         || (p.pid !== undefined && (!Number.isInteger(p.pid) || p.pid <= 0))
         || (p.processIdentity !== undefined && (typeof p.processIdentity.started !== "string" || typeof p.processIdentity.command !== "string"))
         || (p.stoppedExternalId !== undefined && typeof p.stoppedExternalId !== "string"))) {
@@ -77,6 +79,7 @@ export class AssignmentRunner {
         this.logs.append(p.id, `[lifecycle] previous engine process retired pid=${p.pid}`);
         this.deps.log.info("previous engine process retired", { id: p.id, pid: p.pid });
       }
+      if (p.kind === "stage") rmSync(stageStateDirectory(this.deps.stateDir, p.id), { recursive: true, force: true });
       if (p.stoppedExternalId) {
         const ext = this.deps.cfg().externals.find((e) => e.id === p.stoppedExternalId);
         if (!ext) throw new Error(`cannot restore unregistered external ${p.stoppedExternalId}`);
@@ -108,6 +111,7 @@ export class AssignmentRunner {
     for (const x of this.active.values()) {
       if (x.a.kind === "worker") { s.add(x.a.port); if (x.a.peerPort) s.add(x.a.peerPort); }
       if (x.a.kind === "coordinator") s.add(x.a.port);
+      if (x.a.kind === "stage") s.add(x.a.port);
       if (x.a.kind === "replica") {
         if (x.a.external) { try { s.add(Number(new URL(x.a.external.url).port)); } catch { /* ignore */ } } else s.add(x.a.port);
       }
@@ -205,7 +209,7 @@ export class AssignmentRunner {
     this.set(x, "starting");
     x.startTask = Promise.resolve().then(() => {
       this.assertStarting(x);
-      return a.kind === "worker" ? this.startWorker(x, a) : a.kind === "coordinator" ? this.startCoordinator(x, a) : this.startReplica(x, a);
+      return a.kind === "worker" ? this.startWorker(x, a) : a.kind === "coordinator" ? this.startCoordinator(x, a) : a.kind === "stage" ? this.startStage(x, a) : this.startReplica(x, a);
     }).catch((e: Error) => { if (!x.stopping) this.fail(x, e.message); });
   }
 
@@ -235,6 +239,7 @@ export class AssignmentRunner {
       // No stopped acknowledgement until all asynchronous startup work settles.
       // Every spawn/dial/timer continuation checks stopping before creating work.
       await x.startTask;
+      if (x.a.kind === "stage") rmSync(stageStateDirectory(this.deps.stateDir, x.a.id), { recursive: true, force: true });
       x.dialer?.closeAll();
       if (x.healthTimer) clearInterval(x.healthTimer);
       await this.restoreExternal(x);
@@ -252,6 +257,29 @@ export class AssignmentRunner {
   }
 
   // ---------- roles ----------
+
+  private async startStage(x: Active, a: StageAssignment): Promise<void> {
+    const argv = stageArgv(this.deps.cfg().enginePath, a, this.deps.stateDir);
+    if (await sha256File(argv[0]!) !== a.binarySha256) throw new Error("native binary differs from qualified assignment");
+    this.assertStarting(x);
+    await this.fitGate(x, a, true);
+    this.assertStarting(x);
+    await assertStagePortFree(a.port);
+    this.assertStarting(x);
+    const directory = stageStateDirectory(this.deps.stateDir, a.id);
+    mkdirSync(directory, { recursive: true, mode: 0o700 });
+    chmodSync(directory, 0o700);
+    await this.spawn(x, `stage-${a.id}`, argv, {}, a.enforce);
+    this.set(x, "loading", x.detail);
+    if (!await waitForHealth(`http://127.0.0.1:${a.port}/health`, x.proc!, LOAD_TIMEOUT_MS)) throw new Error(`native worker not healthy: ${this.tail(x)}`);
+    this.assertStarting(x);
+    const response = await fetch(`http://127.0.0.1:${a.port}/health`, { signal: AbortSignal.timeout(5000) });
+    const status = await response.json() as Record<string, unknown>;
+    assertStageHealth(status, a.identity, a.binarySha256);
+    assertStageProcess(status.pid, x.proc!.pid);
+    this.assertStarting(x);
+    this.set(x, "ready", x.detail);
+  }
 
   private async startWorker(x: Active, a: WorkerAssignment): Promise<void> {
     const engine = this.deps.cfg().enginePath;
@@ -328,11 +356,11 @@ export class AssignmentRunner {
     this.persist();
   }
 
-  private async fitGate(x: Active, a: CoordinatorAssignment): Promise<void> {
+  private async fitGate(x: Active, a: { fitMiB?: number; stopExternal?: string }, requireKnown = false): Promise<void> {
     if (!a.fitMiB) return;
     let free = await this.deps.freeRamMiB();
     this.assertStarting(x);
-    if (free === undefined) { this.deps.log.warn("fit gate: free RAM unknown, proceeding"); return; }
+    if (free === undefined) { if (requireKnown) throw new Error("native fit gate: free RAM unknown"); this.deps.log.warn("fit gate: free RAM unknown, proceeding"); return; }
     if (free >= a.fitMiB) { x.detail = `fit ok: ${Math.round(free)} MiB free >= ${a.fitMiB}`; return; }
     if (!a.stopExternal) throw new Error(`does not fit: ${Math.round(free)} MiB free, need ${a.fitMiB}; no external service to stop`);
     const ext = this.deps.cfg().externals.find((e) => e.id === a.stopExternal);

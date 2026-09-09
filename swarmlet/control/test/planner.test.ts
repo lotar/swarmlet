@@ -8,6 +8,7 @@ import { join } from "node:path";
 import { DEFAULT_CTX, PlanError, loadProfiles, planDeployment, planDevices, validateProfile, type PlanInput } from "../planner.ts";
 import type { NodeRow } from "../registry.ts";
 import type { DeploymentSpec, GpuDevice, ModelFile, Offer } from "../../protocol/types.ts";
+import type { Qwen35NativeQualification } from "../profiles/qwen35-native.ts";
 
 const profiles = loadProfiles();
 const flash = profiles.get("flash-next-ud-q4kxl")!;
@@ -347,6 +348,148 @@ describe("ngram speculative placement", () => {
       expect(text(refused({ spec: spec({ chain: 0, speculation: value as DeploymentSpec["speculation"] }) }))).toMatch(/speculation must be/);
     }
     expect(plan({ spec: spec({ chain: 0 }) }).speculation).toBeUndefined();
+  });
+});
+
+describe("qualified resident native admission", () => {
+  // Synthetic proof records are injected through the internal planner input only.
+  // The shipped controller list stays empty until the real rig proof succeeds.
+  const sourceSha = "a".repeat(64), engine = "b".repeat(64);
+  const binaries: Record<string, string> = { [M5]: "1".repeat(64), [L1]: "2".repeat(64), [L2]: "3".repeat(64) };
+  function fixture(mode: "stages" | "prefill-decode" = "stages", count = 3): { spec: DeploymentSpec; profile: typeof tiny; nodes: NodeRow[]; nativeQualifications: Qwen35NativeQualification[] } {
+    const ids = mode === "stages" ? (count === 2 ? [L1, M5] : [L1, L2, M5]) : [M5, L1];
+    const cuts = count === 2 ? [0, 3, 24] : [0, 3, 6, 24];
+    const endpoints = ids.map((id, i) => ({ binarySha256: binaries[id]!, artifact: mode === "stages"
+      ? { name: `stage-${cuts[i]}-${cuts[i + 1]}.gguf`, sha256: String(i + 4).repeat(64), start: cuts[i]!, end: cuts[i + 1]! }
+      : { name: TINY.name, sha256: sourceSha, start: 0, end: 24 } }));
+    const q: Qwen35NativeQualification = { mode, sourceSha256: sourceSha, sourceSizeBytes: 2048 * 1048576, engine, ctx: 1024, workspaceMiB: 512, hostMiB: 1024, endpoints, evidenceSha256: "e".repeat(64) };
+    const nodes = rig().map((n) => ({ ...n, caps: { ...n.caps!, engine: { proto: "8.1", sha256: { "mesh-stage-worker": binaries[n.id]! }, stages: { engine } } },
+      offer: { ...n.offer!, roles: { worker: true, replica: true, coordinator: true } },
+      models: endpoints.flatMap((e, i) => ids[i] === n.id ? [{ name: e.artifact.name, path: `/models/${e.artifact.name}`, sha256: e.artifact.sha256, sizeBytes: 1000, kind: "gguf" as const }] : []) }));
+    const base = { name: "native", profile: tiny.id, kind: mode };
+    const s: DeploymentSpec = mode === "stages" ? { ...base, stages: endpoints.map((e, i) => ({ nodeId: ids[i]!, modelPath: `/models/${e.artifact.name}`, modelSha256: e.artifact.sha256, start: e.artifact.start, end: e.artifact.end })) }
+      : { ...base, prefillNodeId: M5, decodeNodeId: L1, modelSha256: sourceSha };
+    return { spec: s, profile: tiny, nodes, nativeQualifications: [q] };
+  }
+
+  test("production admission is closed without controller-owned proof records", () => {
+    const f = fixture();
+    expect(text(refused({ ...f, nativeQualifications: undefined }))).toMatch(/No controller-owned native qualification/);
+    expect(text(refused({ ...f, spec: { ...f.spec, nativeQualifications: f.nativeQualifications } as DeploymentSpec }))).toMatch(/does not support field nativeQualifications/);
+  });
+
+  test("two and three qualified stages pin every artifact, binary, context and source identity", () => {
+    for (const count of [2, 3]) {
+      const f = fixture("stages", count);
+      const p = plan(f);
+      expect(p.nativeExecution).toMatchObject({ mode: "stages", profile: tiny.id, qualificationEvidenceSha256: "e".repeat(64) });
+      expect(p.workers).toEqual([]);
+      expect(p.tensorSplit).toEqual([]);
+      expect(p.ctx).toBe(1024);
+      const endpoints = p.nativeExecution!.endpoints;
+      expect(endpoints).toHaveLength(count);
+      expect(endpoints.map((e) => e.nodeId)).toEqual(f.spec.stages!.map((s) => s.nodeId));
+      for (const [i, endpoint] of endpoints.entries()) {
+        expect(endpoint.binarySha256).toBe(binaries[endpoint.nodeId]!);
+        expect(endpoint.identity).toMatchObject({ schema: 1, source_sha256: sourceSha, engine, ctx: 1024, cache_k: "f32", cache_v: "f32", ubatch: 1, flash_attn: "disabled", stage_start: String(f.spec.stages![i]!.start), stage_end: String(f.spec.stages![i]!.end), stage_total: "24" });
+        expect(endpoint.modelPath).toBe(f.spec.stages![i]!.modelPath);
+      }
+      expect(endpoints.at(-1)!.fitMiB).toBe(3584);
+      expect(plan({ ...f, nodes: [...f.nodes].reverse() })).toEqual(p);
+    }
+  });
+
+  test("P/D pins two full-model contexts and the exact qualified binary pair", () => {
+    const p = plan(fixture("prefill-decode"));
+    expect(p.nativeExecution!.stateTransferQualification).toEqual({ sourceBinarySha256: binaries[M5]!, targetBinarySha256: binaries[L1]!, evidenceSha256: "e".repeat(64) });
+    expect(p.nativeExecution!.endpoints.map((e) => e.identity)).toEqual([0, 1].map(() => ({ schema: 1, engine, model_sha256: sourceSha, source_sha256: sourceSha, ctx: 1024, cache_k: "f32", cache_v: "f32", ubatch: 1, flash_attn: "disabled", stage_start: "", stage_end: "", stage_total: "" })));
+  });
+
+  test("native admission rejects unsupported concurrency, sampler/RPC options and forged proof flags", () => {
+    const f = fixture();
+    for (const extra of [{ ctx: 2048 }, { parallel: 2 }, { chain: 1 }, { transport: "auto" }, { speculation: { type: "ngram-simple" } }, { workerLayers: [3] }, { forwarding: false }, { qualified: true }]) {
+      expect(() => plan({ ...f, spec: { ...f.spec, ...extra } as DeploymentSpec })).toThrow(PlanError);
+    }
+    expect(text(refused({ ...f, spec: { ...f.spec, profile: flash.id } }))).toMatch(/only supports/);
+    expect(text(refused({ ...f, spec: { ...f.spec, kind: "split" } }))).toMatch(/Native placement fields require/);
+  });
+
+  test("empty, duplicate, gapped, overlapping and partial stage ranges reject before launch", () => {
+    const f = fixture();
+    for (const stages of [[], [f.spec.stages![0]!], [f.spec.stages![0]!, { ...f.spec.stages![1]!, nodeId: L1 }, f.spec.stages![2]!],
+      [f.spec.stages![0]!, { ...f.spec.stages![1]!, start: 4 }, f.spec.stages![2]!], [f.spec.stages![0]!, { ...f.spec.stages![1]!, start: 2 }, f.spec.stages![2]!],
+      [f.spec.stages![0]!, f.spec.stages![1]!, { ...f.spec.stages![2]!, end: 23 }]]) {
+      expect(() => plan({ ...f, spec: { ...f.spec, stages } })).toThrow(PlanError);
+    }
+    const pd = fixture("prefill-decode");
+    expect(text(refused({ ...pd, spec: { ...pd.spec, decodeNodeId: M5 } }))).toMatch(/distinct explicit/);
+  });
+
+  test("a profile row cannot substitute a different artifact, file path, binary, ABI or missing inventory hash", () => {
+    for (const change of ["artifact", "path", "binary", "abi", "unhashed"] as const) {
+      const f = fixture();
+      if (change === "artifact") f.spec.stages![0]!.modelSha256 = "f".repeat(64);
+      else if (change === "path") f.spec.stages![0]!.modelPath = "/elsewhere/" + f.nativeQualifications[0]!.endpoints[0]!.artifact.name;
+      else {
+        const n = f.nodes.find((n) => n.id === L1)!;
+        if (change === "binary") n.caps!.engine!.sha256["mesh-stage-worker"] = "f".repeat(64);
+        if (change === "abi") n.caps!.engine!.stages!.engine = "other-abi";
+        if (change === "unhashed") delete n.models[0]!.sha256;
+      }
+      expect(text(refused(f))).toMatch(/No controller-owned native qualification/);
+    }
+  });
+
+  test("native host residency uses its qualified reserve instead of the ordinary coordinator profile", () => {
+    const f = fixture();
+    f.nativeQualifications[0]!.hostMiB = 2206;
+    f.nodes.find(n => n.id === L1)!.offer!.ramMiB = 2205;
+    expect(() => plan(f)).toThrow(/needs 2206 MiB host RAM/);
+    f.nodes.find(n => n.id === L1)!.offer!.ramMiB = 2206;
+    expect(plan(f).nativeExecution!.endpoints).toHaveLength(3);
+    const mac = f.nodes.find(n => n.id === M5)!;
+    mac.offer!.ramMiB = 4765; // 2048 source + 512 workspace + 2206 host
+    expect(() => plan(f)).toThrow(/needs 4766 MiB unified RAM/);
+    mac.offer!.ramMiB = 4766;
+    expect(plan(f).nativeExecution!.endpoints.find(e => e.nodeId === M5)!.fitMiB).toBe(4766);
+  });
+
+  test("native qualification requires an explicit positive integral host reserve", () => {
+    for (const hostMiB of [undefined, 0, -1, 1.5, Infinity, Number.MAX_SAFE_INTEGER + 1]) {
+      const f = fixture();
+      Object.assign(f.nativeQualifications[0]!, { hostMiB });
+      expect(text(refused(f))).toMatch(/No controller-owned native qualification/);
+    }
+    const f = fixture();
+    expect(text(refused({ ...f, spec: { ...f.spec, hostMiB: 2206 } as DeploymentSpec }))).toMatch(/does not support field hostMiB/);
+  });
+
+  test("conservative full-model workspace fit and existing owner roles are enforced on every node", () => {
+    for (const change of ["gpu", "host", "cores", "role", "offline", "multiple-gpus"] as const) {
+      const f = fixture();
+      const n = f.nodes.find((n) => n.id === L1)!;
+      if (change === "gpu") n.offer!.gpu[0]!.memMiB = 2559;
+      if (change === "host") n.offer!.ramMiB = 1000;
+      if (change === "cores") n.offer!.cpuCores = 1;
+      if (change === "role") n.offer!.roles.worker = false;
+      if (change === "offline") n.online = false;
+      if (change === "multiple-gpus") n.caps!.gpus.push({ ...cuda("second"), id: "cuda:1", engineName: "CUDA1" });
+      expect(() => plan(f)).toThrow(PlanError);
+    }
+    const f = fixture();
+    f.nodes.find((n) => n.id === M5)!.offer!.ramMiB = 3583;
+    expect(text(refused(f))).toMatch(/needs 3584 MiB unified RAM/);
+  });
+
+  test("native port allocation skips existing assignments and incomplete trusted records do not admit", () => {
+    const f = fixture();
+    expect(plan({ ...f, usedPorts: new Map([[L1, new Set([50200, 50210])]]) }).nativeExecution!.endpoints[0]!.port).toBe(50220);
+    f.nativeQualifications[0]!.endpoints[0]!.artifact.start = 1;
+    expect(text(refused(f))).toMatch(/No controller-owned native qualification/);
+    const badAbi = fixture();
+    badAbi.nativeQualifications[0]!.engine = "not-a-source-digest";
+    for (const n of badAbi.nodes) n.caps!.engine!.stages!.engine = "not-a-source-digest";
+    expect(text(refused(badAbi))).toMatch(/No controller-owned native qualification/);
   });
 });
 

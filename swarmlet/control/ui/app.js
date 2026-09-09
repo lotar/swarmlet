@@ -486,7 +486,27 @@
     });
   }
 
+  function nativeRole(native, index) {
+    return native.mode === 'stages' ? 'Stage ' + (index + 1) : index === 0 ? 'Prefill' : 'Decode';
+  }
+
+  function nativeLayers(native, endpoint) {
+    return native.mode === 'stages' ? 'Blocks [' + endpoint.identity.stage_start + ', ' + endpoint.identity.stage_end + ') / 24' : 'Whole model · 24 blocks';
+  }
+
   function renderPlan(p) {
+    if (p.nativeExecution) {
+      var native = p.nativeExecution;
+      var items = [el('dl', { class: 'kv' }, kv([
+        ['Execution', native.mode === 'stages' ? 'Resident stages · control relays activations' : 'Prefill / decode · control transfers session state'],
+        ['Context', p.ctx + ' tokens, ' + p.parallel + ' serialized session'],
+        ['Qualification', native.qualificationEvidenceSha256],
+      ])), buildTable(['Role', 'Node', 'Blocks', 'Device', 'HTTP port', 'Artifact'], native.endpoints.map(function (e, i) {
+        return el('tr', null, [td(nativeRole(native, i)), td(nodeName(e.nodeId), 'strong', e.nodeId), td(nativeLayers(native, e)), td(e.device, 'mono'), td(String(e.port), 'num'), td(e.modelPath, 'mono')]);
+      }), 'No resident endpoints')];
+      if (p.reasons && p.reasons.length) items.push(el('ol', { class: 'reasons' }, p.reasons.map(function (r) { return el('li', { text: r }); })));
+      return items;
+    }
     var out = [el('dl', { class: 'kv' }, kv([
       ['Coordinator', nodeName(p.coordinatorNodeId) + ' on ' + p.coordinatorDevice],
       [p.engineTensorSplit ? 'Transformer layers' : 'Tensor weights', (p.tensorSplit || []).join(' / ')],
@@ -807,18 +827,57 @@
     return entry ? entry.deployments.slice() : [];
   }
 
+  function nativeChatSelected() {
+    var pick = chatCandidates().filter(function (c) { return c.id === $('chat-dep').value; })[0];
+    return !!(pick && (pick.kind === 'stages' || pick.kind === 'prefill-decode'));
+  }
+
+  function applyChatOptions() {
+    var native = nativeChatSelected(), max = $('chat-max'), think = $('chat-think');
+    if (native && !chat.normalOptions) {
+      chat.normalOptions = { value: max.value, min: max.min, max: max.max, step: max.step, think: think.checked, disabled: think.disabled, title: think.parentNode.title };
+      max.value = '128'; max.min = '1'; max.max = '128'; max.step = '1';
+      think.checked = false; think.disabled = true;
+      think.parentNode.title = 'Native execution uses a fixed chat template; the Thinking option is unavailable.';
+      think.parentNode.appendChild(el('span', { id: 'chat-native-template', class: 'dim small', text: ' · unavailable: native execution uses a fixed chat template' }));
+    } else if (!native && chat.normalOptions) {
+      var saved = chat.normalOptions;
+      max.value = saved.value; max.min = saved.min; max.max = saved.max; max.step = saved.step;
+      think.checked = saved.think; think.disabled = saved.disabled; think.parentNode.title = saved.title;
+      var explanation = $('chat-native-template');
+      if (explanation) explanation.parentNode.removeChild(explanation);
+      chat.normalOptions = null;
+    }
+  }
+
+  function chatRequestBody(model, messages, native) {
+    var raw = $('chat-max').value.trim();
+    var limit = raw ? Number(raw) : (native ? 128 : 512);
+    if (!Number.isInteger(limit) || limit < (native ? 1 : 16) || limit > (native ? 128 : 8192)) {
+      throw new Error('Max tokens must be an integer from ' + (native ? '1 to 128 for native execution.' : '16 to 8192.'));
+    }
+    if (native && (messages.length > 64 || new TextEncoder().encode(JSON.stringify(messages)).length > 65536)) {
+      throw new Error('Native chat supports up to 64 messages and 64 KiB of text. Clear the conversation to continue.');
+    }
+    var body = { model: model, messages: messages, stream: true, stream_options: { include_usage: true }, max_tokens: limit };
+    if (native) body.temperature = 0;
+    else body.chat_template_kwargs = { enable_thinking: $('chat-think').checked };
+    return body;
+  }
+
   function fillChatDeployments() {
     if (chat.busy) return;
     var sel = $('chat-dep');
     var cands = chatCandidates().sort(function (a, b) { return ((b.nodes || []).length - (a.nodes || []).length) || (a.inflight - b.inflight); });
     var cur = sel.value;
     var sig = cands.map(function (c) { return c.id + ':' + depLabel(c); }).join('|');
-    if (sig === chat.depSig) return;
+    if (sig === chat.depSig) { applyChatOptions(); return; }
     chat.depSig = sig;
     clear(sel);
     cands.forEach(function (c) { sel.appendChild(el('option', { value: c.id, text: depLabel(c) })); });
     if (cands.some(function (c) { return c.id === cur; })) sel.value = cur; // keep the user's pick; otherwise the most nodes
     sel.disabled = cands.length < 2;
+    applyChatOptions();
   }
 
   function chatBubble(role, text) {
@@ -843,6 +902,9 @@
     if (chat.busy) return;
     var model = $('chat-model').value;
     if (!model) { note('chat-status', 'Pick a model first.', 'error'); return; }
+    var body;
+    try { body = chatRequestBody(model, chat.messages.concat([{ role: 'user', content: text }]), nativeChatSelected()); }
+    catch (e) { note('chat-status', e.message, 'error'); return; }
     chat.messages.push({ role: 'user', content: text });
     chatBubble('user', text);
     var bubble = chatBubble('assistant', '');
@@ -857,11 +919,7 @@
     $('chat-stop').disabled = false;
     var ctrl = new AbortController();
     chat.abort = ctrl;
-    var body = {
-      model: model, messages: chat.messages.slice(), stream: true, stream_options: { include_usage: true },
-      max_tokens: Math.max(16, Number($('chat-max').value) || 512),
-      chat_template_kwargs: { enable_thinking: $('chat-think').checked },
-    };
+    $('chat-input').value = '';
     var t0 = performance.now(), tFirst = 0, tEnd = 0, content = '', reasoning = '', chunks = 0, usage = null, timings = null, served = {};
     note('chat-status', 'Sending to ' + model + '…');
 
@@ -966,7 +1024,6 @@
     ev.preventDefault();
     var text = $('chat-input').value.trim();
     if (!text) return;
-    $('chat-input').value = '';
     sendChat(text);
   });
   $('chat-input').addEventListener('keydown', function (ev) {
@@ -1021,7 +1078,7 @@
     var worker = config.role === 'Worker';
     var channelFresh = !!(n && n.online && Date.parse(n.lastSeen) && Date.now() - Date.parse(n.lastSeen) < 10000);
     var rate = channelFresh ? throughput(m, n.routedTokPerSec) : { value: null, label: n && !n.online ? 'offline' : 'stale connection' };
-    var rateText = worker ? 'N/A · RPC worker' : (rate.value == null ? NA : num(rate.value, 1) + ' tok/s') + ' · ' + rate.label;
+    var rateText = config.native ? 'N/A · resident native context' : worker ? 'N/A · RPC worker' : (rate.value == null ? NA : num(rate.value, 1) + ' tok/s') + ' · ' + rate.label;
     var gpu = m && m.gpu && m.gpu.length && m.gpu.every(function (g) { return isNum(g.usedMiB); }) ? m.gpu.reduce(function (sum, g) { return sum + g.usedMiB; }, 0) : null;
     var relayFresh = channelFresh;
     var rows = [
@@ -1037,7 +1094,7 @@
       ['RAM free', hostFresh ? (isNum(m.freeRamMiB) ? fmtGiB(m.freeRamMiB) + ' GiB' : 'Not reported') : stale],
       ['GPU used', hostFresh ? (gpu == null ? 'Not reported' : fmtGiB(gpu) + ' GiB') : stale],
       ['Token rate · node', rateText],
-      ['Active requests · node', worker ? 'N/A · RPC worker' : (engineFresh && isNum(m.inflight) ? String(m.inflight) : 'Unknown')],
+      ['Active requests · node', config.native ? 'Not reported by resident health here' : worker ? 'N/A · RPC worker' : (engineFresh && isNum(m.inflight) ? String(m.inflight) : 'Unknown')],
       ['Relay received · 3s', relayFresh && isNum(n.relayInBps) ? fmtRate(n.relayInBps) : stale],
       ['Relay sent · 3s', relayFresh && isNum(n.relayOutBps) ? fmtRate(n.relayOutBps) : stale],
       ['RTT · last probe', net && isNum(net.rttMs) ? num(net.rttMs, 0) + ' ms · ' + ago(net.measuredAt) : 'Not measured'],
@@ -1071,6 +1128,22 @@
       var extId = spec.external.nodeId;
       row.appendChild(agentTunnelEdge(extId, dep.endpoint ? ':' + dep.endpoint.port : 'server'));
       row.appendChild(machineTopology(extId, { role: 'External server', device: null, layers: 'Whole model · count not reported', weights: 'Not reported', gpu: 'Managed externally', runtime: 'Managed externally', threads: 'Not reported', ports: spec.external.url }, served));
+    } else if (plan && plan.nativeExecution) {
+      var native = plan.nativeExecution;
+      native.endpoints.forEach(function (e, i) {
+        if (i) {
+          row.appendChild(topoEdge(native.mode === 'stages' ? 'activations return over agent relay' : 'export session state over agent relay'));
+          row.appendChild(topoNode('topo-router', ['control executor', native.mode === 'stages' ? 'relay activations to the next stage' : 'transfer and import state into decode']));
+        }
+        row.appendChild(topoEdge('authenticated agent relay · HTTP /command :' + e.port));
+        row.appendChild(machineTopology(e.nodeId, {
+          native: true, role: nativeRole(native, i), device: e.device, layers: nativeLayers(native, e),
+          weights: 'Resident artifact · measured size not reported', gpu: 'Qualified native context',
+          runtime: plan.ctx + ' / ' + plan.parallel, threads: '2', ports: 'HTTP :' + e.port,
+        }, served));
+      });
+      row.appendChild(topoEdge('native worker selects greedy token · token and text bytes return over agent relay'));
+      row.appendChild(topoNode('topo-router', ['control executor', 'decode text bytes · text SSE to browser', native.mode === 'stages' ? 'repeat every stage for each decode token' : 'subsequent tokens use the decode node']));
     } else if (plan) {
       var total = prof ? prof.layers : plan.tensorSplit.reduce(function (a, b) { return a + b; }, 0);
       var coordLayers = plan.tensorSplit.length ? plan.tensorSplit[plan.tensorSplit.length - 1] : total;
@@ -1113,6 +1186,10 @@
     body.appendChild(row);
     var notes = [];
     notes.push('state ' + dep.state + (dep.endpoint ? ', endpoint ' + nodeName(dep.endpoint.nodeId) + ':' + dep.endpoint.port : ''));
+    if (plan && plan.nativeExecution) {
+      notes.push('Native workers keep resident contexts. Control sends HTTP commands through authenticated agent relays; workers do not connect directly to each other.');
+      notes.push(plan.nativeExecution.mode === 'stages' ? 'Prompt batches and decode tokens traverse all stages in order. Control relays boundary activations; the final native worker selects the greedy token and returns its text bytes.' : 'The prefill node evaluates the prompt once. Control transfers its session state to the decode node, which generates subsequent tokens without repeating prefill.');
+    }
     if (plan && plan.workers && plan.workers.length) {
       var env = plan.env || {};
       notes.push('ring: the coordinator sends the boundary activations to RPC0' + (plan.workers.length > 1 ? (env.GGML_RPC_FORWARD === '1' ? ', each worker pushes them on to the next (peer port)' : ', the coordinator relays between workers') : '') + ', the last worker answers the coordinator’s GET; the coordinator finishes the layers and samples');
@@ -1152,7 +1229,7 @@
   }
 
   $('chat-model').addEventListener('change', function () { fillChatDeployments(); loadTopologyForModel().catch(showError); });
-  $('chat-dep').addEventListener('change', function () { loadTopologyForModel().catch(showError); });
+  $('chat-dep').addEventListener('change', function () { applyChatOptions(); loadTopologyForModel().catch(showError); });
 
   /* ---------- live stream (server-sent events), polling stays as the fallback ---------- */
   var live = { es: null, ok: false, last: 0 };

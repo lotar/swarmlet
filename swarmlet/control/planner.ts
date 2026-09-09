@@ -11,8 +11,9 @@
 
 import { readdirSync, readFileSync } from "node:fs";
 import { basename, join } from "node:path";
-import type { DeploymentSpec, EnvelopeRow, ModelFile, ModelProfile, Plan, PlanWorker } from "../protocol/types.ts";
+import type { DeploymentSpec, EnvelopeRow, ModelFile, ModelProfile, NativeStageWorkerPlan, Plan, PlanWorker } from "../protocol/types.ts";
 import type { NodeRow } from "./registry.ts";
+import { QWEN35_NATIVE_QUALIFICATIONS, type Qwen35NativeQualification } from "./profiles/qwen35-native.ts";
 
 export interface PlanInput {
   spec: DeploymentSpec;
@@ -20,6 +21,8 @@ export interface PlanInput {
   nodes: NodeRow[];
   /** Ports already taken on each node (other deployments' rpc and peer ports), keyed by node id. */
   usedPorts: Map<string, Set<number>>;
+  /** Controller-owned qualification records; never copied from request JSON. */
+  nativeQualifications?: readonly Qwen35NativeQualification[];
 }
 
 export class PlanError extends Error {
@@ -402,12 +405,114 @@ function planSplit(c: Ctx): Plan {
   return plan;
 }
 
+const SHA256 = /^[a-f0-9]{64}$/;
+
+function nativeRequestErrors(spec: DeploymentSpec, ctx: number, parallel: number, chain: number): string[] {
+  const errors: string[] = [];
+  const allowed = new Set(["name", "profile", "kind", "ctx", "parallel", "chain", "transport",
+    ...(spec.kind === "stages" ? ["stages"] : ["prefillNodeId", "decodeNodeId", "modelSha256"])]);
+  for (const key of Object.keys(spec)) if (!allowed.has(key)) errors.push(`Native execution does not support field ${key}.`);
+  if (spec.profile !== "qwen35-2b-q8") errors.push("Native execution only supports the qualified qwen35-2b-q8 profile.");
+  if (ctx !== 1024 || parallel !== 1 || chain !== 0) errors.push("Native execution requires ctx 1024, parallel 1 and chain 0.");
+  if (spec.transport !== undefined && spec.transport !== "relay") errors.push("Native execution currently requires authenticated relay transport.");
+  if (spec.kind === "stages") {
+    if (!Array.isArray(spec.stages) || ![2, 3].includes(spec.stages.length)) errors.push("stages requires an ordered array of two or three shards.");
+    else {
+      let end = 0;
+      const nodes = new Set<string>();
+      for (const [i, s] of spec.stages.entries()) {
+        if (!isRecord(s) || Object.keys(s).some((k) => !["nodeId", "modelPath", "modelSha256", "start", "end"].includes(k))) {
+          errors.push(`Stage ${i} has invalid fields.`); continue;
+        }
+        if (typeof s.nodeId !== "string" || !s.nodeId || nodes.has(s.nodeId)) errors.push(`Stage ${i} requires a distinct non-empty nodeId.`);
+        else nodes.add(s.nodeId);
+        if (typeof s.modelPath !== "string" || !s.modelPath || typeof s.modelSha256 !== "string" || !SHA256.test(s.modelSha256)) errors.push(`Stage ${i} requires a modelPath and lowercase SHA256.`);
+        if (!Number.isInteger(s.start) || !Number.isInteger(s.end) || s.start !== end || (s.end as number) <= (s.start as number) || (s.end as number) > 24) errors.push(`Stage ${i} must continue a nonempty contiguous range within [0,24).`);
+        end = s.end as number;
+      }
+      if (end !== 24) errors.push("Stage ranges must cover all 24 transformer blocks.");
+    }
+  } else {
+    if (typeof spec.prefillNodeId !== "string" || !spec.prefillNodeId || typeof spec.decodeNodeId !== "string" || !spec.decodeNodeId || spec.prefillNodeId === spec.decodeNodeId) errors.push("prefill-decode requires distinct explicit prefillNodeId and decodeNodeId.");
+    if (typeof spec.modelSha256 !== "string" || !SHA256.test(spec.modelSha256)) errors.push("prefill-decode requires the qualified full-model SHA256.");
+  }
+  return errors;
+}
+
+/** Reject malformed controller records rather than treating a partially specified proof as admission. */
+function validNativeQualification(q: Qwen35NativeQualification): boolean {
+  if (!q || !["stages", "prefill-decode"].includes(q.mode) || !SHA256.test(q.sourceSha256) || !SHA256.test(q.evidenceSha256) || !SHA256.test(q.engine) || q.ctx !== 1024 || !Number.isSafeInteger(q.sourceSizeBytes) || q.sourceSizeBytes < 1 || !Number.isSafeInteger(q.workspaceMiB) || q.workspaceMiB < 1 || !Number.isSafeInteger(q.hostMiB) || q.hostMiB < 1 || !Array.isArray(q.endpoints)) return false;
+  if (q.mode === "stages" ? ![2, 3].includes(q.endpoints.length) : q.endpoints.length !== 2) return false;
+  let end = 0;
+  for (const e of q.endpoints) {
+    const a = e?.artifact;
+    if (!a || !SHA256.test(e.binarySha256) || !a.name || basename(a.name) !== a.name || !SHA256.test(a.sha256) || !Number.isInteger(a.start) || !Number.isInteger(a.end) || a.start < 0 || a.end <= a.start || a.end > 24) return false;
+    if (q.mode === "stages") { if (a.start !== end) return false; end = a.end; }
+    else if (a.start !== 0 || a.end !== 24 || a.sha256 !== q.sourceSha256) return false;
+  }
+  return q.mode !== "stages" || end === 24;
+}
+
+function planNative(c: Ctx, qualifications: readonly Qwen35NativeQualification[]): Plan {
+  if (c.profile.id !== "qwen35-2b-q8" || c.profile.layers !== 24) throw new PlanError(c.headline, ["Native execution requires the unchanged 24-block Qwen35-2B profile."]);
+  const ids = c.spec.kind === "stages" ? c.spec.stages!.map((s) => s.nodeId) : [c.spec.prefillNodeId!, c.spec.decodeNodeId!];
+  const role = c.spec.kind === "stages" ? "worker" : "replica";
+  const nodes = ids.map((id) => requireNode(c, id, role, false));
+  if (c.errors.length) throw new PlanError(c.headline, c.errors);
+  const candidates = qualifications.filter((q) => validNativeQualification(q) && q.mode === c.spec.kind && q.ctx === c.ctx && q.endpoints.length === nodes.length);
+  const q = candidates.find((candidate) => candidate.endpoints.every((entry, i) => {
+    const n = nodes[i]!;
+    const requested = c.spec.stages?.[i];
+    const artifact = entry.artifact;
+    return n.caps?.engine?.stages?.engine === candidate.engine && n.caps.engine.sha256["mesh-stage-worker"] === entry.binarySha256
+      && (requested ? requested.modelSha256 === artifact.sha256 && requested.start === artifact.start && requested.end === artifact.end && basename(requested.modelPath) === artifact.name : c.spec.modelSha256 === candidate.sourceSha256)
+      && n.models.some((m) => m.kind === "gguf" && m.name === artifact.name && m.sha256 === artifact.sha256 && (!requested || m.path === requested.modelPath));
+  }));
+  if (!q) throw new PlanError(c.headline, ["No controller-owned native qualification matches the requested ordered artifacts, source ABI, installed binary hashes and hashed model inventories. Native execution remains unqualified; rescan models with hashes and record a passing proof before admission."]);
+  const gpuNeed = Math.ceil(q.sourceSizeBytes / 1048576) + q.workspaceMiB;
+  const hostNeed = q.hostMiB;
+  const endpoints: NativeStageWorkerPlan[] = q.endpoints.map((entry, i) => {
+    const n = nodes[i]!;
+    const offered = offeredGpu(n);
+    const primary = n.caps?.gpus[0];
+    if (!offered || n.caps?.gpus.length !== 1 || offered.id !== primary?.id) c.errors.push(`Native node ${n.hostname} requires exactly one advertised GPU which is offered; the native CLI cannot select among devices.`);
+    if (n.offer!.cpuCores < 2) c.errors.push(`Native node ${n.hostname} must offer two CPU cores for the fixed native worker threads.`);
+    const fit = gpuNeed + hostNeed;
+    if (n.os === "darwin") {
+      if (fit > n.offer!.ramMiB) c.errors.push(`Native node ${n.hostname} needs ${fit} MiB unified RAM (whole source model, qualified workspace and host), exceeding its ${n.offer!.ramMiB} MiB offer.`);
+      if (offered && gpuNeed > offered.memMiB) c.errors.push(`Native node ${n.hostname} needs ${gpuNeed} MiB GPU memory, exceeding its ${offered.memMiB} MiB offer.`);
+    } else {
+      if (offered && gpuNeed > offered.memMiB) c.errors.push(`Native node ${n.hostname} needs ${gpuNeed} MiB GPU memory (whole source model plus qualified workspace), exceeding its ${offered.memMiB} MiB offer.`);
+      if (hostNeed > n.offer!.ramMiB) c.errors.push(`Native node ${n.hostname} needs ${hostNeed} MiB host RAM, exceeding its ${n.offer!.ramMiB} MiB offer.`);
+    }
+    const requested = c.spec.stages?.[i];
+    const model = n.models.find((m) => m.kind === "gguf" && m.name === entry.artifact.name && m.sha256 === entry.artifact.sha256 && (!requested || m.path === requested.modelPath))!;
+    c.reasons.push(`Native ${i} ${n.hostname}: qualified ${entry.artifact.name} SHA256 ${entry.artifact.sha256}, blocks [${entry.artifact.start},${entry.artifact.end}); conservative reserve ${gpuNeed} MiB GPU plus ${hostNeed} MiB host, including full-model weights for every shard.`);
+    return {
+      nodeId: n.id, port: pickPort(c.usedPorts.get(n.id)), modelPath: model.path, device: primary?.engineName ?? "", binarySha256: entry.binarySha256,
+      ...(n.os === "darwin" ? { fitMiB: fit } : {}), enforce: { ramMiB: n.offer!.ramMiB, cpuCores: 2 },
+      identity: { schema: 1, engine: q.engine, model_sha256: entry.artifact.sha256, source_sha256: q.sourceSha256, ctx: 1024, cache_k: "f32", cache_v: "f32", ubatch: 1, flash_attn: "disabled",
+        stage_start: c.spec.kind === "stages" ? String(entry.artifact.start) : "", stage_end: c.spec.kind === "stages" ? String(entry.artifact.end) : "", stage_total: c.spec.kind === "stages" ? "24" : "" },
+    };
+  });
+  if (c.errors.length) throw new PlanError(c.headline, c.errors);
+  c.reasons.push(`Native qualification evidence ${q.evidenceSha256}; one serialized session, batch at most 64, F32 K/V, ctx 1024. Actual native health identity and binary hashes must match before routing.`);
+  return {
+    coordinatorNodeId: endpoints[0]!.nodeId, coordinatorDevice: endpoints[0]!.device, workers: [], tensorSplit: [], ctx: 1024, parallel: 1, chain: 0,
+    env: {}, modelPath: endpoints[0]!.modelPath, reasons: c.reasons,
+    nativeExecution: { mode: q.mode, profile: "qwen35-2b-q8", endpoints, qualificationEvidenceSha256: q.evidenceSha256,
+      ...(q.mode === "prefill-decode" ? { stateTransferQualification: { sourceBinarySha256: q.endpoints[0]!.binarySha256, targetBinarySha256: q.endpoints[1]!.binarySha256, evidenceSha256: q.evidenceSha256 } } : {}),
+    },
+  };
+}
+
 /** Deterministic placement. Throws PlanError carrying every reason the planner could list. */
 export function planDeployment(input: PlanInput): Plan {
   const { spec, profile, nodes, usedPorts } = input;
   const headline = `Deployment "${spec.name}" (${profile.id}, ${spec.kind}) cannot be planned.`;
   const errors: string[] = [];
-  const ctx = spec.ctx ?? DEFAULT_CTX;
+  const native = spec.kind === "stages" || spec.kind === "prefill-decode";
+  const ctx = spec.ctx ?? (native ? 1024 : DEFAULT_CTX);
   const parallel = spec.parallel ?? DEFAULT_PARALLEL;
   const chain = spec.chain ?? DEFAULT_CHAIN;
   if (!Number.isInteger(ctx) || ctx < 1) errors.push(`ctx must be a positive integer, got ${String(spec.ctx)}.`);
@@ -420,7 +525,9 @@ export function planDeployment(input: PlanInput): Plan {
     if (chain > 0) errors.push("speculation cannot be combined with an MTP chain > 0.");
   }
   if (spec.wire !== undefined && !WIRE_MODES.has(spec.wire)) errors.push(`wire must be off, f16 or q8, got ${String(spec.wire)}.`);
-  if (spec.kind !== "split" && spec.kind !== "replica") errors.push(`kind "${spec.kind}" is not placed by the planner; external deployments are registered, not planned.`);
+  if (spec.kind !== "split" && spec.kind !== "replica" && !native) errors.push(`kind "${spec.kind}" is not placed by the planner; external deployments are registered, not planned.`);
+  if (native) errors.push(...nativeRequestErrors(spec, ctx, parallel, chain));
+  else if (spec.stages !== undefined || spec.prefillNodeId !== undefined || spec.decodeNodeId !== undefined || spec.modelSha256 !== undefined) errors.push("Native placement fields require kind stages or prefill-decode.");
   if (spec.workerNodeIds !== undefined && (!Array.isArray(spec.workerNodeIds) || spec.workerNodeIds.some((id) => typeof id !== "string" || !id))) errors.push("workerNodeIds must be an array of non-empty node IDs.");
   if (spec.workerLayers !== undefined) {
     if (chain > 0) errors.push("Exact workerLayers with MTP is not qualified; use chain 0 until target block-count and draft residency are qualified together.");
@@ -441,7 +548,7 @@ export function planDeployment(input: PlanInput): Plan {
   };
   c.reasons.push(`Request: profile ${profile.id} (${profile.name}), kind ${spec.kind}, ctx ${ctx}${dflt(spec.ctx)}, parallel ${parallel}${dflt(spec.parallel)}, chain ${chain}${dflt(spec.chain)}.`);
   c.reasons.push(`${c.eligible.length} of ${nodes.length} enrolled node(s) online with an enabled offer${c.eligible.length ? `: ${c.eligible.map((n) => n.hostname).join(", ")}` : ""}.`);
-  return spec.kind === "replica" ? planReplica(c) : planSplit(c);
+  return native ? planNative(c, input.nativeQualifications ?? QWEN35_NATIVE_QUALIFICATIONS) : spec.kind === "replica" ? planReplica(c) : planSplit(c);
 }
 
 /** Engine device list for the coordinator's --device and --tensor-split: RPC0..RPC<n-1>, then its own device. */

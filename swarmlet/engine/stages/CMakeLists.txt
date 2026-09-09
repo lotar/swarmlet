@@ -1,0 +1,15 @@
+cmake_minimum_required(VERSION 3.20)
+project(mesh_stage_worker LANGUAGES C CXX)
+set(CMAKE_CXX_STANDARD 17)
+set(LLAMA_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+set(LLAMA_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
+set(LLAMA_BUILD_TOOLS OFF CACHE BOOL "" FORCE)
+set(LLAMA_BUILD_SERVER OFF CACHE BOOL "" FORCE)
+add_subdirectory(${ENGINE_SOURCE} engine)
+add_executable(mesh-stage-worker worker.cpp ${ENGINE_SOURCE}/vendor/cpp-httplib/httplib.cpp ${ENGINE_SOURCE}/vendor/hash/sha256/sha256.c)
+target_include_directories(mesh-stage-worker PRIVATE ${ENGINE_SOURCE}/include ${ENGINE_SOURCE}/vendor ${ENGINE_SOURCE}/vendor/hash ${ENGINE_SOURCE}/ggml/include)
+target_link_libraries(mesh-stage-worker PRIVATE llama)
+
+target_compile_definitions(mesh-stage-worker PRIVATE MESH_ENGINE_ID="${ENGINE_ID}")
+
+target_compile_definitions(mesh-stage-worker PRIVATE MESH_BUILD_CONFIG="metal=${GGML_METAL},cuda=${GGML_CUDA},cuda_arch=${CMAKE_CUDA_ARCHITECTURES},native=${GGML_NATIVE},blas=${GGML_BLAS}")

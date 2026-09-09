@@ -42,7 +42,7 @@ export interface Capabilities {
   dataPort?: number;
   /** Linux: which cgroup controllers the user slice delegates (hard enforcement possible). */
   cgroup?: { memory: boolean; cpu: boolean };
-  engine?: { proto: string; sha256: Record<string, string> };
+  engine?: { proto: string; sha256: Record<string, string>; stages?: { engine: string } };
   net?: NetMeasurement;
   measuredAt: string;
 }
@@ -169,13 +169,62 @@ export interface StopAssignment {
   deploymentId: string;
 }
 
-export type Assignment = WorkerAssignment | CoordinatorAssignment | ReplicaAssignment | StopAssignment;
+export interface NativeStageIdentity {
+  schema: 1;
+  engine: string;
+  model_sha256: string;
+  source_sha256: string;
+  ctx: number;
+  cache_k: "f32";
+  cache_v: "f32";
+  ubatch: 1;
+  flash_attn: "disabled";
+  stage_start: string;
+  stage_end: string;
+  stage_total: string;
+}
+
+export interface NativeStageEndpoint { nodeId: string; port: number; identity: NativeStageIdentity; binarySha256: string }
+export interface NativeExecutionPlan {
+  mode: "stages" | "prefill-decode";
+  profile: "qwen35-2b-q8";
+  endpoints: NativeStageEndpoint[];
+  stateTransferQualification?: { sourceBinarySha256: string; targetBinarySha256: string; evidenceSha256: string };
+}
+export interface NativeStageWorkerPlan extends NativeStageEndpoint {
+  modelPath: string;
+  device: string;
+  fitMiB?: number;
+  enforce: { ramMiB: number; cpuCores: number };
+}
+export interface NativeExecutionPlacement extends NativeExecutionPlan {
+  endpoints: NativeStageWorkerPlan[];
+  qualificationEvidenceSha256: string;
+}
+
+/** One resident native context. State files live in an agent-generated private directory. */
+export interface StageAssignment {
+  kind: "stage";
+  id: string;
+  deploymentId: string;
+  model: { path: string; sha256: string };
+  port: number;
+  ctx: number;
+  gpuLayers: 999;
+  identity: NativeStageIdentity;
+  binarySha256: string;
+  fitMiB?: number;
+  allow: string[];
+  enforce: { ramMiB: number; cpuCores: number };
+}
+
+export type Assignment = WorkerAssignment | CoordinatorAssignment | ReplicaAssignment | StageAssignment | StopAssignment;
 
 export type AssignmentState = "starting" | "listening" | "loading" | "ready" | "stopped" | "failed";
 
 // ---------- deployments (control side) ----------
 
-export type DeploymentKind = "split" | "replica" | "external";
+export type DeploymentKind = "split" | "replica" | "external" | "stages" | "prefill-decode";
 export type DeploymentState = "planned" | "placing" | "loading" | "ready" | "draining" | "stopped" | "failed";
 
 export interface DeploymentSpec {
@@ -188,6 +237,12 @@ export interface DeploymentSpec {
   /** Exact layer counts paired with workerNodeIds, in the same order; each must fit a profile envelope row. */
   workerLayers?: number[];
   replicaNodeId?: string;
+  /** Ordered, explicitly qualified shards for kind stages. Ranges are [start,end). */
+  stages?: Array<{ nodeId: string; modelPath: string; modelSha256: string; start: number; end: number }>;
+  /** Two full-model resident contexts for kind prefill-decode. */
+  prefillNodeId?: string;
+  decodeNodeId?: string;
+  modelSha256?: string;
   ctx?: number;
   parallel?: number;
   /** MTP chain length; 0 = no speculative decoding. */
@@ -227,6 +282,8 @@ export interface Plan {
   env: Record<string, string>;
   modelPath: string;
   mtpPath?: string;
+  /** Native contexts use the control-side execution adapter, never a raw OpenAI port proxy. */
+  nativeExecution?: NativeExecutionPlacement;
   /** Human-readable reasons for every choice and every clamp. */
   reasons: string[];
 }
