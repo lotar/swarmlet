@@ -20,7 +20,8 @@
       "app",
       "dmg",
       "deb",
-      "appimage"
+      "appimage",
+      "nsis"
     ],
     "category": "Utility",
     "shortDescription": "Swarmlet node agent",
@@ -41,6 +42,12 @@
     },
     "macOS": {
       "minimumSystemVersion": "12.0"
+    },
+    "windows": {
+      "nsis": {
+        "installMode": "currentUser",
+        "installerIcon": "icons/icon.ico"
+      }
     },
     "linux": {
       "deb": {

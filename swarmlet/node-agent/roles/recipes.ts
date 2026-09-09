@@ -3,6 +3,7 @@
 // Measured reference: docs/FLASHNEXT_RING_LEVERS_20260904.md (chain 4 + batched GETs, wire off).
 
 import type { CoordinatorAssignment, ReplicaAssignment, WorkerAssignment } from "../../protocol/types.ts";
+import { exeName } from "../platform.ts";
 
 export interface WorkerRecipe { argv: string[]; env: Record<string, string> }
 
@@ -19,7 +20,7 @@ function speculationArgs(a: Pick<CoordinatorAssignment, "mtp" | "speculation">):
 
 /** ggml-rpc-server for a worker slab. `peerLocalPorts[i]` is the local port dialed to peers[i]. */
 export function workerArgv(engine: string, a: WorkerAssignment, peerLocalPorts: number[]): WorkerRecipe {
-  const argv = [`${engine}/ggml-rpc-server`, "-H", "127.0.0.1", "-p", String(a.port), "-d", a.device, "-t", String(a.threads)];
+  const argv = [`${engine}/${exeName("ggml-rpc-server")}`, "-H", "127.0.0.1", "-p", String(a.port), "-d", a.device, "-t", String(a.threads)];
   if (a.memCapMiB && a.memCapMiB > 0) argv.push("--mem-cap-mib", String(a.memCapMiB));
   if (a.peerPort) argv.push("--peer-port", String(a.peerPort));
   (a.peers ?? []).forEach((p, i) => { const lp = peerLocalPorts[i]; if (lp) argv.push("--peer", `${p.index}=127.0.0.1:${lp}`); });
@@ -30,7 +31,7 @@ export function workerArgv(engine: string, a: WorkerAssignment, peerLocalPorts: 
 /** llama-server as the RPC client holding the model. `rpcLocalPorts[i]` is the local port dialed to rpc[i]. */
 export function coordinatorArgv(engine: string, a: CoordinatorAssignment, rpcLocalPorts: number[]): WorkerRecipe {
   const argv = [
-    `${engine}/llama-server`, "-m", a.model.path, "--host", "127.0.0.1", "--port", String(a.port),
+    `${engine}/${exeName("llama-server")}`, "-m", a.model.path, "--host", "127.0.0.1", "--port", String(a.port),
     "--rpc", rpcLocalPorts.map((p) => `127.0.0.1:${p}`).join(","),
     "--device", a.devices.join(","), "--tensor-split", a.tensorSplit.join(","),
     "-ngl", "999", "-c", String(a.ctx), "--parallel", String(a.parallel), "--metrics", "--temp", "0",
@@ -48,7 +49,7 @@ export function coordinatorArgv(engine: string, a: CoordinatorAssignment, rpcLoc
 /** Whole-model llama-server (replica role). */
 export function replicaArgv(engine: string, a: ReplicaAssignment): WorkerRecipe {
   if (!a.model) throw new Error("replica recipe needs a model");
-  const argv = [`${engine}/llama-server`, "-m", a.model.path, "--host", "127.0.0.1", "--port", String(a.port), "-ngl", "999", "--metrics"];
+  const argv = [`${engine}/${exeName("llama-server")}`, "-m", a.model.path, "--host", "127.0.0.1", "--port", String(a.port), "-ngl", "999", "--metrics"];
   if (a.ctx) argv.push("-c", String(a.ctx));
   if (a.parallel) argv.push("--parallel", String(a.parallel));
   if (a.modelName) argv.push("--alias", a.modelName);

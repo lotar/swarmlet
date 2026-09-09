@@ -1,7 +1,7 @@
 // GGUF inventory of a models directory (one level of subdirectories). Hashing streams the file.
 
 import { mkdir, readFile, readdir, rename, stat, unlink, writeFile } from "node:fs/promises";
-import { dirname, join, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import type { ModelFile } from "../../protocol/types.ts";
 
 interface HashEntry { metadata: string; sha256: string }
@@ -71,7 +71,7 @@ export async function listModels(dir: string, opts: { hash?: boolean; cacheFile?
   for (const path of candidates) {
     let before: Awaited<ReturnType<typeof modelStat>>;
     try { before = await modelStat(path); if (!before) continue; } catch { continue; }
-    const name = path.slice(path.lastIndexOf("/") + 1);
+    const name = basename(path);
     const f: ModelFile = { name, path, sizeBytes: before.size, kind: modelKind(name) };
     if (opts.hash) {
       const sha256 = await sha256File(path);

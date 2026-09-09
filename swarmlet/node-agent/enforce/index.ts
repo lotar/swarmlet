@@ -1,11 +1,13 @@
 // OS resource enforcement for engine processes.
 //   linux : systemd-run --user --scope with MemoryMax / MemorySwapMax=0 / CPUQuota (cgroup v2, hard).
 //           The user slice on Ubuntu 24.04 delegates cpu, memory and pids (not cpuset: no pinning).
-//   darwin: no cgroups. Thread count is passed to the engine; RAM is a soft cap enforced by an RSS
-//           watchdog that kills the process when it exceeds the cap by more than 10 %.
-// Both return the argv to spawn plus a `watch` hook the runner calls with the pid.
+//   darwin, win32: no cgroups. Thread count is passed to the engine; RAM is a soft cap enforced by an
+//           RSS watchdog (ps on darwin, tasklist on Windows) that kills the process when it exceeds
+//           the cap by more than 10 %.
+// All return the argv to spawn plus a `watch` hook the runner calls with the pid.
 
 import type { Logger } from "../../control/log.ts";
+import { rssMiB } from "../probe/host.ts";
 
 export interface Limits { ramMiB?: number; cpuCores?: number }
 
@@ -34,19 +36,16 @@ export async function enforce(unit: string, argv: string[], limits: Limits, log:
     const summary = props.length ? `cgroup ${props.filter((p) => p !== "-p").join(" ")}` : "cgroup scope (no limits requested)";
     return { argv: wrapped, summary };
   }
-  // darwin
+  // darwin, win32: soft cap
   const cap = limits.ramMiB && limits.ramMiB > 0 ? limits.ramMiB : 0;
   const summary = cap ? `soft rss cap ${(cap / 1024).toFixed(1)} GiB (watchdog)` : "no ram cap";
   const watch = cap
     ? (pid: number, kill: (reason: string) => void) => {
         const timer = setInterval(async () => {
           try {
-            const p = Bun.spawn(["ps", "-o", "rss=", "-p", String(pid)], { stdout: "pipe", stderr: "ignore" });
-            const out = (await new Response(p.stdout).text()).trim();
-            await p.exited;
-            const rssMiB = Number(out) / 1024;
-            if (Number.isFinite(rssMiB) && rssMiB > cap * 1.1) kill(`rss ${rssMiB.toFixed(0)} MiB exceeds cap ${cap} MiB by >10%`);
-          } catch { /* process gone */ }
+            const rss = await rssMiB([pid]);
+            if (rss !== undefined && rss > cap * 1.1) kill(`rss ${rss.toFixed(0)} MiB exceeds cap ${cap} MiB by >10%`);
+          } catch { /* process gone or tool unavailable */ }
         }, 5000);
         return () => clearInterval(timer);
       }

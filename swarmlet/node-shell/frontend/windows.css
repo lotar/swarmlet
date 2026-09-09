@@ -1,0 +1,26 @@
+/* Windows additions on top of the shared native stylesheet (macos.css re-targeted to the
+   'windows' shell at build time). Mica shows through the sidebar; the main pane stays opaque. */
+:root[data-native-shell='windows'] {
+  --font-display:'Segoe UI Variable Display','Segoe UI',system-ui,sans-serif;
+  --font-body:'Segoe UI Variable Text','Segoe UI',system-ui,sans-serif;
+  --native-corner:8px; --native-drag:32px;
+  --nav-bg:rgba(243,243,243,.72);
+  --native-main:#f3f3f3; --bg:#f3f3f3; --bg-deep:#f3f3f3;
+}
+/* No system backdrop (Windows 10 without Acrylic, or a failed effect): never leave the sidebar see-through. */
+:root[data-native-shell='windows'][data-native-backdrop='none'] { --nav-bg:#f3f3f3; }
+[data-native-shell='windows'] .native-drag-surface { right:138px; }
+[data-native-shell='windows'] .native-caption { position:fixed; top:0; right:0; z-index:60; display:flex; height:var(--native-drag); }
+[data-native-shell='windows'] .native-caption button {
+  width:46px; height:100%; margin:0; padding:0; border:0; border-radius:0; background:transparent; color:var(--text);
+  font:10px 'Segoe Fluent Icons','Segoe MDL2 Assets',sans-serif; line-height:1; cursor:default; box-shadow:none; -webkit-user-select:none; user-select:none;
+}
+[data-native-shell='windows'] .native-caption button:hover { background:rgba(0,0,0,.06); color:var(--text); }
+[data-native-shell='windows'] .native-caption button:active { background:rgba(0,0,0,.10); }
+[data-native-shell='windows'] .native-caption .native-close:hover { background:#c42b1c; color:#fff; }
+[data-native-shell='windows'] .native-caption .native-close:active { background:#b3271a; color:#fff; }
+[data-native-shell='windows'] .native-caption button:focus-visible { outline:2px solid var(--signal); outline-offset:-2px; }
+html[data-native-shell='windows'] body > .card { margin-top:var(--native-drag); }
+@media (prefers-reduced-transparency:reduce) {
+  :root[data-native-shell='windows'] { --nav-bg:#f3f3f3; }
+}

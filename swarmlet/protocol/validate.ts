@@ -9,9 +9,11 @@ const isNum = (v: unknown): v is number => typeof v === "number" && Number.isFin
 const isStr = (v: unknown): v is string => typeof v === "string";
 const isObj = (v: unknown): v is Record<string, unknown> => !!v && typeof v === "object" && !Array.isArray(v);
 
-/** Default OS reserve when the probe did not set one. */
+/** Default OS reserve when the probe did not set one (darwin 12 GiB, Windows 6 GiB, Linux 4 GiB). */
 export function defaultRamReserveMiB(os: Capabilities["os"]): number {
-  return os === "darwin" ? 12 * 1024 : 4 * 1024;
+  if (os === "darwin") return 12 * 1024;
+  if (os === "win32") return 6 * 1024;
+  return 4 * 1024;
 }
 
 /**

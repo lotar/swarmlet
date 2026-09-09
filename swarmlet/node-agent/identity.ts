@@ -2,10 +2,11 @@
 // self-signed ECDSA P-256 X.509 certificate for the TLS data listener. The certificate's SHA-256
 // fingerprint is what other nodes pin; it is bound to the node by the signed enrollment.
 
-import { existsSync, readFileSync } from "node:fs";
+import { chmodSync, existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { ensureKeys, nodeIdFromJwk, readPublicJwk, sha256Hex, type KeyMaterial } from "../protocol/sign.ts";
 import type { AgentPaths } from "./paths.ts";
+import { generateSelfSigned } from "./selfsigned.ts";
 
 export interface Identity {
   nodeId: string;
@@ -25,13 +26,10 @@ async function ensureCert(tlsDir: string, cn: string): Promise<{ certPem: string
   const certPath = join(tlsDir, "cert.pem");
   const keyPath = join(tlsDir, "key.pem");
   if (!existsSync(certPath) || !existsSync(keyPath)) {
-    const proc = Bun.spawn([
-      "openssl", "req", "-x509", "-newkey", "ec", "-pkeyopt", "ec_paramgen_curve:prime256v1", "-nodes",
-      "-keyout", keyPath, "-out", certPath, "-days", "3650", "-subj", `/CN=${cn}`,
-    ], { stdout: "ignore", stderr: "pipe" });
-    const code = await proc.exited;
-    if (code !== 0) throw new Error(`openssl failed (${code}): ${await new Response(proc.stderr).text()}`);
-    const { chmodSync } = await import("node:fs");
+    // WebCrypto, not openssl: Windows ships no openssl and the transport pins fingerprints only.
+    const generated = await generateSelfSigned(cn, 3650);
+    writeFileSync(keyPath, generated.keyPem, { mode: 0o600 });
+    writeFileSync(certPath, generated.certPem);
     chmodSync(keyPath, 0o600);
   }
   return { certPem: readFileSync(certPath, "utf8"), keyPem: readFileSync(keyPath, "utf8") };

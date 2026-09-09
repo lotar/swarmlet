@@ -3,6 +3,7 @@
 import { statfs } from "node:fs/promises";
 import { networkInterfaces } from "node:os";
 import { CODE_NOT_FOUND, exec } from "./exec.ts";
+import { win32DiskFreeMiB, win32RssMiB } from "./win32.ts";
 
 const MiB = 1024 * 1024;
 
@@ -40,12 +41,13 @@ export function parseDfK(text: string): DfEntry | null {
   };
 }
 
-/** Free space (MiB) of the filesystem holding `path`: statfs, else `df -kP`. */
+/** Free space (MiB) of the filesystem holding `path`: statfs, else `df -kP` (Windows: CIM). */
 export async function diskFreeMiB(path: string): Promise<number> {
   try {
     const s = await statfs(path);
     return Math.floor((Number(s.bavail) * Number(s.bsize)) / MiB);
   } catch {
+    if (process.platform === "win32") return win32DiskFreeMiB(path);
     const r = await exec(["df", "-kP", path], { timeoutMs: 10_000 });
     if (r.code !== 0) throw new Error(`df exited ${r.code}: ${r.stderr.trim()}`);
     const d = parseDfK(r.stdout);
@@ -91,6 +93,7 @@ export async function rssMiB(pids: number[]): Promise<number | undefined> {
   // pids above 2^22 cannot exist (linux pid_max ceiling; macOS stops at 99998) and make ps reject the whole batch
   const list = pids.filter((p) => Number.isInteger(p) && p > 0 && p <= 4_194_304);
   if (list.length === 0) return undefined;
+  if (process.platform === "win32") return win32RssMiB(list);
   const r = await exec(["ps", "-o", "rss=", "-p", list.join(",")], { timeoutMs: 5_000 });
   if (r.code === CODE_NOT_FOUND) throw new Error("ps not found");
   // ps exits 1 when one of the pids is gone but still prints the others

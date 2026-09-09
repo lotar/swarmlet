@@ -8,10 +8,15 @@
 //! Agent supervision:
 //! * If /api/status already answers, an agent is running (user service or another instance):
 //!   nothing is spawned.
-//! * If the user service is installed (launchd plist / systemd --user unit written by
-//!   `swarmlet-node install`) the shell waits for it and never spawns a competing process.
+//! * If the user service is installed (launchd plist / systemd --user unit / Windows scheduled
+//!   task written by `swarmlet-node install`) the shell waits for it and never spawns a competing
+//!   process.
 //! * Otherwise the bundled sidecar `swarmlet-node run` is spawned with SWARMLET_ENGINE pointing at
-//!   the bundled engine resources; it is stopped (SIGTERM, then kill) when the shell quits.
+//!   the bundled engine resources; it is stopped when the shell quits: SIGTERM on macOS/Linux,
+//!   POST /api/shutdown on Windows (no signals there), then kill after a grace period.
+//!
+//! Window chrome: macOS and Windows both run frameless with the system backdrop (Sidebar vibrancy,
+//! Mica) behind the same node UI; the platform stylesheet and script are injected at load.
 
 use std::{
     fs::{self, File, OpenOptions},
@@ -195,6 +200,25 @@ fn build_window(app: &AppHandle, visible: bool) -> tauri::Result<WebviewWindow> 
             .shadow(true)
             .initialization_script(init)
     };
+    #[cfg(windows)]
+    let backdrop = windows_backdrop();
+    #[cfg(windows)]
+    let builder = {
+        // The Mac stylesheet re-targeted to the Windows shell, plus the Windows-only additions
+        // (fonts, 8 px corners, caption buttons). One layout, two native skins.
+        let shared = include_str!("../../frontend/macos.css").replace("data-native-shell='macos'", "data-native-shell='windows'");
+        let css = serde_json::to_string(&format!("{shared}\n{}", include_str!("../../frontend/windows.css")))
+            .expect("static Windows stylesheet serializes");
+        let init = include_str!("../../frontend/windows.js")
+            .replace("__SWARMLET_NATIVE_CSS__", &css)
+            .replace("__SWARMLET_NATIVE_BACKDROP__", &serde_json::to_string(backdrop.name()).expect("backdrop name serializes"));
+        builder
+            .decorations(false)
+            .theme(Some(tauri::Theme::Light))
+            .transparent(true)
+            .shadow(true)
+            .initialization_script(init)
+    };
     let win = builder.build()?;
     #[cfg(target_os = "macos")]
     {
@@ -208,6 +232,19 @@ fn build_window(app: &AppHandle, visible: bool) -> tauri::Result<WebviewWindow> 
         )?;
         logln(app, format!("macOS glass window: decorated={}, native Sidebar vibrancy, drag surface enabled", win.is_decorated()?));
     }
+    #[cfg(windows)]
+    {
+        use tauri::window::{Effect, EffectsBuilder};
+        let effect = match backdrop {
+            Backdrop::Mica => Some(Effect::MicaLight),
+            Backdrop::Acrylic => Some(Effect::Acrylic),
+            Backdrop::None => None,
+        };
+        if let Some(effect) = effect {
+            win.set_effects(EffectsBuilder::new().effect(effect).build())?;
+        }
+        logln(app, format!("Windows glass window: decorated={}, backdrop {}, caption buttons + drag surface injected", win.is_decorated()?, backdrop.name()));
+    }
     // Closing the window only hides it; the app keeps running in the tray. Quit is in the tray menu.
     let w = win.clone();
     win.on_window_event(move |event| {
@@ -217,6 +254,53 @@ fn build_window(app: &AppHandle, visible: bool) -> tauri::Result<WebviewWindow> 
         }
     });
     Ok(win)
+}
+
+/// Which system backdrop this Windows build can draw behind the sidebar.
+#[cfg(windows)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Backdrop {
+    /// Windows 11 (build 22000+): Mica, the same role as Sidebar vibrancy on macOS.
+    Mica,
+    /// Windows 10: Acrylic blur.
+    Acrylic,
+    None,
+}
+
+#[cfg(windows)]
+impl Backdrop {
+    fn name(self) -> &'static str {
+        match self {
+            Backdrop::Mica => "mica",
+            Backdrop::Acrylic => "acrylic",
+            Backdrop::None => "none",
+        }
+    }
+}
+
+/// Mica exists from Windows 11 (build 22000); `cmd /c ver` is the dependency-free way to read the build.
+#[cfg(windows)]
+fn windows_backdrop() -> Backdrop {
+    let build = hidden_command("cmd", &["/c", "ver"])
+        .and_then(|out| {
+            // "Microsoft Windows [Version 10.0.22631.4317]" -> 22631
+            let v = out.split("Version").nth(1)?.trim().trim_end_matches(']');
+            v.split('.').nth(2)?.trim().parse::<u32>().ok()
+        });
+    match build {
+        Some(b) if b >= 22000 => Backdrop::Mica,
+        Some(_) => Backdrop::Acrylic,
+        None => Backdrop::None,
+    }
+}
+
+/// Run a console tool without flashing a console window (CREATE_NO_WINDOW); stdout on success.
+#[cfg(windows)]
+fn hidden_command(program: &str, args: &[&str]) -> Option<String> {
+    use std::os::windows::process::CommandExt as _;
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+    let out = std::process::Command::new(program).args(args).creation_flags(CREATE_NO_WINDOW).output().ok()?;
+    out.status.success().then(|| String::from_utf8_lossy(&out.stdout).to_string())
 }
 
 fn show_main(app: &AppHandle) {
@@ -504,14 +588,27 @@ fn spawn_sidecar(app: &AppHandle) -> Result<u32, String> {
     Ok(pid)
 }
 
-/// SIGTERM first so the agent can stop its engine processes, then kill after STOP_GRACE.
+/// Ask the agent to stop its engine processes first (SIGTERM, or POST /api/shutdown on Windows,
+/// which has no signals), then kill after STOP_GRACE.
 fn stop_sidecar(app: &AppHandle) {
     let state = app.state::<ShellState>();
     let child = state.sidecar.lock().unwrap().take();
     let Some(child) = child else { return };
     let pid = child.pid();
-    logln(app, format!("stopping sidecar pid {pid} (SIGTERM, {}s grace)", STOP_GRACE.as_secs()));
-    let _ = std::process::Command::new("kill").args(["-TERM", &pid.to_string()]).status();
+    #[cfg(not(windows))]
+    {
+        logln(app, format!("stopping sidecar pid {pid} (SIGTERM, {}s grace)", STOP_GRACE.as_secs()));
+        let _ = std::process::Command::new("kill").args(["-TERM", &pid.to_string()]).status();
+    }
+    #[cfg(windows)]
+    {
+        logln(app, format!("stopping sidecar pid {pid} (POST /api/shutdown, {}s grace)", STOP_GRACE.as_secs()));
+        match agent_request("POST", "/api/shutdown", Some("{}")) {
+            Ok((200, _)) => {}
+            Ok((code, body)) => logln(app, format!("POST /api/shutdown -> {code}: {}", body.trim())),
+            Err(e) => logln(app, format!("POST /api/shutdown failed: {e}")),
+        }
+    }
     let deadline = Instant::now() + STOP_GRACE;
     while Instant::now() < deadline {
         if state.sidecar_exited.load(Ordering::SeqCst) || !pid_alive(pid) {
@@ -524,6 +621,7 @@ fn stop_sidecar(app: &AppHandle) {
     let _ = child.kill();
 }
 
+#[cfg(not(windows))]
 fn pid_alive(pid: u32) -> bool {
     std::process::Command::new("kill")
         .args(["-0", &pid.to_string()])
@@ -532,21 +630,39 @@ fn pid_alive(pid: u32) -> bool {
         .unwrap_or(false)
 }
 
+#[cfg(windows)]
+fn pid_alive(pid: u32) -> bool {
+    // tasklist prints an INFO line (no match) or a CSV row whose second field is the pid.
+    hidden_command("tasklist", &["/FI", &format!("PID eq {pid}"), "/NH", "/FO", "CSV"])
+        .map(|out| out.contains(&format!("\",\"{pid}\",\"")))
+        .unwrap_or(true)
+}
+
 /// `swarmlet-node install` writes one of these; when present the service owns the port.
 fn service_installed(app: &AppHandle) -> bool {
-    let Ok(home) = app.path().home_dir() else { return false };
-    let path = if cfg!(target_os = "macos") {
-        home.join("Library/LaunchAgents/ai.swarmlet.node.plist")
-    } else {
-        home.join(".config/systemd/user/swarmlet-node.service")
-    };
-    path.exists()
+    #[cfg(windows)]
+    {
+        // %LOCALAPPDATA%\Swarmlet\swarmlet-node.task.xml: the scheduled task definition install.ts keeps.
+        let Ok(local) = app.path().local_data_dir() else { return false };
+        return local.join("Swarmlet").join("swarmlet-node.task.xml").exists();
+    }
+    #[cfg(not(windows))]
+    {
+        let Ok(home) = app.path().home_dir() else { return false };
+        let path = if cfg!(target_os = "macos") {
+            home.join("Library/LaunchAgents/ai.swarmlet.node.plist")
+        } else {
+            home.join(".config/systemd/user/swarmlet-node.service")
+        };
+        path.exists()
+    }
 }
 
 /// Bundled engine resources (tauri.conf.json bundle.resources maps binaries/engine/* -> engine/).
 fn engine_dir(app: &AppHandle) -> Option<PathBuf> {
     let dir = app.path().resolve("engine", BaseDirectory::Resource).ok()?;
-    if dir.join("ggml-rpc-server").is_file() || dir.join("llama-server").is_file() {
+    let exe = if cfg!(windows) { ".exe" } else { "" };
+    if dir.join(format!("ggml-rpc-server{exe}")).is_file() || dir.join(format!("llama-server{exe}")).is_file() {
         Some(dir)
     } else {
         None

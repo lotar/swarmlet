@@ -2,6 +2,8 @@
 // Used for gate certificates and artifact provenance. Keys live in
 // data/keys/{private,jwk}.json and are generated on first init.
 
+import { isAbsolute, join } from "node:path";
+
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
 
@@ -23,7 +25,8 @@ export interface KeyMaterial {
 }
 
 function keysDir(dir: string): string {
-  return dir.startsWith("/") ? dir : `${process.cwd()}/${dir}`;
+  // Windows absolute paths start with a drive letter, not "/".
+  return isAbsolute(dir) ? dir : join(process.cwd(), dir);
 }
 
 /** Load keypair from disk or generate + persist on first call (idempotent). */

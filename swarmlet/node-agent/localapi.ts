@@ -22,6 +22,8 @@ export interface LocalApiDeps {
   measureNet: () => Promise<NetMeasurement>;
   logs: (assignment?: string, lines?: number) => string[];
   inference?: (req: Request, path: string) => Promise<Response>;
+  /** Stop engines and exit; the desktop shell uses this where it cannot deliver SIGTERM (Windows). */
+  shutdown?: () => Promise<void>;
 }
 
 const json = (body: unknown, status = 200): Response => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json", "cache-control": "no-store" } });
@@ -64,6 +66,11 @@ export function startLocalApi(port: number, deps: LocalApiDeps): Server<undefine
         }
         if (path === "/api/net/measure" && req.method === "POST") { try { return json(await deps.measureNet()); } catch (e) { return json({ error: (e as Error).message }, 400); } }
         if (path === "/api/logs") return json({ lines: deps.logs(url.searchParams.get("assignment") ?? undefined, Number(url.searchParams.get("lines") ?? 200)) });
+        if (path === "/api/shutdown" && req.method === "POST") {
+          if (!deps.shutdown) return json({ error: "shutdown unavailable" }, 501);
+          setTimeout(() => { void deps.shutdown!(); }, 50); // answer first, then stop
+          return json({ ok: true });
+        }
         const ui = serveUi(req, path);
         if (ui) return ui;
         return new Response("not found", { status: 404 });

@@ -1,9 +1,15 @@
 // Numeric PIDs can be reused. Persist start time + command at spawn, and compare
 // again before every signal while recovering a prior agent's engine process.
 import { readFileSync } from "node:fs";
+import { win32ProcessIdentity } from "../probe/win32.ts";
 export interface ProcessIdentity { started: string; command: string; birthId?: string }
 
 export function processIdentity(pid: number): ProcessIdentity | null {
+  if (process.platform === "win32") {
+    // CIM creation time has 100 ns resolution, so it identifies the process on its own.
+    const info = win32ProcessIdentity(pid);
+    return info ? { started: info.created, command: info.command } : null;
+  }
   if (process.platform === "linux") {
     try {
       const startTick = () => { const stat = readFileSync(`/proc/${pid}/stat`, "utf8"); const fields = stat.slice(stat.lastIndexOf(")") + 2).split(" "); return fields[0] === "Z" ? null : fields[19]!; };

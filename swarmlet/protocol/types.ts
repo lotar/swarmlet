@@ -27,7 +27,8 @@ export interface NetMeasurement {
 }
 
 export interface Capabilities {
-  os: "darwin" | "linux";
+  /** Node's process.platform value; "win32" is Windows. */
+  os: "darwin" | "linux" | "win32";
   arch: "arm64" | "x64";
   hostname: string;
   ramMiB: number;

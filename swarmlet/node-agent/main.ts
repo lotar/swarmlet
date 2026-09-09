@@ -139,6 +139,7 @@ export class AgentRuntime {
       join: (url, code) => this.join(url, code),
       measureNet: () => this.measure(),
       logs: (assignment, lines = 200) => (assignment ? this.runner.recentLog(assignment, lines) : this.agentLog.slice(-lines)),
+      shutdown: () => shutdown("local api"),
     });
     log.info(`local UI http://127.0.0.1:${this.cfg.uiPort}  node ${this.id.nodeId}  cert ${this.id.certFp.slice(0, 16)}`);
     this.connect();
@@ -146,9 +147,13 @@ export class AgentRuntime {
     this.timers.push(setInterval(() => { void this.refreshCaps().then(() => this.client?.send({ t: "heartbeat", ts: new Date().toISOString(), metrics: this.metrics ?? { ts: new Date().toISOString() }, caps: this.caps ?? undefined })); }, 5 * 60_000));
     this.timers.push(setInterval(() => { void this.measure().catch(() => undefined); }, 60 * 60_000));
     if (this.cfg.controlUrl) setTimeout(() => { void this.measure().catch(() => undefined); }, 3000);
-    const shutdown = async () => { log.info("shutting down"); for (const t of this.timers) clearInterval(t); await this.runner.stopAll(); this.client?.stop(); process.exit(0); };
-    process.on("SIGINT", () => { void shutdown(); });
-    process.on("SIGTERM", () => { void shutdown(); });
+    let stopping = false;
+    const shutdown = async (why: string) => {
+      if (stopping) return; stopping = true;
+      log.info("shutting down", { why }); for (const t of this.timers) clearInterval(t); await this.runner.stopAll(); this.client?.stop(); process.exit(0);
+    };
+    process.on("SIGINT", () => { void shutdown("SIGINT"); });
+    process.on("SIGTERM", () => { void shutdown("SIGTERM"); });
   }
 
   private async tick(): Promise<void> {
@@ -211,9 +216,17 @@ async function cli(argv: string[]): Promise<void> {
       try { await fetch(`http://127.0.0.1:${cfg.uiPort}/api/offer`, { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify(cfg.offer), signal: AbortSignal.timeout(3000) }); } catch { /* daemon not running: file updated */ }
       console.log(JSON.stringify(cfg.offer, null, 2)); return;
     }
-    case "install": { const p = await installService(process.execPath.endsWith("bun") ? `${process.execPath} ${import.meta.path}` : process.execPath, paths.home, paths.logsDir); console.log(`installed ${p}`); return; }
+    case "install": {
+      const fromSource = /(^|[\\/])bun(\.exe)?$/.test(process.execPath); // `bun run main.ts install`: the service must run the same source
+      const p = await installService(fromSource ? `${process.execPath} ${import.meta.path}` : process.execPath, paths.home, paths.logsDir);
+      console.log(`installed ${p}`); return;
+    }
     case "uninstall": { await uninstallService(); console.log("uninstalled"); return; }
-    case "ui": { const port = loadNodeConfig(paths).uiPort; Bun.spawn([process.platform === "darwin" ? "open" : "xdg-open", `http://127.0.0.1:${port}/`]); return; }
+    case "ui": {
+      const url = `http://127.0.0.1:${loadNodeConfig(paths).uiPort}/`;
+      const opener = process.platform === "darwin" ? ["open", url] : process.platform === "win32" ? ["cmd", "/c", "start", "", url] : ["xdg-open", url];
+      Bun.spawn(opener); return;
+    }
     default: throw new Error(`unknown command ${cmd}`);
   }
 }

@@ -4,8 +4,10 @@
 
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { AGENT_DATA_PORT, AGENT_UI_PORT, type Offer } from "../protocol/types.ts";
 import type { AgentPaths } from "./paths.ts";
+import { engineDistName, exeName } from "./platform.ts";
 
 export interface ExternalService {
   id: string;
@@ -37,9 +39,9 @@ export function defaultModelsDir(home: string): string { return join(home, "mode
 export function defaultEnginePath(): string {
   if (process.env.SWARMLET_ENGINE) return process.env.SWARMLET_ENGINE;
   const beside = join(dirname(process.execPath), "engine");
-  if (existsSync(join(beside, "ggml-rpc-server"))) return beside;
-  const repo = new URL(`../engine/dist/${process.platform}/`, import.meta.url).pathname;
-  return repo;
+  if (existsSync(join(beside, exeName("ggml-rpc-server")))) return beside;
+  // engine/dist/<os>: "windows" on win32, matching engine/build.sh and node-agent/build.ts.
+  return fileURLToPath(new URL(`../engine/dist/${engineDistName()}/`, import.meta.url));
 }
 
 export function defaultOffer(home: string): Offer {

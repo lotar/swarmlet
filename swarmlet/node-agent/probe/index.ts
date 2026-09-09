@@ -10,22 +10,20 @@ import { darwinCpuPct, darwinFreeRamMiB, darwinGpusFallback } from "./darwin.ts"
 import { engineDevices, engineInfo } from "./engine.ts";
 import { diskFreeMiB, privateIps, rssMiB } from "./host.ts";
 import { linuxCgroup, linuxCpuPct, linuxFreeRamMiB, linuxGpuUsed, linuxGpusFallback } from "./linux.ts";
+import { win32CpuPct, win32FreeRamMiB } from "./win32.ts";
 import { measureNet, publicIp } from "./net.ts";
+import { platformOf } from "../platform.ts";
 
 export * from "./exec.ts";
 export * from "./engine.ts";
 export * from "./host.ts";
 export * from "./darwin.ts";
 export * from "./linux.ts";
+export * from "./win32.ts";
 export * from "./models.ts";
 export * from "./net.ts";
 
 const MiB = 1024 * 1024;
-
-function platformOf(p: string): Capabilities["os"] {
-  if (p === "darwin" || p === "linux") return p;
-  throw new Error(`unsupported platform ${p}`);
-}
 
 function archOf(a: string): Capabilities["arch"] {
   if (a === "arm64" || a === "x64") return a;
@@ -50,6 +48,7 @@ async function probeGpus(os: Capabilities["os"], arch: string, enginePath: strin
     if (fromEngine.gpus.length === 0) log.warn("gpu: engine lists no GPU device", { enginePath });
     return fromEngine.gpus;
   }
+  // linux and win32 both ship nvidia-smi with the NVIDIA driver; a machine without it simply has no GPU to offer.
   log.warn(`gpu: ${fromEngine.reason}; falling back to ${os === "darwin" ? "system_profiler" : "nvidia-smi"}`);
   const fallback = await attempt(log, "gpu", () => (os === "darwin" ? darwinGpusFallback(ramMiB, arch) : linuxGpusFallback()));
   return fallback ?? [];
@@ -105,7 +104,7 @@ export interface ProbeMetricsOptions {
   pids?: number[];
   /** Devices from Capabilities; per-device usage is reported for these ids only. */
   gpus: GpuDevice[];
-  /** Linux cpu sampling window (default 1000 ms); darwin reads the kernel's figure instantly. */
+  /** Linux/Windows cpu sampling window (default 1000 ms); darwin reads the kernel's figure instantly. */
   sampleMs?: number;
   log?: Logger;
 }
@@ -122,12 +121,15 @@ export async function probeMetrics(opts: ProbeMetricsOptions): Promise<NodeMetri
   const os = process.platform;
   const once = <T>(key: string, fn: () => Promise<T>): Promise<T | undefined> =>
     fn().catch((e: unknown) => { warnOnce(log, key, `${key}: ${(e as Error).message}`); return undefined; });
-  const wantGpu = os === "linux" && opts.gpus.some((g) => g.backend === "cuda");
+  const wantGpu = (os === "linux" || os === "win32") && opts.gpus.some((g) => g.backend === "cuda");
+  const sampleMs = opts.sampleMs ?? 1000;
+  const cpu = os === "darwin" ? () => darwinCpuPct(availableParallelism()) : os === "win32" ? () => win32CpuPct(sampleMs) : () => linuxCpuPct(sampleMs);
+  const freeRamFn = os === "darwin" ? darwinFreeRamMiB : os === "win32" ? win32FreeRamMiB : linuxFreeRamMiB;
 
   const [cpuPct, rss, freeRam, gpu] = await Promise.all([
-    once("cpu", () => (os === "darwin" ? darwinCpuPct(availableParallelism()) : linuxCpuPct(opts.sampleMs ?? 1000))),
+    once("cpu", cpu),
     once("rss", () => rssMiB(opts.pids ?? [])),
-    once("freeRam", () => (os === "darwin" ? darwinFreeRamMiB() : linuxFreeRamMiB())),
+    once("freeRam", freeRamFn),
     wantGpu ? once("gpu", () => linuxGpuUsed()) : Promise.resolve(undefined),
   ]);
 

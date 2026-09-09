@@ -2,6 +2,7 @@ import { join } from "node:path";
 import { readFileSync } from "node:fs";
 import { createConnection } from "node:net";
 import type { NativeStageIdentity, StageAssignment } from "../../protocol/types.ts";
+import { exeName } from "../platform.ts";
 
 export function stageStateDirectory(stateDir: string, id: string): string {
   if (!/^[A-Za-z0-9_-]{1,128}$/.test(id)) throw new Error("invalid native assignment id");
@@ -12,7 +13,7 @@ export function stageArgv(engine: string, a: StageAssignment, stateDir: string):
   if (a.ctx !== 1024 || a.gpuLayers !== 999 || a.model.sha256 !== a.identity.model_sha256 || a.ctx !== a.identity.ctx) {
     throw new Error("invalid qualified native assignment");
   }
-  return [join(engine, "mesh-stage-worker"), a.model.path, a.model.sha256,
+  return [join(engine, exeName("mesh-stage-worker")), a.model.path, a.model.sha256,
     stageStateDirectory(stateDir, a.id), String(a.port), String(a.gpuLayers), String(a.ctx)];
 }
 

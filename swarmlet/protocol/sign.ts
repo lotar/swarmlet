@@ -10,6 +10,7 @@ export {
   type KeyMaterial,
 } from "../../sin-harness/core/sign.ts";
 import { canonicalize } from "../../sin-harness/core/sign.ts";
+import { isAbsolute, join } from "node:path";
 
 const encoder = new TextEncoder();
 
@@ -44,8 +45,8 @@ export async function importPublicJwk(jwk: JsonWebKey): Promise<CryptoKey> {
 
 /** The public JWK ensureKeys() persisted next to the private key (keys loaded from disk are not extractable). */
 export async function readPublicJwk(dir: string): Promise<JsonWebKey> {
-  const abs = dir.startsWith("/") ? dir : `${process.cwd()}/${dir}`;
-  return (await Bun.file(`${abs}/public.jwk.json`).json()) as JsonWebKey;
+  const abs = isAbsolute(dir) ? dir : join(process.cwd(), dir);
+  return (await Bun.file(join(abs, "public.jwk.json")).json()) as JsonWebKey;
 }
 
 export { sha256Hex };

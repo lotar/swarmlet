@@ -6,6 +6,7 @@ import type { Capabilities, GpuDevice } from "../../protocol/types.ts";
 import type { Logger } from "../../control/log.ts";
 import { CODE_NOT_FOUND, exec } from "./exec.ts";
 import { sha256File } from "./models.ts";
+import { exeName } from "../platform.ts";
 
 /** RPC protocol the shipped engine speaks (push forwarding + wire compression). */
 export const ENGINE_PROTO = "8.1";
@@ -45,7 +46,7 @@ const lastLine = (s: string) => s.trim().split("\n").pop()?.trim() ?? "";
 
 /** Ask the engine itself what it can drive; the caller falls back to OS tools when this is not ok. */
 export async function engineDevices(enginePath: string): Promise<EngineDevices> {
-  const bin = join(enginePath, "llama-server");
+  const bin = join(enginePath, exeName("llama-server"));
   const r = await exec([bin, "--list-devices"], { timeoutMs: ENGINE_DEVICE_TIMEOUT_MS });
   if (r.code === CODE_NOT_FOUND) return { ok: false, reason: `${bin}: not found` };
   if (r.code !== 0) {
@@ -67,7 +68,7 @@ export function parseShaManifest(text: string): Record<string, string> {
 
 /** Engine identity for Capabilities.engine; undefined when there is no llama-server at enginePath. */
 export async function engineInfo(enginePath: string, log: Logger): Promise<Capabilities["engine"] | undefined> {
-  if (!(await Bun.file(join(enginePath, "llama-server")).exists())) {
+  if (!(await Bun.file(join(enginePath, exeName("llama-server"))).exists())) {
     log.warn("engine: llama-server not found; engine info omitted", { enginePath });
     return undefined;
   }
@@ -77,8 +78,11 @@ export async function engineInfo(enginePath: string, log: Logger): Promise<Capab
     log.warn("engine: sha256.txt missing; binary hashes unknown", { enginePath });
   } else info.sha256 = parseShaManifest(await manifest.text());
   // This optional worker has its own source ABI. A stale manifest alone must not advertise it.
+  // The planner matches on the OS-neutral key "mesh-stage-worker", whatever the file is called.
+  const stageName = exeName("mesh-stage-worker");
+  delete info.sha256[stageName];
   delete info.sha256["mesh-stage-worker"];
-  const stage = join(enginePath, "mesh-stage-worker");
+  const stage = join(enginePath, stageName);
   if (await Bun.file(stage).exists()) {
     try {
       const [result, binarySha256] = await Promise.all([exec([stage, "--identity"], { timeoutMs: 10_000 }), sha256File(stage)]);
