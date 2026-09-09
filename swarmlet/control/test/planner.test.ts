@@ -22,7 +22,7 @@ const TINY: ModelFile = { name: "Qwen3.5-2B-Q8_0.gguf", path: "/Volumes/models/Q
 const T0 = "2026-09-04T00:00:00.000Z";
 
 interface Fixture {
-  id: string; hostname: string; os: "darwin" | "linux"; ramMiB: number; cpuCores: number; gpus: GpuDevice[]; offer: Offer;
+  id: string; hostname: string; os: "darwin" | "linux" | "win32"; ramMiB: number; cpuCores: number; gpus: GpuDevice[]; offer: Offer;
   models?: ModelFile[]; rttMs?: number; online?: boolean;
 }
 
@@ -32,7 +32,7 @@ function node(f: Fixture): NodeRow {
     id: f.id, pubJwk: {}, certFp: `fp-${f.id}`, hostname: f.hostname, os: f.os, arch, enrolledAt: T0, lastSeen: T0,
     online: f.online ?? true, agentVersion: "0.1.0",
     caps: {
-      os: f.os, arch, hostname: f.hostname, ramMiB: f.ramMiB, ramReserveMiB: f.os === "darwin" ? 12288 : 4096, cpuCores: f.cpuCores, gpus: f.gpus,
+      os: f.os, arch, hostname: f.hostname, ramMiB: f.ramMiB, ramReserveMiB: f.os === "darwin" ? 12288 : f.os === "win32" ? 6144 : 4096, cpuCores: f.cpuCores, gpus: f.gpus,
       diskFreeMiB: 500_000, privateIps: ["10.0.0.1"], measuredAt: T0, ...(f.rttMs !== undefined ? { net: { rttMs: f.rttMs, measuredAt: T0 } } : {}),
     },
     offer: f.offer, models: f.models ?? [], metrics: null,
@@ -265,6 +265,64 @@ describe("split placement on the real rig", () => {
     const e = refused({ spec: { name: "rig", profile: tiny.id, kind: "split" }, profile: tiny, nodes: [{ ...coord, offer: { ...coord.offer!, gpu: [{ id: "cuda:0", memMiB: 1000 }], ramMiB: 512 } }, legion1(), legion2()] });
     expect(text(e)).toMatch(/cannot hold 18 of 24 layers: 18 × 80 = 1440 MiB exceeds the 1000 MiB GPU offered on CUDA0/);
     expect(text(e)).toMatch(/host side: 1024 MiB exceeds the 512 MiB RAM offered/);
+  });
+});
+
+// A Windows node is placed by the same rules as a Linux one: GPU offer for worker layers, RAM for the host
+// side, CPU when no GPU is offered. Model paths are Windows paths and pass through untouched.
+describe("windows node placement (all shipped profiles)", () => {
+  const W = "a1b2c3d4e5f60030";
+  const WIN_MODELS = "C:\\Users\\lotar\\.swarmlet\\models";
+  const winTiny: ModelFile = { name: TINY.name, path: `${WIN_MODELS}\\${TINY.name}`, sizeBytes: TINY.sizeBytes, kind: "gguf" };
+  const winOffer = (over: Partial<Offer> = {}): Offer => ({ enabled: true, roles: { worker: true, coordinator: false, replica: false }, gpu: [{ id: "cuda:0", memMiB: 3700 }], ramMiB: 8192, cpuCores: 8, diskMiB: 200_000, modelsDir: WIN_MODELS, ...over });
+  const winbox = (over: Partial<Fixture> = {}): NodeRow => node({ id: W, hostname: "laptop-ppn32fp0", os: "win32", ramMiB: 16384, cpuCores: 12, gpus: [cuda("RTX 3050 Laptop")], offer: winOffer(), rttMs: 8, ...over });
+  const big = profiles.get("qwen36-35b-a3b-q4km")!;
+  const BIG: ModelFile = { name: "Qwen3.6-35B-A3B-Q4_K_M.gguf", path: "/Volumes/models/Qwen3.6-35B-A3B-Q4_K_M.gguf", sizeBytes: 20_400_000_000, kind: "gguf" };
+
+  test("Flash-Next split: the Windows GPU takes one layer next to a Legion, coordinator on the M5", () => {
+    const p = plan({ nodes: [m5(), legion1(), winbox()] });
+    expect(p.coordinatorNodeId).toBe(M5);
+    expect(p.workers.map((w) => w.nodeId).sort()).toEqual([L1, W].sort());
+    expect(p.tensorSplit).toEqual([1, 1, 46]);
+    expect(p.workers.find((w) => w.nodeId === W)).toMatchObject({ layers: 1, memCapMiB: 3700 });
+    expect(p.reasons.join("\n")).toMatch(/1 × 1608 \+ 1536 MiB margin = 3144 MiB per worker/);
+  });
+
+  test("Qwen3.5-2B split: the Windows GPU takes 3 layers like a Legion", () => {
+    const p = plan({ spec: { name: "rig", profile: tiny.id, kind: "split", ctx: 2048, parallel: 4 }, profile: tiny, nodes: [m5(), legion1(), winbox()] });
+    expect(p.tensorSplit).toEqual([3, 3, 18]);
+    expect(p.workers.find((w) => w.nodeId === W)).toMatchObject({ layers: 3, memCapMiB: 3700 });
+  });
+
+  test("Qwen3.6-35B split: 4 layers fit the Windows GPU offer; a 2 GB offer is refused with the ceiling", () => {
+    const coord = m5({ models: [BIG] });
+    const p = plan({ spec: { name: "big", profile: big.id, kind: "split", ctx: 2048, parallel: 2, chain: 0 }, profile: big, nodes: [coord, winbox()] });
+    expect(p.tensorSplit).toEqual([4, 36]);
+    expect(p.workers[0]).toMatchObject({ nodeId: W, layers: 4 });
+    const e = refused({ spec: { name: "big", profile: big.id, kind: "split", ctx: 2048, parallel: 2, chain: 0 }, profile: big, nodes: [coord, winbox({ offer: winOffer({ gpu: [{ id: "cuda:0", memMiB: 2048 }] }) })] });
+    expect(text(e)).toMatch(/laptop-ppn32fp0: 2048 MiB offered on CUDA0 allows at most 2 layer\(s\) of 512 MiB/);
+  });
+
+  test("Qwen3.5-2B replica on Windows: GPU offered puts the layers on CUDA0, none offered runs on the CPU with the RAM offer", () => {
+    const replicaRoles = { worker: false, coordinator: false, replica: true };
+    const gpu = winbox({ offer: winOffer({ roles: replicaRoles }), models: [winTiny] });
+    const p = plan({ spec: { name: "r", profile: tiny.id, kind: "replica" }, profile: tiny, nodes: [gpu] });
+    expect(p).toMatchObject({ coordinatorNodeId: W, coordinatorDevice: "CUDA0", workers: [], tensorSplit: [], modelPath: winTiny.path });
+    expect(p.reasons.join("\n")).toMatch(/keeps 24 of 24 layers on CUDA0: 24 × 80 = 1920 MiB of 3700 MiB GPU offered/);
+
+    const cpuOnly = winbox({ gpus: [], offer: winOffer({ roles: replicaRoles, gpu: [] }), models: [winTiny] });
+    const q = plan({ spec: { name: "r", profile: tiny.id, kind: "replica" }, profile: tiny, nodes: [cpuOnly] });
+    expect(q).toMatchObject({ coordinatorNodeId: W, coordinatorDevice: "CPU", modelPath: winTiny.path });
+    expect(q.reasons.join("\n")).toMatch(/keeps 24 of 24 layers on CPU \(no GPU offered\): 24 × 80 \+ 1024 MiB host = 2944 MiB of 8192 MiB RAM offered/);
+
+    const tooSmall = winbox({ gpus: [], offer: winOffer({ roles: replicaRoles, gpu: [], ramMiB: 2048 }), models: [winTiny] });
+    expect(text(refused({ spec: { name: "r", profile: tiny.id, kind: "replica" }, profile: tiny, nodes: [tooSmall] }))).toMatch(/cannot hold 24 of 24 layers on CPU \(no GPU offered\): 24 × 80 \+ 1024 MiB host = 2944 MiB exceeds the 2048 MiB RAM offered/);
+  });
+
+  test("Flash-Next replica on a Windows laptop is refused by memory, never by OS", () => {
+    const e = refused({ spec: spec({ kind: "replica", chain: 0 }), nodes: [winbox({ offer: winOffer({ roles: { worker: false, coordinator: false, replica: true }, gpu: [], ramMiB: 12288 }), models: [shard(1), shard(2), shard(3), shard(4), shard(5)] })] });
+    expect(text(e)).toMatch(/cannot hold 48 of 48 layers on CPU \(no GPU offered\): 48 × 1608 \+ 2048 MiB host = 79232 MiB exceeds the 12288 MiB RAM offered/);
+    expect(text(e)).not.toMatch(/win32|Windows/);
   });
 });
 
