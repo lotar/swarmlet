@@ -228,3 +228,32 @@ checks the standing mesh for active local requests before taking it down.
 The separate report monitor writes local files every 1800 seconds. It does not
 deliver chat notifications or automatically restart failed campaigns. Its final
 report marks an exited runner; inspect restoration and errors before resuming.
+
+### Targeted failure reruns
+
+Use a fresh output directory to rerun only failed arms without rewriting the
+original campaign. Selection retains each arm's exact configuration and original
+repetition count. For the September 6 controlled campaign this selects 11 arms
+and 51 repetitions, including its one-repetition interleaved baseline.
+
+```sh
+python3 swarmlet/e2e/mesh-matrix.py plan \
+  --failed-from "$HOME/.swarmlet/backups/mesh-matrix-controlled-20260906" \
+  --out "$HOME/.swarmlet/backups/mesh-matrix-failures-20260909"
+python3 swarmlet/e2e/idle-window.py --allow-stopped -- \
+  python3 swarmlet/e2e/mesh-matrix.py run \
+  --failed-from "$HOME/.swarmlet/backups/mesh-matrix-controlled-20260906" \
+  --out "$HOME/.swarmlet/backups/mesh-matrix-failures-20260909"
+```
+
+Only use `--allow-stopped` when Flash-Next is already unloaded and its port is
+closed. Otherwise omit it and use the normal verified idle window. The fault
+operator still runs after targeted screening; unsupported families remain
+blocked. Every request has an `x-request-id`. Failure records preserve partial
+text, upstream HTTP error bodies, original assignment IDs, control events and
+retained logs from all three agents. Diagnostic collection failures are explicit.
+
+Agents retain bounded private logs under `state/assignment-logs` after cleanup
+and restart: at most 128 assignment files, 256 KiB per file, 8 KiB per line and
+400 lines per query. Capture them promptly; retention intentionally evicts old
+records. Logs from before this feature cannot be reconstructed retrospectively.

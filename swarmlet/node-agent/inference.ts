@@ -1,3 +1,4 @@
+import { inferenceStream } from "../protocol/inference-stream.ts";
 // Participant inference gateway: ready local model servers first, otherwise the keyed internet API.
 export interface InferenceTarget { model: string; deploymentId: string; url: string; created: number }
 export interface InferenceDeps {
@@ -60,7 +61,8 @@ export function createNodeInference(deps: InferenceDeps) {
     const target = local.find((t) => t.model === body.model && (!pinned || t.deploymentId === pinned));
     if (!target && !remote) return error("No local server for this model and the mesh is disconnected.", 503);
     const base = target?.url ?? remote!.url;
-    const headers = new Headers({ "content-type": "application/json" });
+    const requestId = req.headers.get("x-request-id")?.match(/^[A-Za-z0-9._:-]{1,128}$/)?.[0] ?? crypto.randomUUID();
+    const headers = new Headers({ "content-type": "application/json", "x-request-id": requestId });
     // Never pass caller credentials to a model server or trust caller-provided upstream URLs.
     if (!target) headers.set("authorization", `Bearer ${remote!.key}`);
     if (pinned) headers.set("x-swarmlet-deployment", pinned);
@@ -69,19 +71,13 @@ export function createNodeInference(deps: InferenceDeps) {
     try {
       const upstream = await fetch(`${base.replace(/\/$/, "")}${path}`, { method: "POST", body: text, headers, signal, redirect: "error" });
       const out = new Headers({ "content-type": upstream.headers.get("content-type") ?? "application/json", "cache-control": "no-store", "x-swarmlet-route": target ? "local" : "mesh" });
-      for (const h of ["x-swarmlet-deployment", "x-swarmlet-node", "retry-after"]) {
+      out.set("x-request-id", requestId);
+      for (const h of ["x-request-id", "x-swarmlet-deployment", "x-swarmlet-node", "retry-after"]) {
         const value = upstream.headers.get(h); if (value) out.set(h, value);
       }
       if (target) { out.set("x-swarmlet-deployment", target.deploymentId); out.set("x-swarmlet-node", deps.nodeId()); }
       if (!upstream.body) return new Response(null, { status: upstream.status, headers: out });
-      const reader = upstream.body.getReader();
-      const stream = new ReadableStream<Uint8Array>({
-        async pull(controller) {
-          try { const chunk = await reader.read(); if (chunk.done) controller.close(); else controller.enqueue(chunk.value); }
-          catch (e) { controller.error(e); }
-        },
-        async cancel(reason) { abort.abort(reason); await reader.cancel(reason).catch(() => {}); },
-      });
+      const stream = inferenceStream(upstream, abort);
       return new Response(stream, { status: upstream.status, headers: out });
     } catch (e) {
       if (req.signal.aborted) return error("request cancelled", 499);

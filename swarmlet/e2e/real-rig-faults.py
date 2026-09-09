@@ -266,6 +266,43 @@ def main():
         if not choices or not (choices[0].get('message', {}).get('content') or choices[0].get('message', {}).get('reasoning_content')):
             raise AssertionError('routed request returned no generated output')
         record(label, seconds=round(time.monotonic()-start, 2), response=response)
+    def stream_disconnect():
+        nonlocal node_may_be_stopped
+        require_production_stopped()
+        request_id='fault-stream-'+str(time.time_ns())
+        body={'model':'qwen3.5-2b','messages':[{'role':'user','content':'List the integers from 1 to 1000, separated by spaces. Keep counting until you reach 1000.'}],
+              'max_tokens':512,'temperature':0,'stream':True,'chat_template_kwargs':{'enable_thinking':False}}
+        req=urllib.request.Request(args.control_url.rstrip('/')+'/v1/chat/completions',data=json.dumps(body).encode(),
+            headers={'Authorization':'Bearer '+token,'Content-Type':'application/json','x-swarmlet-deployment':deployment_id,'x-request-id':request_id})
+        first=None;error=None;done=False;started=time.monotonic()
+        with urllib.request.urlopen(req,timeout=args.timeout) as response:
+            if response.headers.get('x-swarmlet-deployment')!=deployment_id:
+                raise AssertionError('stream fault routed to unexpected deployment')
+            for line in response:
+                if time.monotonic()-started>args.timeout:raise TimeoutError('stream fault exceeded wall-clock deadline')
+                if not line.startswith(b'data:'):continue
+                data=line[5:].strip()
+                if data==b'[DONE]':
+                    done=True
+                    if error:raise AssertionError('interrupted response incorrectly emitted DONE after error')
+                    break
+                payload=json.loads(data)
+                if payload.get('error'):
+                    if error:raise AssertionError('interrupted response emitted duplicate error')
+                    error=payload['error'];continue
+                text=''.join((c.get('delta') or {}).get('content') or '' for c in payload.get('choices',[]))
+                if text and error:raise AssertionError('interrupted response appended content after error')
+                if text and first is None:
+                    first=time.monotonic()-started
+                    record('stream-fault-first-content',requestId=request_id,seconds=round(first,3))
+                    node_may_be_stopped=True
+                    ssh(args.legion1,'systemctl --user stop swarmlet-node.service')
+                    ssh(args.legion1,'systemctl --user start swarmlet-node.service')
+                    node_may_be_stopped=False
+        record('stream-fault-terminal',requestId=request_id,seconds=round(time.monotonic()-started,3),firstContentSeconds=first,error=error,done=done)
+        if first is None or done or not isinstance(error,dict) or error.get('code')!='upstream_stream_interrupted':
+            raise AssertionError('live interrupted stream did not produce explicit upstream_stream_interrupted after content')
+
     def ssh(host, command):
         subprocess.run(['ssh', '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=10', host, command],
             check=True, timeout=45, capture_output=True, text=True)
@@ -348,6 +385,13 @@ def main():
         if dep['state'] != 'ready':
             api('/api/deployments/' + deployment_id + '/start', 'POST', timeout=args.timeout)
         before_disconnect = ready('initial-ready')
+        stream_disconnect()
+        after_stream_fault=ready('stream-fault-recovered')
+        if after_stream_fault & before_disconnect:
+            raise AssertionError('stream fault recovery retained stale assignments')
+        request('after-stream-fault-inference')
+        process_audit('after-stream-fault-process-audit',3)
+        before_disconnect=after_stream_fault
         request('initial-inference')
         require_production_stopped()
         initial_audit = process_audit('initial-process-audit', 3)

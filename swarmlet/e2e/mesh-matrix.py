@@ -122,6 +122,27 @@ def catalogue(repeats=5):
                 arms=ordered, blocked=blocked, faultOperator='real-rig-faults.py')
 
 
+def failed_catalogue(source, out):
+    """Pin failed arms from saved evidence without changing or resuming that campaign."""
+    source=source.resolve()
+    if source==out.resolve():
+        raise ValueError('failed rerun requires a different output directory')
+    original=json.loads((source/'manifest.json').read_text())
+    results=json.loads((source/'results.json').read_text())
+    known={a['id'] for a in original['arms']}
+    failed={id for id,r in results.items() if id!='faults' and r.get('status')=='fail'}
+    if failed-known:raise ValueError('failed results contain unknown arm IDs')
+    if not failed:raise ValueError('source campaign has no failed arms')
+    selected=copy.deepcopy(original)
+    for key in ['runnerSha256','fingerprint']:selected.pop(key,None)
+    selected['arms']=[copy.deepcopy(a) for a in original['arms'] if a['id'] in failed]
+    selected['selection']={'kind':'failed-arms','source':str(source),
+        'sourceManifestSha256':digest(original),'sourceResultsSha256':digest(results),
+        'selectedIds':[a['id'] for a in selected['arms']],
+        'sourcePlannedArms':len(original['arms'])}
+    return selected
+
+
 def messages(workload):
     if workload == 'greeting':
         return [{'role':'user', 'content':'Reply with a short greeting.'}]
@@ -141,39 +162,48 @@ def messages(workload):
 def stream_request(url, headers, body, timeout=180):
     start=time.monotonic()
     req=urllib.request.Request(url, data=json.dumps(body).encode(), headers={'Content-Type':'application/json', **headers})
-    result={'startedAt':timestamp(), 'firstTokenSeconds':None, 'text':'', 'done':False, 'chunks':[], 'timings':None}
-    with urllib.request.urlopen(req, timeout=timeout) as response:
-        result['httpStatus']=response.status
-        result['headersSeconds']=time.monotonic()-start
-        result['routeHeaders']={k:v for k,v in response.headers.items() if k.lower().startswith('x-swarmlet-')}
-        for line in response:
-            if time.monotonic()-start > timeout:
-                raise TimeoutError('request exceeded wall-clock deadline')
-            if not line.startswith(b'data:'):
-                continue
-            data=line[5:].strip()
-            if data == b'[DONE]':
-                result['done']=True
-                break
-            payload=json.loads(data)
-            if payload.get('error'):
-                raise RuntimeError(str(payload['error']))
-            for choice in payload.get('choices', []):
-                text=(choice.get('delta') or {}).get('content') or ''
-                if text:
-                    elapsed=time.monotonic()-start
-                    if result['firstTokenSeconds'] is None:
-                        result['firstTokenSeconds']=elapsed
-                    result['chunks'].append(elapsed)
-                    result['text']+=text
-                if choice.get('finish_reason'):
-                    result['finishReason']=choice['finish_reason']
-            for key in ['usage','timings']:
-                if payload.get(key) is not None:
-                    result[key]=payload[key]
+    result={'requestId':headers.get('x-request-id'), 'startedAt':timestamp(), 'firstTokenSeconds':None, 'text':'', 'done':False, 'chunks':[], 'timings':None}
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as response:
+            result['httpStatus']=response.status
+            result['headersSeconds']=time.monotonic()-start
+            result['routeHeaders']={k:v for k,v in response.headers.items() if k.lower().startswith('x-swarmlet-')}
+            for line in response:
+                if time.monotonic()-start > timeout:
+                    raise TimeoutError('request exceeded wall-clock deadline')
+                if not line.startswith(b'data:'):
+                    continue
+                data=line[5:].strip()
+                if data == b'[DONE]':
+                    result['done']=True
+                    break
+                payload=json.loads(data)
+                if payload.get('error'):
+                    raise RuntimeError(str(payload['error']))
+                for choice in payload.get('choices', []):
+                    text=(choice.get('delta') or {}).get('content') or ''
+                    if text:
+                        elapsed=time.monotonic()-start
+                        if result['firstTokenSeconds'] is None:
+                            result['firstTokenSeconds']=elapsed
+                        result['chunks'].append(elapsed)
+                        result['text']+=text
+                    if choice.get('finish_reason'):
+                        result['finishReason']=choice['finish_reason']
+                for key in ['usage','timings']:
+                    if payload.get(key) is not None:
+                        result[key]=payload[key]
+    except urllib.error.HTTPError as exc:
+        result['httpStatus']=exc.code
+        result['errorBody']=exc.read(16384).decode(errors='replace')
+        result['error']=f'HTTP {exc.code}: '+result['errorBody']
+        exc.close()
+    except Exception as exc:
+        result['error']=type(exc).__name__+': '+str(exc)
     result['totalSeconds']=time.monotonic()-start
     result['maxSilenceSeconds']=max(b-a for a,b in zip([0]+result['chunks'], result['chunks']+[result['totalSeconds']]))
-    result['status']='pass' if result['done'] and result['text'] else 'fail'
+    result['status']='pass' if result['done'] and result['text'] and not result.get('error') else 'fail'
+    if result['status']=='fail' and not result.get('error'):result['error']='stream ended without [DONE]' if not result['done'] else 'stream completed without visible text'
     result['latencyGate']='pass' if result['firstTokenSeconds'] is not None and result['firstTokenSeconds']<=10 else 'fail'
     return result
 
@@ -311,6 +341,43 @@ class Runner:
         return {'model':self.prefix,'messages':history,'stream':True,'stream_options':{'include_usage':True},
                 'max_tokens':cfg['output'],'temperature':0,'chat_template_kwargs':{'enable_thinking':False}}, count
 
+    def collect_evidence(self, result):
+        """Keep original IDs even when recovery replaces the deployment's assignments."""
+        dep=result['deployment'];assignments={a['id']:a for a in dep.get('assignments',[])}
+        def capture(name, call):
+            try:return call()
+            except Exception as exc:
+                result.setdefault('diagnosticErrors',{})[name]=type(exc).__name__+': '+str(exc)
+                return None
+        current=capture('deploymentAfter',lambda:self.api('/api/deployments/'+dep['id']))
+        if current:
+            result['deploymentAfter']=current
+            assignments.update({a['id']:a for a in current.get('assignments',[])})
+        result['events']=capture('events',lambda:self.api('/api/events?limit=1000'))
+        result['controlLogs']={id:capture('control:'+id,lambda id=id:self.api('/api/assignments/'+id+'/logs')) for id in assignments}
+        def local(path):
+            with urllib.request.urlopen('http://127.0.0.1:47800'+path,timeout=10) as response:return json.load(response)
+        status=capture('localStatus',lambda:local('/api/status'))
+        if status:
+            local_assignments=[a for a in status['assignments'] if a['deploymentId']==dep['id']]
+            result['actualTransports']=[a.get('detail') for a in local_assignments]
+            assignments.update({a['id']:{**a,'nodeId':NODES[0]} for a in local_assignments})
+        result['logs']={}
+        for id,a in assignments.items():
+            path='/api/logs?assignment='+id+'&lines=1000'
+            if a.get('nodeId')==NODES[0]:
+                result['logs'][id]=capture('local:'+id,lambda path=path:local(path))
+            elif a.get('nodeId') in NODES[1:]:
+                host={NODES[1]:'lotar@192.168.1.243',NODES[2]:'lotar@192.168.1.220'}[a['nodeId']]
+                # IDs are emitted by control; validate before placing URL in an SSH command.
+                if not id.startswith('as-') or not all(c in '0123456789abcdef' for c in id[3:]):continue
+                def remote(host=host,path=path):
+                    output=subprocess.run(['ssh','-o','BatchMode=yes','-o','ConnectTimeout=5',host,
+                        "curl --fail --silent --show-error --max-time 10 'http://127.0.0.1:47800"+path+"'"],
+                        check=True,capture_output=True,text=True,timeout=20)
+                    return json.loads(output.stdout)
+                result['logs'][id]=capture('remote:'+id,remote)
+
     def arm(self,arm):
         id=arm['id'];cfg=arm['config']
         record=self.results.setdefault(id,{'status':'running','complete':False,'repetitions':[]})
@@ -338,9 +405,11 @@ class Runner:
             if cfg['entry']=='router':headers['Authorization']='Bearer '+self.token
             for cache in ['process-cold','prefix-repeat']:
                 with concurrent.futures.ThreadPoolExecutor(max_workers=cfg['clients']) as pool:
-                    futures=[pool.submit(stream_request,base+'/v1/chat/completions',headers,body,self.args.request_timeout) for _ in range(cfg['clients'])]
+                    futures=[pool.submit(stream_request,base+'/v1/chat/completions',
+                        {**headers,'x-request-id':f'{self.prefix}-{id}-{rep}-{cache}-{client}'},body,self.args.request_timeout) for client in range(cfg['clients'])]
                     while not all(f.done() for f in futures):
-                        result['samples'].append({'at':timestamp(),'nodes':self.api('/api/nodes')['nodes'],'routing':self.api('/api/routing')})
+                        try:result['samples'].append({'at':timestamp(),'nodes':self.api('/api/nodes')['nodes'],'routing':self.api('/api/routing')})
+                        except Exception as exc:result['samples'].append({'at':timestamp(),'error':str(exc)})
                         time.sleep(2)
                     for future in futures:
                         try:r=future.result()
@@ -351,11 +420,7 @@ class Runner:
                         result['requests'].append(r)
                 # A failed/timeout request may still have work draining. Stop the arm rather than admitting more work.
                 if any(r['status']=='fail' for r in result['requests']):break
-            status=json.load(urllib.request.urlopen('http://127.0.0.1:47800/api/status',timeout=10))
-            result['actualTransports']=[a.get('detail') for a in status['assignments'] if a['deploymentId']==dep['id']]
-            for a in status['assignments']:
-                if a['deploymentId']==dep['id']:
-                    result.setdefault('logs',{})[a['id']]=json.load(urllib.request.urlopen('http://127.0.0.1:47800/api/logs?assignment='+a['id']+'&lines=1000',timeout=10))
+            self.collect_evidence(result)
             write_json(self.out/'arms'/id/(str(rep)+'.json'),result)
             record['repetitions'].append({'file':f'arms/{id}/{rep}.json','status':'pass' if all(r['status']=='pass' for r in result['requests']) else 'fail',
                 'latencyFailures':sum(r.get('latencyGate')=='fail' for r in result['requests'])})
@@ -391,6 +456,11 @@ class Runner:
                 except Exception as exc:
                     record=self.results.setdefault(arm['id'],{})
                     record.update(status='fail',complete=True,error=type(exc).__name__+': '+str(exc));self.save()
+                    deployment_id=self.journal.get('deployment')
+                    if deployment_id:
+                        evidence={'deployment':{'id':deployment_id,'assignments':[]},'error':record['error'],'at':timestamp()}
+                        self.collect_evidence(evidence)
+                        write_json(self.out/'arms'/arm['id']/'failure.json',evidence)
                     print('ARM_FAIL',arm['id'],type(exc).__name__,str(exc),flush=True)
                     self.retire()
         finally:
@@ -405,6 +475,8 @@ class Runner:
             self.results['faults']={'status':'pass' if code==0 else 'fail','exitCode':code};self.save()
             # Existing fault operator stops baseline on failure; restore original intent again.
             if code:self.api('/api/deployments/'+self.args.deployment_id+'/start','POST');self.ready(self.args.deployment_id)
+        elif not self.args.only and 'faults' not in self.results:
+            self.results['faults']={'status':'blocked','reason':'baseline was intentionally stopped; fault operator requires a running deployment'};self.save()
 
 
 def main():
@@ -413,6 +485,7 @@ def main():
     p.add_argument('--out',type=Path,required=True)
     p.add_argument('--accept-runner-update',action='store_true',help='Archive prior runner manifest when only runner code changed; workloads must match')
     p.add_argument('--retry-incomplete',action='store_true',help='Retry errored arms with unfinished repetitions, preserving completed evidence')
+    p.add_argument('--failed-from',type=Path,help='Fresh campaign containing exactly the failed arms from this saved campaign; preserves source repetition counts')
     p.add_argument('--repeats',type=int,default=5)
     p.add_argument('--only',nargs='+',help='Explicit partial run by group; never labelled full coverage')
     p.add_argument('--control-url',default='http://127.0.0.1:47900')
@@ -423,7 +496,8 @@ def main():
     if args.repeats<1 or args.request_timeout<1:p.error('positive repeats and timeout required')
     if args.command=='status':
         print((args.out/'summary.json').read_text() if (args.out/'summary.json').exists() else 'No results yet');return 0
-    manifest=catalogue(args.repeats)
+    if args.failed_from and args.only:p.error('--failed-from cannot be combined with --only')
+    manifest=failed_catalogue(args.failed_from,args.out) if args.failed_from else catalogue(args.repeats)
     manifest['runnerSha256']=hashlib.sha256(Path(__file__).read_bytes()).hexdigest()
     manifest['fingerprint']=digest(manifest)
     args.out.mkdir(parents=True,exist_ok=True)
@@ -441,7 +515,7 @@ def main():
                 raise RuntimeError('manifest mismatch; use a fresh output directory or explicitly accept a runner-only update')
             write_json(args.out/'manifest-history'/(previous['fingerprint']+'.json'),previous)
         write_json(target,manifest)
-        print('PLAN',len(manifest['arms']),'runnable arms;',len(manifest['blocked']),'blocked families;',args.repeats,'repeats',flush=True)
+        print('PLAN',len(manifest['arms']),'runnable arms;',len(manifest['blocked']),'blocked families;',sum(a['repeats'] for a in manifest['arms']),'total repetitions',flush=True)
         if args.command=='plan':return 0
         runner=Runner(args,manifest)
         if args.retry_incomplete:

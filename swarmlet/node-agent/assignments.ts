@@ -14,6 +14,7 @@ import { SupervisedProcess, waitForHealth, waitForPort } from "./roles/process.t
 import { coordinatorArgv, replicaArgv, workerArgv } from "./roles/recipes.ts";
 import { Dialer } from "./transport/dial.ts";
 import { stopRecordedProcess, type ProcessIdentity } from "./roles/identity.ts";
+import { AssignmentLogs } from "./assignment-logs.ts";
 
 export interface RunnerDeps {
   cfg: () => NodeConfig;
@@ -54,8 +55,9 @@ const STOP_EXTERNAL_WAIT_MS = 20 * 60 * 1000;
 
 export class AssignmentRunner {
   private active = new Map<string, Active>();
+  private readonly logs: AssignmentLogs;
 
-  constructor(private readonly deps: RunnerDeps) {}
+  constructor(private readonly deps: RunnerDeps) { this.logs = new AssignmentLogs(deps.stateDir, deps.log); }
 
   /** Kill anything a previous agent instance left behind (recorded pids) and forget it. */
   async recover(): Promise<void> {
@@ -72,6 +74,7 @@ export class AssignmentRunner {
     for (const p of prev) {
       if (p.pid && p.kind !== "stop") {
         await stopRecordedProcess(p.pid, p.processIdentity);
+        this.logs.append(p.id, `[lifecycle] previous engine process retired pid=${p.pid}`);
         this.deps.log.info("previous engine process retired", { id: p.id, pid: p.pid });
       }
       if (p.stoppedExternalId) {
@@ -118,7 +121,7 @@ export class AssignmentRunner {
     return s;
   }
 
-  recentLog(id: string, n = 200): string[] { return this.active.get(id)?.proc?.recent(n) ?? []; }
+  recentLog(id: string, n = 200): string[] { return this.logs.recent(id, n); }
 
   private tokenSamples = new Map<string, { total: number; at: number }>();
   private pendingMetrics: Promise<Partial<NodeMetrics> | null> | null = null;
@@ -212,6 +215,7 @@ export class AssignmentRunner {
     if (x.stopTask) return x.stopTask;
     x.stopTask = (async () => {
       await this.cleanup(x);
+      this.logs.append(id, "[lifecycle] stopped");
       if (this.active.get(id) === x) this.active.delete(id);
       this.deps.report(id, "stopped", why);
       this.persist();
@@ -311,8 +315,9 @@ export class AssignmentRunner {
     this.assertStarting(x);
     x.detail = enf.summary;
     const proc = new SupervisedProcess(unit, this.deps.log, {
-      onLine: (line) => this.deps.logLine(x.a.id, line),
+      onLine: (line) => { this.logs.append(x.a.id, line); this.deps.logLine(x.a.id, line); },
       onExit: (code, signal) => {
+        this.logs.append(x.a.id, `[lifecycle] engine exited code=${code} signal=${signal ?? "none"} stopping=${!!x.stopping}`);
         x.unwatch?.();
         if (!x.stopping && x.state !== "failed") this.fail(x, `engine exited (code ${code}${signal ? ", " + signal : ""}): ${this.tail(x)}`);
       },
@@ -384,6 +389,7 @@ export class AssignmentRunner {
   private set(x: Active, state: AssignmentState, detail?: string): void {
     if (x.stopping || this.active.get(x.a.id) !== x) return;
     x.state = state;
+    this.logs.append(x.a.id, `[lifecycle] state=${state}`);
     if (detail !== undefined) x.detail = detail;
     this.deps.report(x.a.id, state, x.detail, Object.keys(x.ports).length ? x.ports : undefined);
     this.persist();
@@ -393,6 +399,7 @@ export class AssignmentRunner {
   private fail(x: Active, why: string): void {
     if (x.stopping) return;
     this.deps.log.error("assignment failed", { id: x.a.id, why });
+    this.logs.append(x.a.id, `[lifecycle] failed: ${why}`);
     x.state = "failed"; x.detail = why;
     this.deps.report(x.a.id, "failed", why, Object.keys(x.ports).length ? x.ports : undefined);
     void this.cleanup(x).then(() => { this.persist(); this.deps.onChange?.(); }).catch((e: Error) => {

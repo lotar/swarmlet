@@ -3,6 +3,7 @@
 // requested model. Policy: least in-flight, then lowest measured RTT. Transport: a TunnelPool port
 // on this host that carries the connection over the node's agent channel to its llama-server.
 
+import { inferenceStream } from "../protocol/inference-stream.ts";
 import type { DeploymentManager } from "./deployments.ts";
 import type { Logger } from "./log.ts";
 import type { TunnelPool } from "./tunnel.ts";
@@ -62,10 +63,11 @@ export function createRouter(deps: { deployments: DeploymentManager; tunnels: Tu
     let pick = pinned ? candidates.find((c) => c.id === pinned || c.name === pinned) : undefined;
     if (pinned && !pick) return json({ error: { message: `deployment '${pinned}' is not ready for model '${model}'`, type: "invalid_request_error", candidates: candidates.map((c) => c.id) } }, 409);
     if (!pick) pick = [...candidates].sort((a, b) => (a.inflight - b.inflight) || ((a.rttMs ?? 1e9) - (b.rttMs ?? 1e9)))[0]!;
-    const local = await deps.tunnels.localPort(pick.nodeId, pick.port);
+    const requestId = req.headers.get("x-request-id")?.match(/^[A-Za-z0-9._:-]{1,128}$/)?.[0] ?? crypto.randomUUID();
     const headers = new Headers();
     for (const [k, v] of req.headers) if (!HOP_HEADERS.has(k.toLowerCase())) headers.set(k, v);
     headers.set("content-type", "application/json");
+    headers.set("x-request-id", requestId);
     deps.deployments.trackInflight(pick.id, +1);
     const t0 = Date.now();
     const abort = new AbortController();
@@ -80,35 +82,32 @@ export function createRouter(deps: { deployments: DeploymentManager; tunnels: Tu
     signal.addEventListener("abort", release, { once: true });
     if (signal.aborted) release();
     try {
+      const local = await deps.tunnels.localPort(pick.nodeId, pick.port);
       const upstream = await fetch(`http://127.0.0.1:${local}${path}`, { method: "POST", headers, body: bodyText, signal });
       const out = new Headers(upstream.headers);
+      // fetch decodes upstream compression, and stream validation may append an error event.
+      // Neither the upstream encoding nor its byte count describes the forwarded body.
+      out.delete("content-encoding");
+      out.delete("content-length");
+      out.set("x-request-id", requestId);
       out.set("x-swarmlet-deployment", pick.id);
       out.set("x-swarmlet-node", pick.nodeId);
       if (!upstream.body) { release(); return new Response(null, { status: upstream.status, headers: out }); }
       // Explicit SSE detection survives a first network chunk as small as "d". These are stream
       // delta estimates; non-streamed responses contribute their reported completion-token usage.
       const counter = new TokenCounter((n) => deps.deployments.recordTokens(pick.id, n), /text\/event-stream/i.test(upstream.headers.get("content-type") ?? ""));
-      const reader = upstream.body.getReader();
-      const body = new ReadableStream<Uint8Array>({
-        async pull(controller) {
-          try {
-            const { done, value } = await reader.read();
-            if (done) {
-              counter.finish(); release(); controller.close();
-              deps.log.debug("routed", { path, deployment: pick.id, ms: Date.now() - t0 });
-            } else { counter.feed(value); controller.enqueue(value); }
-          } catch (e) { release(); controller.error(e); }
-        },
-        async cancel(reason) {
-          release(); abort.abort(reason);
-          await reader.cancel(reason).catch(() => {});
-        },
+      const body = inferenceStream(upstream, abort, {
+        chunk: (value) => counter.feed(value),
+        finish: () => { counter.finish(); release(); },
+        failure: (message) => deps.log.warn("upstream stream failed", { requestId, path, deployment: pick.id, ms: Date.now() - t0, err: message }),
       });
       return new Response(body, { status: upstream.status, headers: out });
     } catch (e) {
       release();
-      deps.log.warn("upstream failed", { deployment: pick.id, err: (e as Error).message });
-      return json({ error: { message: `upstream failed: ${(e as Error).message}`, type: "server_error" } }, 502);
+      deps.log.warn("upstream failed", { requestId, deployment: pick.id, err: (e as Error).message });
+      const response = json({ error: { message: `upstream failed: ${(e as Error).message}`, type: "server_error", request_id: requestId } }, req.signal.aborted ? 499 : 502);
+      response.headers.set("x-request-id", requestId);
+      return response;
     }
   };
 }

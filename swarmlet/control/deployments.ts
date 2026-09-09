@@ -10,7 +10,7 @@ import type { NodeRow, Registry } from "./registry.ts";
 
 export interface DeploymentDeps {
   reg: Registry; channel: AgentChannel; profiles: Map<string, ModelProfile>; log: Logger;
-  recoveryDelayMs?: number; stopTimeoutMs?: number;
+  recoveryDelayMs?: number; stopTimeoutMs?: number; reconnectGraceMs?: number;
 }
 
 /** First port for coordinator / replica llama-servers on a node (SWARMLET_SERVER_PORT_BASE; tests use another base). */
@@ -31,6 +31,9 @@ export class DeploymentManager {
   private operations = new Map<string, Promise<void>>();
   private generations = new Map<string, number>();
   private closed = false;
+  // A channel loss invalidates relay RPC state. Keep routing withdrawn while acknowledged
+  // teardown and bounded reconnect run, then build a fresh placement (never resume RPC state).
+  private reconnecting = new Map<string, { deadline: number; cleanupDeadline?: number; nodes: string[]; reason: string }>();
 
   constructor(private readonly deps: DeploymentDeps) {}
 
@@ -69,10 +72,20 @@ export class DeploymentManager {
     await Promise.all(this.deps.reg.listDeployments().map(async (dep) => {
       this.finishDraining(dep.id);
       const intent = this.deps.reg.deploymentIntent(dep.id);
+      this.observeReconnect(dep.id);
+      const reconnect = this.reconnecting.get(dep.id);
+      const cleanupPending = reconnect && (this.deps.reg.listAssignments(dep.id).some(a => a.state !== "stopped")
+        || reconnect.nodes.some(n => !this.deps.channel.isOnline(n) || !this.deps.reg.getNode(n)?.online));
+      const expired = reconnect && (reconnect.cleanupDeadline === undefined
+        ? Date.now() >= reconnect.deadline : cleanupPending && Date.now() >= reconnect.cleanupDeadline);
+      if (reconnect && (expired || intent.attempts >= MAX_RECOVERY_ATTEMPTS)) {
+        this.recordFailure(dep.id, `${reconnect.reason}; ${reconnect.cleanupDeadline ? "reconnect cleanup deadline" : "reconnect grace"} expired or recovery budget exhausted`);
+        return;
+      }
       if (dep.state === "ready" && intent.attempts && Date.now() - Date.parse(dep.updatedAt) > 60_000) {
         this.deps.reg.setDeploymentIntent(dep.id, { attempts: 0 });
       }
-      if (!intent.running || dep.state !== "failed" || this.operations.has(dep.id) || intent.attempts >= MAX_RECOVERY_ATTEMPTS || Date.now() < intent.retryAt) return;
+      if (!intent.running || (dep.state !== "failed" && !reconnect) || this.operations.has(dep.id) || intent.attempts >= MAX_RECOVERY_ATTEMPTS || Date.now() < intent.retryAt) return;
       let required = dep.spec.external ? [dep.spec.external.nodeId] : dep.plan
         ? [dep.plan.coordinatorNodeId, ...dep.plan.workers.map((w) => w.nodeId)]
         : [dep.spec.coordinatorNodeId ?? dep.spec.replicaNodeId, ...(dep.spec.workerNodeIds ?? [])].filter((n): n is string => !!n);
@@ -106,7 +119,7 @@ export class DeploymentManager {
     const dep = this.deps.reg.getDeployment(row.deploymentId);
     if (!dep) return;
     if (state === "stopped") this.finishDraining(dep.id);
-    if (row.retired) return;
+    if (row.retired || this.reconnecting.has(dep.id)) return; // queued teardown owns failures during reconnect
     // an external server is only watched: unhealthy takes it out of routing, healthy again puts it back
     if (row.body.kind === "replica" && row.body.external && this.deps.reg.deploymentIntent(dep.id).running && (dep.state === "ready" || dep.state === "loading")) {
       if ((state === "failed" || state === "stopped") && dep.state === "ready") {
@@ -126,6 +139,7 @@ export class DeploymentManager {
   /** A node (re)connected and listed what it still runs: re-issue health-only external assignments it
    *  lost (an agent restart forgets them), fail deployments whose engine processes died with the agent. */
   onHello(nodeId: string, reported: Array<{ id: string; state: AssignmentState }>): void {
+    for (const [id, reconnect] of this.reconnecting) if (reconnect.nodes.includes(nodeId)) this.observeReconnect(id);
     const have = new Map(reported.map((r) => [r.id, r.state]));
     for (const r of reported) {
       if (!this.deps.reg.getAssignment(r.id) && r.state !== "stopped") {
@@ -137,7 +151,7 @@ export class DeploymentManager {
       if (row.nodeId !== nodeId) continue;
       const dep = this.deps.reg.getDeployment(row.deploymentId);
       const externalHealthOnly = row.body.kind === "replica" && !!row.body.external;
-      const wants = !!dep && !row.retired && this.deps.reg.deploymentIntent(dep.id).running && !["failed", "stopped", "planned", "draining"].includes(dep.state);
+      const wants = !!dep && !this.reconnecting.has(dep.id) && !row.retired && this.deps.reg.deploymentIntent(dep.id).running && !["failed", "stopped", "planned", "draining"].includes(dep.state);
       const duplicate = externalHealthOnly && externalSeen.has(row.deploymentId);
       if (externalHealthOnly && wants && !duplicate) externalSeen.add(row.deploymentId);
       if (!have.has(row.id) || have.get(row.id) === "stopped") {
@@ -161,7 +175,7 @@ export class DeploymentManager {
 
   onOffline(nodeId: string): void {
     for (const dep of this.deps.reg.listDeployments()) {
-      if (dep.state === "stopped" || dep.state === "failed" || dep.state === "planned") continue;
+      if (this.closed || !this.deps.reg.deploymentIntent(dep.id).running || ["stopped", "failed", "planned", "draining"].includes(dep.state) || this.reconnecting.has(dep.id)) continue;
       const rows = this.deps.reg.listAssignments(dep.id).filter((a) => a.nodeId === nodeId && a.state !== "stopped");
       if (!rows.length) continue;
       // The external engine stays running, but the router cannot reach it until its agent returns.
@@ -170,7 +184,14 @@ export class DeploymentManager {
         this.deps.reg.event("deployment", `agent on ${nodeId} offline; external route withdrawn until reconnect`, { deploymentId: dep.id });
         continue;
       }
-      void this.fail(dep.id, `node ${nodeId} went offline`).catch(() => {});
+      const reason = `node ${nodeId} went offline`;
+      this.cancel(dep.id);
+      const nodes = dep.plan ? [dep.plan.coordinatorNodeId, ...dep.plan.workers.map(w => w.nodeId)]
+        : [...new Set(this.deps.reg.listAssignments(dep.id).filter(a => !a.retired).map(a => a.nodeId))];
+      this.reconnecting.set(dep.id, { deadline: Date.now() + (this.deps.reconnectGraceMs ?? 30_000), nodes, reason });
+      this.deps.reg.updateDeployment(dep.id, { state: "loading", endpoint: null, error: `${reason}; reconnecting with fresh placement required` });
+      this.deps.reg.event("deployment", `${reason}; route withdrawn, waiting up to ${this.deps.reconnectGraceMs ?? 30_000}ms for reconnect`, { deploymentId: dep.id });
+      void this.enqueue(dep.id, () => this.teardown(dep.id)).catch((e) => this.deps.log.warn("reconnect cleanup pending", { id: dep.id, error: String(e) }));
     }
   }
 
@@ -198,8 +219,9 @@ export class DeploymentManager {
     const dep = this.must(id);
     if (this.closed) throw new Error("control is shutting down");
     if (this.operations.has(id)) throw new Error("deployment operation already in progress");
-    if (!["planned", "stopped", "failed"].includes(dep.state)) throw new Error(`cannot start from state ${dep.state}`);
+    if (!["planned", "stopped", "failed"].includes(dep.state) && !(recovering && this.reconnecting.has(id) && dep.state === "loading")) throw new Error(`cannot start from state ${dep.state}`);
     if (dep.spec.kind === "external") this.assertUniqueExternal(dep.spec, id);
+    this.reconnecting.delete(id);
     this.deps.reg.setDeploymentIntent(id, { running: true, ...(recovering ? {} : { attempts: 0, retryAt: 0 }) });
     const generation = this.generations.get(id) ?? 0;
     this.deps.reg.updateDeployment(id, { state: "placing", error: null, endpoint: null });
@@ -222,6 +244,7 @@ export class DeploymentManager {
 
   async stop(id: string): Promise<void> {
     this.must(id);
+    this.reconnecting.delete(id);
     this.deps.reg.setDeploymentIntent(id, { running: false, attempts: 0, retryAt: 0 });
     this.cancel(id);
     this.deps.reg.updateDeployment(id, { state: "draining", endpoint: null });
@@ -373,7 +396,19 @@ export class DeploymentManager {
     await this.enqueue(id, () => this.teardown(id));
   }
 
+  private observeReconnect(id: string): void {
+    const reconnect = this.reconnecting.get(id);
+    if (!reconnect || reconnect.cleanupDeadline !== undefined || Date.now() >= reconnect.deadline) return;
+    if (reconnect.nodes.some(n => !this.deps.channel.isOnline(n) || !this.deps.reg.getNode(n)?.online)) return;
+    // Reconnection met its deadline. Existing sequential stop acknowledgements have their
+    // own bounded budget; a slow clean shutdown must not be mislabeled as a missing node.
+    // Set this once, so later flaps cannot extend recovery indefinitely.
+    const pending = this.deps.reg.listAssignments(id).filter(a => a.state !== "stopped").length;
+    reconnect.cleanupDeadline = Date.now() + Math.max(1, pending) * (this.deps.stopTimeoutMs ?? STOP_TIMEOUT_MS);
+  }
+
   private recordFailure(id: string, why: string): void {
+    this.reconnecting.delete(id);
     this.deps.log.error("deployment failed", { id, why });
     this.deps.reg.updateDeployment(id, { state: "failed", error: why, endpoint: null });
     this.deps.reg.event("deployment", `failed: ${why}`, { deploymentId: id });
@@ -397,7 +432,9 @@ export class DeploymentManager {
     for (const r of order) {
       this.deps.reg.retireAssignment(r.id);
       const stop: Assignment = { kind: "stop", id: r.body.id, deploymentId: id };
-      if (!this.deps.channel.send(r.nodeId, { t: "assign", assignment: stop })) continue;
+      this.deps.channel.send(r.nodeId, { t: "assign", assignment: stop });
+      // Offline nodes may reconnect inside this budget. Hello reissues the stop or confirms
+      // absence; a failed send is not grounds to skip waiting for that acknowledgement.
       // A failed engine can still own ports or have cleanup in progress. Only stopped/hello absence proves release.
       await this.waitFor(r.id, ["stopped"], this.deps.stopTimeoutMs ?? STOP_TIMEOUT_MS, false).catch(() => {});
       if (this.closed) throw new Error("control is shutting down");

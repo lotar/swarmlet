@@ -1,10 +1,15 @@
 import { afterEach, expect, test, spyOn } from "bun:test";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { AssignmentRunner } from "../assignments.ts";
 
 const originalFetch = globalThis.fetch;
-afterEach(() => { globalThis.fetch = originalFetch; });
+const fixtureDirs: string[] = [];
+afterEach(() => { globalThis.fetch = originalFetch; for (const dir of fixtureDirs.splice(0)) rmSync(dir, { recursive: true, force: true }); });
 function fixture() {
-  const runner = new AssignmentRunner({} as never);
+  const stateDir = mkdtempSync(join(tmpdir(), "swarmlet-metrics-")); fixtureDirs.push(stateDir);
+  const runner = new AssignmentRunner({ stateDir, log: { info() {}, warn() {}, error() {}, debug() {} } } as never);
   const active = (runner as unknown as { active: Map<string, unknown> }).active;
   const add = (id: string, url = "http://127.0.0.1:8099", modelName = "flash") => active.set(id, { a: { id, kind: "replica", modelName, external: { url } }, state: "ready" });
   return { runner, active, add };

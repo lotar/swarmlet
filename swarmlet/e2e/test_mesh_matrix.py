@@ -49,7 +49,56 @@ class MatrixTests(unittest.TestCase):
 
     def test_engine_error_not_counted_as_success(self):
         with patch.object(m.urllib.request,'urlopen',return_value=Response(b'data: {"error":{"message":"OOM"}}\n\n')):
-            with self.assertRaisesRegex(RuntimeError,'OOM'):m.stream_request('http://test',{}, {})
+            result=m.stream_request('http://test',{}, {})
+            self.assertEqual(result['status'],'fail');self.assertIn('OOM',result['error'])
+
+    def test_http_failure_preserves_body_status_and_request_id(self):
+        error=m.urllib.error.HTTPError('http://test',502,'Bad Gateway',{},io.BytesIO(b'{"error":"node disconnected"}'))
+        with patch.object(m.urllib.request,'urlopen',side_effect=error):
+            result=m.stream_request('http://test',{'x-request-id':'test-request'}, {})
+        self.assertEqual(result['status'],'fail');self.assertEqual(result['httpStatus'],502)
+        self.assertIn('node disconnected',result['errorBody']);self.assertEqual(result['requestId'],'test-request')
+
+    def test_error_after_partial_output_keeps_evidence(self):
+        raw=b'data: {"choices":[{"delta":{"content":"partial"}}]}\n\ndata: {"error":{"message":"disconnected"}}\n\n'
+        with patch.object(m.urllib.request,'urlopen',return_value=Response(raw)):
+            result=m.stream_request('http://test',{}, {})
+        self.assertEqual(result['text'],'partial');self.assertFalse(result['done'])
+        self.assertEqual(result['status'],'fail');self.assertIn('disconnected',result['error'])
+
+    def test_failed_selection_preserves_source_arms_counts_and_fault_operator(self):
+        with tempfile.TemporaryDirectory() as d:
+            source=Path(d)/'original';out=Path(d)/'new';source.mkdir()
+            original=m.catalogue();chosen=[original['arms'][0],next(a for a in original['arms'] if a['repeats']==1)]
+            results={a['id']:{'status':'fail','complete':True} for a in chosen}
+            results['faults']={'status':'fail'}
+            m.write_json(source/'manifest.json',original);m.write_json(source/'results.json',results)
+            before=(source/'results.json').read_bytes()
+            a=m.failed_catalogue(source,out);b=m.failed_catalogue(source,out)
+            self.assertEqual(a,b);self.assertEqual(a['arms'],chosen)
+            self.assertEqual(sum(x['repeats'] for x in a['arms']),6)
+            self.assertEqual(a['faultOperator'],original['faultOperator']);self.assertEqual(a['blocked'],original['blocked'])
+            self.assertEqual((source/'results.json').read_bytes(),before)
+            with self.assertRaisesRegex(ValueError,'different output'):m.failed_catalogue(source,source)
+            m.write_json(source/'results.json',{})
+            with self.assertRaisesRegex(ValueError,'no failed arms'):m.failed_catalogue(source,out)
+
+    def test_diagnostics_keep_original_assignments_after_replacement_and_log_error(self):
+        runner=object.__new__(m.Runner)
+        result={'deployment':{'id':'dep-test','assignments':[{'id':'as-aaa','nodeId':m.NODES[0]}]}}
+        def api(path):
+            if path.startswith('/api/deployments/'):
+                return {'assignments':[{'id':'as-bbb','nodeId':m.NODES[0]}]}
+            if path.endswith('/as-aaa/logs'):raise RuntimeError('control unavailable')
+            return {'lines':['control log']}
+        def local(req,**kwargs):
+            if req.endswith('/api/status'):return Response(b'{"assignments":[]}')
+            return Response(b'{"lines":["retained log"]}')
+        runner.api=api
+        with patch.object(m.urllib.request,'urlopen',side_effect=local):runner.collect_evidence(result)
+        self.assertEqual(set(result['logs']),{'as-aaa','as-bbb'})
+        self.assertEqual(result['logs']['as-aaa']['lines'],['retained log'])
+        self.assertIn('control:as-aaa',result['diagnosticErrors'])
 
     def test_restore_refuses_modified_owned_profile(self):
         with tempfile.TemporaryDirectory() as d:

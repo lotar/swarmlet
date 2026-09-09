@@ -15,7 +15,7 @@ afterEach(() => { for (const f of fixtures.splice(0)) { f.manager.dispose(); f.r
 const quiet = { debug() {}, info() {}, warn() {}, error() {} };
 const split: DeploymentSpec = { name: "mesh", kind: "split", profile: "qwen35-2b-q8", coordinatorNodeId: "mac", workerNodeIds: ["l1", "l2"], transport: "relay", ctx: 1024, parallel: 1, chain: 0 };
 
-function rig(path = ":memory:") {
+function rig(path = ":memory:", reconnectGraceMs = 30_000, stopTimeoutMs = 15) {
   const reg = new Registry(path);
   const online = new Set(["mac", "l1", "l2"]);
   const sent: Array<{ node: string; a: Assignment }> = [];
@@ -33,7 +33,7 @@ function rig(path = ":memory:") {
   };
   const channel = { isOnline: (n: string) => online.has(n), send,
     assign: (node: string, a: Assignment) => { reg.putAssignment(a, node); return send(node, { t: "assign", assignment: a }); } } as unknown as AgentChannel;
-  manager = new DeploymentManager({ reg, channel, profiles: loadProfiles(), log: quiet, recoveryDelayMs: 0, stopTimeoutMs: 15 });
+  manager = new DeploymentManager({ reg, channel, profiles: loadProfiles(), log: quiet, recoveryDelayMs: 0, stopTimeoutMs, reconnectGraceMs });
   fixtures.push({ reg, manager });
   for (const id of online) {
     const mac = id === "mac", os = mac ? "darwin" : "linux", device = mac ? "metal:0" : "cuda:0";
@@ -55,7 +55,7 @@ test("offline worker is not falsely stopped; reconnect cleans it before fresh th
   const f = rig(); const { id } = await f.manager.create(split); await f.manager.start(id);
   const old = f.reg.listAssignments(id), l1 = old.find((a) => a.nodeId === "l1")!;
   f.online.delete("l1"); f.manager.onOffline("l1");
-  expect(f.reg.getDeployment(id)?.state).toBe("failed");
+  expect(f.reg.getDeployment(id)?.state).toBe("loading");
   expect(f.manager.routing()).toEqual([]);
   await settle();
   expect(f.reg.getAssignment(l1.id)?.state).toBe("listening");
@@ -249,4 +249,126 @@ test("registry migration retains active intent and does not opt old failures or 
   const f = rig(path);
   for (const state of ["ready", "loading", "placing"]) expect(f.reg.deploymentIntent(state).running).toBe(true);
   for (const state of ["failed", "stopped", "planned"]) expect(f.reg.deploymentIntent(state).running).toBe(false);
+});
+
+
+test("reconnect grace expires without consuming attempts while required nodes remain absent", async () => {
+  const f = rig(":memory:", 5); const { id } = await f.manager.create(split); await f.manager.start(id);
+  f.online.delete("l1"); f.manager.onOffline("l1");
+  expect(f.reg.getDeployment(id)?.state).toBe("loading");
+  await settle(); await f.manager.reconcile();
+  expect(f.reg.getDeployment(id)?.state).toBe("failed");
+  expect(f.reg.getDeployment(id)?.error).toContain("reconnect grace expired");
+  expect(f.reg.deploymentIntent(id).attempts).toBe(0);
+  f.online.add("l1"); f.manager.onHello("l1", []); await settle(); await f.manager.reconcile();
+  expect(f.reg.getDeployment(id)?.state).toBe("ready");
+});
+
+test("manual Stop during reconnect grace never restarts and further disconnects keep draining", async () => {
+  const f = rig(); const { id } = await f.manager.create(split); await f.manager.start(id);
+  const old = f.reg.listAssignments(id);
+  f.online.delete("l1"); f.manager.onOffline("l1"); await settle();
+  await expect(f.manager.stop(id)).rejects.toThrow(/cleanup pending/);
+  f.manager.onOffline("l1");
+  expect(f.reg.getDeployment(id)?.state).toBe("draining");
+  f.online.add("l1"); f.manager.onHello("l1", [{ id: old.find(a => a.nodeId === "l1")!.id, state: "listening" }]);
+  await settle(); await f.manager.reconcile();
+  expect(f.reg.getDeployment(id)?.state).toBe("stopped");
+  expect(f.reg.deploymentIntent(id).running).toBe(false);
+  expect(f.sent.filter(s => s.a.kind !== "stop")).toHaveLength(3);
+});
+
+test("repeated reconnect recoveries consume the retry budget instead of resetting it", async () => {
+  const f = rig(); const { id } = await f.manager.create(split); await f.manager.start(id);
+  for (let n = 0; n < 6; n++) {
+    f.online.delete("l1"); f.manager.onOffline("l1"); await settle();
+    f.online.add("l1"); f.manager.onHello("l1", []); await settle(); await f.manager.reconcile();
+  }
+  expect(f.reg.deploymentIntent(id).attempts).toBe(5);
+  expect(f.reg.getDeployment(id)?.state).toBe("failed");
+  expect(f.manager.routing()).toEqual([]);
+});
+
+test("disconnect during placement cancels old start before any replacement coordinator", async () => {
+  const f = rig(); const { id } = await f.manager.create(split); f.setStarts(false);
+  const start = f.manager.start(id).catch((e: Error) => e);
+  await Bun.sleep(1);
+  f.online.delete("l1"); f.manager.onOffline("l1");
+  expect(String(await start)).toContain("cancelled");
+  expect(f.reg.getDeployment(id)?.state).toBe("loading");
+  await settle();
+  f.online.add("l1"); f.manager.onHello("l1", []); f.setStarts(true);
+  await settle(); await f.manager.reconcile();
+  expect(f.reg.getDeployment(id)?.state).toBe("ready");
+  expect(f.sent.filter(s => s.a.kind === "coordinator")).toHaveLength(1);
+  expect(f.reg.listAssignments(id).filter(a => a.state !== "stopped")).toHaveLength(3);
+});
+
+test("multiple lost nodes require all reconnect acknowledgements before rebuilding", async () => {
+  const f = rig(); const { id } = await f.manager.create(split); await f.manager.start(id);
+  f.online.delete("l1"); f.online.delete("l2"); f.manager.onOffline("l1"); f.manager.onOffline("l2");
+  await settle();
+  f.online.add("l1"); f.manager.onHello("l1", []); await f.manager.reconcile();
+  expect(f.reg.getDeployment(id)?.state).toBe("loading");
+  expect(f.reg.deploymentIntent(id).attempts).toBe(0);
+  expect(f.manager.routing()).toEqual([]);
+  f.online.add("l2"); f.manager.onHello("l2", []); await settle(); await f.manager.reconcile();
+  expect(f.reg.getDeployment(id)?.state).toBe("ready");
+  expect(f.reg.listAssignments(id).filter(a => a.state !== "stopped")).toHaveLength(3);
+});
+
+test("Stop waits for an offline node's reconnect acknowledgement within its timeout", async () => {
+  const f = rig(); const { id } = await f.manager.create(split); await f.manager.start(id);
+  const l1 = f.reg.listAssignments(id).find(a => a.nodeId === "l1")!;
+  f.online.delete("l1");
+  let outcome = "pending";
+  const stopping = f.manager.stop(id).then(() => { outcome = "stopped"; }, () => { outcome = "rejected"; });
+  await Bun.sleep(2);
+  expect(outcome).toBe("pending");
+  f.online.add("l1"); f.manager.onHello("l1", [{ id: l1.id, state: "listening" }]);
+  await stopping;
+  expect(outcome).toBe("stopped");
+  expect(f.reg.getDeployment(id)?.state).toBe("stopped");
+  expect(f.reg.listAssignments(id).every(a => a.state === "stopped")).toBe(true);
+});
+
+
+test("reconnect inside grace allows bounded cleanup to finish after the reconnect deadline", async () => {
+  const f = rig(":memory:", 10, 100); const { id } = await f.manager.create(split); await f.manager.start(id);
+  const old = f.reg.listAssignments(id); f.setStops(false);
+  f.online.delete("l1"); f.manager.onOffline("l1");
+  f.online.add("l1"); f.manager.onHello("l1", [{ id: old.find(a => a.nodeId === "l1")!.id, state: "listening" }]);
+  await f.manager.reconcile();
+  await Bun.sleep(15); await f.manager.reconcile();
+  expect(f.reg.getDeployment(id)?.state).toBe("loading");
+  expect(f.manager.routing()).toEqual([]);
+  for (const a of old) f.report(a.nodeId, a.id, "stopped");
+  f.setStops(true); await settle(); await f.manager.reconcile();
+  expect(f.reg.getDeployment(id)?.state).toBe("ready");
+  expect(f.reg.listAssignments(id).filter(a => a.state !== "stopped")).toHaveLength(3);
+});
+
+test("reconnected nodes cannot keep recovery loading forever without stop acknowledgements", async () => {
+  const f = rig(":memory:", 1000, 5); const { id } = await f.manager.create(split); await f.manager.start(id);
+  const old = f.reg.listAssignments(id); f.setStops(false);
+  f.online.delete("l1"); f.manager.onOffline("l1");
+  f.online.add("l1"); f.manager.onHello("l1", [{ id: old.find(a => a.nodeId === "l1")!.id, state: "listening" }]);
+  await f.manager.reconcile(); await settle(); await f.manager.reconcile();
+  expect(f.reg.getDeployment(id)?.state).toBe("failed");
+  expect(f.reg.getDeployment(id)?.error).toContain("reconnect cleanup deadline");
+  expect(f.reg.listAssignments(id).filter(a => a.state !== "stopped")).toHaveLength(3);
+  expect(f.sent.filter(s => s.a.kind !== "stop")).toHaveLength(3);
+  expect(f.manager.routing()).toEqual([]);
+});
+
+test("RPC crash reported during disconnect recovery does not bypass the reconnect grace", async () => {
+  const f = rig(); const { id } = await f.manager.create(split); await f.manager.start(id);
+  const coordinator = f.reg.listAssignments(id).find(a => a.body.kind === "coordinator")!;
+  f.online.delete("l1"); f.manager.onOffline("l1");
+  // Failure can arrive before queued teardown has retired the coordinator assignment.
+  f.report(coordinator.nodeId, coordinator.id, "failed");
+  expect(f.reg.getDeployment(id)?.state).toBe("loading");
+  expect(f.manager.routing()).toEqual([]);
+  await settle(); f.online.add("l1"); f.manager.onHello("l1", []); await settle(); await f.manager.reconcile();
+  expect(f.reg.getDeployment(id)?.state).toBe("ready");
 });
