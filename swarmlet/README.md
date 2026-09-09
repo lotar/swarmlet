@@ -82,8 +82,12 @@ bun test e2e                                                  # control + two ag
 
 ```bash
 engine/build.sh darwin|linux          # engine (see engine/README.md)
-bun run node-agent/build.ts           # dist/agent/<target>/swarmlet-node (+ engine/)
+engine/build.ps1                      # engine on Windows (MSVC, CPU; -Cuda / -Vulkan optional)
+bun run node-agent/build.ts [darwin] [linux] [windows]   # dist/agent/<target>/swarmlet-node[.exe] (+ engine/)
 ```
+
+The Windows node (agent, scheduled-task service, Mica desktop shell, NSIS installer) is described in
+[docs/WINDOWS_NODE_20260909.md](../docs/WINDOWS_NODE_20260909.md).
 
 ## Security model (short)
 

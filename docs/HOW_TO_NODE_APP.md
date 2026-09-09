@@ -54,9 +54,15 @@ bun run agent                                     # daemon + local UI on http://
 bun run node-agent/main.ts join http://192.168.1.10:47900 ABC123
 ```
 
-Compiled binaries (macOS arm64 and Linux x64) come from `bun run node-agent/build.ts`; the Linux
+Compiled binaries (macOS arm64, Linux x64, Windows x64) come from `bun run node-agent/build.ts`; the Linux
 engine is built on a Legion with `engine/build.sh linux`. `swarmlet/e2e/rig-setup.sh` ships, installs
 (`swarmlet-node install` = systemd user service, linger enabled) and enrolls both Legions in one go.
+
+On Windows the same binary is `swarmlet-node.exe`; `swarmlet-node install` registers a hidden Task Scheduler
+logon task named `Swarmlet Node` (`%LOCALAPPDATA%\Swarmlet\swarmlet-node.task.xml`, agent log in
+`%USERPROFILE%\.swarmlet\logs\agent.log`), the engine is built with `engine\build.ps1` and the desktop app
+is an NSIS per-user installer from `node-shell\scripts\build-release.ps1`. Details and acceptance:
+[WINDOWS_NODE_20260909.md](WINDOWS_NODE_20260909.md).
 
 The GUI shell (`swarmlet/node-shell`, Tauri) wraps the same local UI with a window, a tray icon and
 start-at-login; it starts the agent as a sidecar when no service is installed.
@@ -67,12 +73,12 @@ Resources tab (or `swarmlet-node offer set ...`): GPU memory per device, RAM, CP
 models directory, roles (worker / coordinator / replica), master switch. Values above what the
 machine has are rejected with the reason. What each control enforces:
 
-| | Linux | macOS |
-|---|---|---|
-| GPU memory | `ggml-rpc-server --mem-cap-mib` + planner budget | same (unified memory share) |
-| RAM | cgroup `MemoryMax`, `MemorySwapMax=0` | soft cap: RSS watchdog kills at +10 % |
-| CPU | cgroup `CPUQuota` + `-t` | `-t` |
-| disk | models dir cap | same |
+| | Linux | macOS | Windows |
+|---|---|---|---|
+| GPU memory | `ggml-rpc-server --mem-cap-mib` + planner budget | same (unified memory share) | same as Linux (CUDA engine) or none (CPU engine) |
+| RAM | cgroup `MemoryMax`, `MemorySwapMax=0` | soft cap: RSS watchdog kills at +10 % | soft cap: RSS watchdog (`tasklist`) kills at +10 % |
+| CPU | cgroup `CPUQuota` + `-t` | `-t` | `-t` |
+| disk | models dir cap | same | same |
 
 ## 3a. Chat and live throughput
 
