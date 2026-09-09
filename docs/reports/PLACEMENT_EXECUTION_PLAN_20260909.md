@@ -26,12 +26,12 @@ schema. Three parallel subagents own placement, speculation and native stages;
 the primary agent owns provisioning, control integration and serialized physical
 qualification. Automate qualification only after its contracts pass local tests.
 
-## Goal and current state
+## Goal and initial state
 
 Done means all six requested capabilities have implementation and physical evidence,
 with original standing deployment restored and existing recovery checks retained.
 
-Verified live API: all three nodes online, Qwen3.5-2B relay split ready; Legions have
+Initial live API: all three nodes online, Qwen3.5-2B relay split ready; Legions have
 worker-only offers and no registered model. Source import chain is main.ts ->
 server.ts -> DeploymentManager -> planDeployment. Existing planner already selects
 explicit replica/coordinator nodes. Router pools ready same-model deployments.
@@ -241,8 +241,8 @@ hashes, artifact hashes and cross-proof SHA-256
 An independent executable comparison matched every record to the actual proof
 identities. Maximum measured host RSS was 2,205.60 MiB and GPU residency 2,072 MiB;
 the records reserve the entire source model plus 512 MiB GPU workspace and 3 GiB
-host RAM. Routed native API qualification remains pending; installation and its
-first live integration findings are recorded below.
+host RAM. Installation, its first live integration findings, and final routed
+acceptance are recorded below.
 
 ## Installed integration checks
 
@@ -273,8 +273,52 @@ identities, resource limits and fields. Regression tests exercise serialized
 messages through `parseControlMessage`, where the real failure occurred.
 The dispatch audit also corrected the participant processing snapshot to show
 every stage with its actual layer count, or both Prefill/Decode roles without
-inventing a percentage of computation. A matching-package refresh and repeated
-routed acceptance cases remain required.
+inventing a percentage of computation. The corrected release was then installed
+and the routed acceptance cases repeated, as recorded below.
+
+## Final acceptance
+
+All six requested capabilities are implemented and physically qualified for the
+documented model/configuration scope.
+
+| Capability | Physical evidence |
+|---|---|
+| Asymmetric placement | Exact `[2,3]` and `[3,2]` worker-block layouts pass |
+| Legion replicas and pools | Individual Legions, Mac/Legion pairs, both Legions and all-node pools pass |
+| Coordinator relocation | Both Legion coordinators pass |
+| Persistent stages | Legion/Mac two-stage and Legion/Legion/Mac three-stage routed cases pass |
+| Prefill/decode separation | Mac-to-Legion and Legion-to-Mac routed cases pass |
+| Speculative decoding | Mac replica and split cases pass, with native draft/accept evidence |
+
+The final installed code revision is `4dd13767f234fdd9cc0dfdeba7b12a7c5fa74e12`.
+Its full refresh passed the simulated end-to-end suite and real fault acceptance.
+An independent installed audit passed all 26 checks: matching GUI/service build
+manifests, exact qualified native worker hashes/ABI, and persisted model inventory
+hashes on all three nodes (9/2/2 artifacts). Local checks passed 249 component
+tests (1,387 assertions), six simulated end-to-end tests (62 assertions), 84 Python
+operator tests, typecheck and diff checks.
+
+The repeated native run passed all four cases and 20 completed requests. Each
+case covers streaming and JSON chat/completions, stable resident PIDs across
+requests, HTTP 429 during an overlapping request, cancellation followed by clean
+reuse, and connection-refused proof after worker retirement. Four real `/v1/mesh`
+snapshots also passed endpoint order, role and layer-count checks, without
+exposing private assignment fields. Native numerical/token equivalence and zero
+receiver prefill remain pinned to the unchanged native proof recorded above.
+
+The first baseline restoration attempt after those four passing cases hit a
+temporary classic RPC server bind failure (`Failed to create server socket`).
+The controller recovered automatically to READY at `2026-09-09T14:42:42Z`.
+A separate guarded `native-rig.py restore` completed with exit zero and recorded
+restoration at `2026-09-09T14:43:31Z`, retaining the original `[3,3,18]` split.
+The original operator failure was retained; no acceptance assertion was relaxed.
+Final verification confirmed all 16 feature cases, no remaining native deployment,
+all three nodes online, removed temporary install credentials, and a pinned routed
+baseline smoke response of `OK`.
+
+Native stages/P-D remain qualified only for Qwen3.5-2B Q8_0, context 1024, one
+active request per deployment, greedy text generation and 1–128 output tokens.
+This is functional/correctness qualification; it does not claim a speedup.
 
 Evidence is retained privately under `~/.swarmlet/backups/`:
 
@@ -306,3 +350,10 @@ Evidence is retained privately under `~/.swarmlet/backups/`:
   persistence, installed binary audit and restored baseline).
 - `native-routed-features-20260909/` (first routed attempt, parser rejection,
   interrupted qualification and restored baseline).
+- `20260909T141704Z/refresh.json`, `real-faults.json` and
+  `final-installed-audit.json` (final installed release and 26-check audit).
+- `native-routed-features-20260909-02/` (`summary.json`: 4/4 pass;
+  `results.json`: 20 requests plus cancellation/busy/retirement checks;
+  `processing-snapshots.json`: four live projections;
+  `journal.json`: guarded baseline restoration;
+  `final-verification.json`: final aggregate checks and baseline smoke).
