@@ -4,7 +4,7 @@
 import { Database } from "bun:sqlite";
 import type {
   Assignment, AssignmentState, Capabilities, Deployment, DeploymentSpec, DeploymentState, ModelFile,
-  NodeMetrics, Offer, Plan,
+  NodeMetrics, Offer, Plan, LayerDistribution,
 } from "../protocol/types.ts";
 
 export interface NodeRow {
@@ -70,6 +70,9 @@ export class Registry {
     this.db = new Database(path, { create: true });
     this.db.exec("PRAGMA journal_mode = WAL; PRAGMA synchronous = NORMAL; PRAGMA foreign_keys = ON;");
     this.db.exec(SCHEMA);
+    if (!this.db.query<{ name: string }, []>("PRAGMA table_info(deployments)").all().some((c) => c.name === "saved_distribution")) {
+      this.db.run("ALTER TABLE deployments ADD COLUMN saved_distribution TEXT");
+    }
     if (!this.db.query<{ name: string }, []>("PRAGMA table_info(assignments)").all().some((c) => c.name === "retired")) {
       this.db.run("ALTER TABLE assignments ADD COLUMN retired INTEGER NOT NULL DEFAULT 0");
     }
@@ -153,6 +156,15 @@ export class Registry {
 
   listDeployments(): Deployment[] {
     return this.db.query<Record<string, unknown>, []>("SELECT * FROM deployments ORDER BY created_at DESC").all().map(rowToDeployment);
+  }
+
+  saveDistribution(id: string, distribution: LayerDistribution): void {
+    this.db.run("UPDATE deployments SET saved_distribution = ?, updated_at = ? WHERE id = ?", [j(distribution), now(), id]);
+  }
+
+  /** Called only after acknowledged teardown; the saved layout remains available on failure. */
+  applyDistributionSpec(id: string, spec: DeploymentSpec): void {
+    this.db.run("UPDATE deployments SET spec = ?, state = 'planned', plan = NULL, endpoint = NULL, error = NULL, updated_at = ? WHERE id = ?", [j(spec), now(), id]);
   }
 
   updateDeployment(id: string, patch: { state?: DeploymentState; plan?: Plan | null; endpoint?: Deployment["endpoint"] | null; error?: string | null }): void {
@@ -260,6 +272,7 @@ function rowToNode(r: Record<string, unknown>): NodeRow {
 function rowToDeployment(r: Record<string, unknown>): Deployment {
   return {
     id: r.id as string, spec: p<DeploymentSpec>(r.spec)!, state: r.state as DeploymentState, plan: p<Plan>(r.plan) ?? undefined,
+    savedDistribution: p<LayerDistribution>(r.saved_distribution) ?? undefined,
     endpoint: p<Deployment["endpoint"]>(r.endpoint) ?? undefined, error: (r.error as string | null) ?? undefined,
     createdAt: r.created_at as string, updatedAt: r.updated_at as string,
   };

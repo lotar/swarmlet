@@ -104,6 +104,18 @@
           <span class="form-status" id="dep-status"></span>
           <button class="button button--signal" type="button" id="dep-toggle">New deployment</button>
         </div>
+        <form class="panel distribution-panel" id="distribution-panel" hidden novalidate>
+          <div class="toolbar"><h2 class="grow" id="distribution-title">Layer distribution</h2><button class="button button--small" type="button" id="distribution-close">Close</button></div>
+          <p class="hint">Assign whole transformer layers in node order. The coordinator keeps the remaining layers. Saving does not interrupt the running model.</p>
+          <label class="field"><span class="label">Coordinator</span><select id="distribution-coordinator"></select></label>
+          <div id="distribution-workers" class="distribution-workers"></div>
+          <div id="distribution-bar" class="distribution-bar" aria-label="Proposed layer distribution"></div>
+          <div id="distribution-legend" class="distribution-legend"></div>
+          <p id="distribution-total" class="strong"></p>
+          <div class="actions"><button class="button" type="button" id="distribution-preview">Check layout</button><button class="button button--signal" type="submit" id="distribution-save">Save distribution</button><button class="button" type="button" id="distribution-apply">Apply saved distribution</button></div>
+          <p id="distribution-status" class="form-status" role="status" aria-live="polite"></p>
+          <div id="distribution-plan"></div>
+        </form>
         <form class="panel" id="dep-form" hidden novalidate>
           <div class="form-row">
             <label class="field"><span class="label">Name</span><input type="text" id="dep-name" placeholder="qwen-split" autocomplete="off" required></label>

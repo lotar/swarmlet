@@ -20,6 +20,12 @@
   --topology-width:23rem; --chat-height:25rem; --drawer-width:48rem; --input-width:10rem; --field-width:20rem; --event-time:6.5rem; --event-kind:7.5rem; --event-node:9rem; --event-dep:10rem;
 }
 * { box-sizing:border-box; }
+.distribution-panel { margin-bottom:var(--s5); }
+.distribution-workers { display:flex; flex-wrap:wrap; gap:var(--s4); margin:var(--s4) 0; }
+.distribution-bar { display:flex; gap:3px; margin:var(--s5) 0 var(--s3); }
+.distribution-segment { flex-basis:0; min-width:0; padding:var(--s3) 0; background:var(--accent-soft); border-radius:var(--radius-sm); font-size:var(--text-sm); text-align:center; overflow:hidden; }
+.distribution-segment:nth-child(2n) { background:var(--ok); }
+.distribution-legend { display:flex; flex-wrap:wrap; gap:var(--s3) var(--s5); font-size:var(--text-sm); }
 [hidden] { display:none !important; }
 html { -webkit-text-size-adjust:100%; }
 body { margin:0; background:var(--bg); color:var(--copy); font:var(--normal) var(--text-base)/var(--leading) var(--font-body); }

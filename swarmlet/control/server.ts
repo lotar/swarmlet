@@ -140,6 +140,12 @@ export function createControlServer(deps: ControlDeps): Server<ConnData> {
       if (m === "POST" && seg.length === 2) { const spec = (await req.json()) as DeploymentSpec; try { return json(await d.create(spec), 201); } catch (e) { return json({ error: (e as Error).message }, 400); } }
       if (m === "POST" && seg[2] === "plan-preview") { try { return json(await d.planPreview((await req.json()) as DeploymentSpec)); } catch (e) { return json({ error: (e as Error).message }, 400); } }
       if (seg[2] && m === "GET" && seg.length === 3) { const dep = reg.getDeployment(seg[2]); return dep ? json({ ...dep, assignments: reg.listAssignments(dep.id) }) : json({ error: "not found" }, 404); }
+      if (seg[2] && seg[3] === "distribution" && seg.length === 4 && m === "PUT") {
+        try { return json(d.saveDistribution(seg[2], await req.json())); } catch (e) { return json({ error: (e as Error).message }, 400); }
+      }
+      if (seg[2] && seg[3] === "distribution" && seg[4] === "apply" && seg.length === 5 && m === "POST") {
+        try { return json(d.applyDistribution(seg[2]), 202); } catch (e) { return json({ error: (e as Error).message }, 400); }
+      }
       if (seg[2] && seg[3] === "start" && m === "POST") {
         // start runs in the background: the UI polls state; errors land in deployment.error
         const id = seg[2];
@@ -230,6 +236,7 @@ export function createControlServer(deps: ControlDeps): Server<ConnData> {
     websocket: {
       maxPayloadLength: 16 * 1024 * 1024,
       open: (ws) => channel.open(ws),
+      drain: (ws) => channel.drain(ws),
       message: (ws, msg) => { void channel.message(ws, msg as string | Buffer); },
       close: (ws) => channel.close(ws),
     },

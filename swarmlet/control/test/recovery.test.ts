@@ -410,3 +410,69 @@ test("RPC crash reported during disconnect recovery does not bypass the reconnec
   await settle(); f.online.add("l1"); f.manager.onHello("l1", []); await settle(); await f.manager.reconcile();
   expect(f.reg.getDeployment(id)?.state).toBe("ready");
 });
+
+const savedLayout = { coordinatorNodeId: 'mac', workerNodeIds: ['l2','l1'], workerLayers: [2,3] };
+async function distributionSettled(check:()=>boolean) {
+  const deadline=Date.now()+1500;
+  while(!check()){if(Date.now()>deadline)throw new Error('distribution did not settle');await Bun.sleep(2);}
+}
+test('saved distribution survives registry reopen without changing active spec, route or recovery intent',async()=>{
+  const path=join(mkdtempSync(join(tmpdir(),'swarmlet-distribution-')),'control.sqlite');
+  const f=rig(path);const {id}=await f.manager.create(split);await f.manager.start(id);
+  const before=f.reg.getDeployment(id)!;const assignments=f.reg.listAssignments(id).map(a=>a.id);
+  const result=f.manager.saveDistribution(id,savedLayout);
+  expect(result.plan.tensorSplit).toEqual([2,3,19]);
+  expect(f.reg.getDeployment(id)!.spec).toEqual(before.spec);
+  expect(f.reg.getDeployment(id)!.endpoint).toEqual(before.endpoint);
+  expect(f.reg.listAssignments(id).map(a=>a.id)).toEqual(assignments);
+  expect(f.reg.deploymentIntent(id).running).toBe(true);
+  const disk=new Registry(path);
+  expect(disk.getDeployment(id)!.savedDistribution).toEqual(savedLayout);
+  expect(disk.getDeployment(id)!.spec).toEqual(before.spec);disk.close();
+});
+test('invalid distribution cannot overwrite the saved layout or stop a running deployment',async()=>{
+  const f=rig();const {id}=await f.manager.create(split);await f.manager.start(id);
+  f.manager.saveDistribution(id,savedLayout);const count=f.sent.length;
+  for(const bad of [{...savedLayout,workerLayers:[99,3]},{...savedLayout,workerLayers:[1.5,3]},{...savedLayout,workerNodeIds:['l1','l1']},{...savedLayout,extra:true}]){
+    expect(()=>f.manager.saveDistribution(id,bad)).toThrow();
+  }
+  expect(f.reg.getDeployment(id)!.savedDistribution).toEqual(savedLayout);
+  expect(f.reg.getDeployment(id)!.state).toBe('ready');expect(f.sent.length).toBe(count);
+});
+test('Apply retires old assignments before publishing the saved exact distribution',async()=>{
+  const f=rig();const {id}=await f.manager.create(split);await f.manager.start(id);
+  const old=f.reg.listAssignments(id).map(a=>a.id);f.manager.saveDistribution(id,savedLayout);
+  f.manager.applyDistribution(id);
+  expect(()=>f.manager.applyDistribution(id)).toThrow(/progress/);
+  await distributionSettled(()=>f.reg.getDeployment(id)?.state==='ready' && f.reg.getDeployment(id)?.spec.workerNodeIds?.[0]==='l2');
+  const d=f.reg.getDeployment(id)!;expect(d.plan!.tensorSplit).toEqual([2,3,19]);expect(d.plan!.engineTensorSplit).toEqual([2,3,20]);
+  expect(f.reg.listAssignments(id).filter(a=>old.includes(a.id)).every(a=>a.retired&&a.state==='stopped')).toBe(true);
+  expect(f.reg.listAssignments(id).filter(a=>!a.retired).map(a=>a.nodeId)).toEqual(['l2','l1','mac']);
+  await settle();
+});
+test('Apply revalidates current offers and active requests before teardown',async()=>{
+  const f=rig();const {id}=await f.manager.create(split);await f.manager.start(id);f.manager.saveDistribution(id,savedLayout);
+  const sent=f.sent.length;f.manager.trackInflight(id,1);expect(()=>f.manager.applyDistribution(id)).toThrow(/active requests/);f.manager.trackInflight(id,-1);
+  f.online.delete('l1');expect(()=>f.manager.applyDistribution(id)).toThrow();
+  expect(f.sent.length).toBe(sent);expect(f.reg.getDeployment(id)!.state).toBe('ready');
+});
+test('failed teardown preserves both the active spec and saved distribution',async()=>{
+  const f=rig();const {id}=await f.manager.create(split);await f.manager.start(id);f.manager.saveDistribution(id,savedLayout);f.setStops(false);
+  f.manager.applyDistribution(id);
+  await distributionSettled(()=>!!f.reg.getDeployment(id)?.error?.startsWith('Apply distribution:'));
+  expect(f.reg.getDeployment(id)!.spec).toEqual(split);expect(f.reg.getDeployment(id)!.savedDistribution).toEqual(savedLayout);
+  expect(f.reg.listAssignments(id)).toHaveLength(3);
+  expect(f.reg.listAssignments(id).every(a=>a.retired && a.state!=='stopped')).toBe(true);await settle();
+});
+
+test('Stop during Apply cancels its pending restart',async()=>{
+  const f=rig();const {id}=await f.manager.create(split);await f.manager.start(id);
+  f.manager.saveDistribution(id,savedLayout);
+  const starts=f.sent.filter(x=>x.a.kind!=='stop').length;
+  f.manager.applyDistribution(id);
+  await f.manager.stop(id);await settle();
+  expect(f.reg.getDeployment(id)!.state).toBe('stopped');
+  expect(f.reg.deploymentIntent(id).running).toBe(false);
+  expect(f.reg.getDeployment(id)!.spec).toEqual(split);
+  expect(f.sent.filter(x=>x.a.kind!=='stop')).toHaveLength(starts);
+});

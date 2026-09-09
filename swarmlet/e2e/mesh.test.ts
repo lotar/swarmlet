@@ -123,6 +123,30 @@ describe("mesh e2e (fake engine)", () => {
     expect(st.nodeId).toBe(alpha.id.nodeId);
   });
 
+  test("saved layer layout persists across control restart and applies through the real agent wire", async () => {
+    if (!hasGpu()) throw new Error("distribution acceptance requires the available test GPU");
+    const spec = { name: "saved-layout", profile: "qwen35-2b-q8", kind: "split", coordinatorNodeId: alpha.id.nodeId, workerNodeIds: [beta.id.nodeId], workerLayers: [2], ctx: 1024, parallel: 1, chain: 0 };
+    const { id } = await (await api('/api/deployments', { method: 'POST', body: JSON.stringify(spec) })).json() as {id:string};
+    await api(`/api/deployments/${id}/start`, {method:'POST'});
+    expect((await waitState(id,['ready','failed'],15000)).state).toBe('ready');
+    const saved={coordinatorNodeId:alpha.id.nodeId,workerNodeIds:[beta.id.nodeId],workerLayers:[3]};
+    expect((await fetch(`${base}/api/deployments/${id}/distribution`,{method:'PUT',headers:{'content-type':'application/json'},body:JSON.stringify(saved)})).status).toBe(401);
+    expect((await api(`/api/deployments/${id}/distribution`,{method:'PUT',body:JSON.stringify(saved)})).status).toBe(200);
+    let current=await (await api(`/api/deployments/${id}`)).json() as Deployment;
+    expect(current.spec.workerLayers).toEqual([2]);expect(current.savedDistribution).toEqual(saved);
+    await assertRouted(id);
+    await restartControl();
+    expect((await waitState(id,['ready'],25000)).state).toBe('ready');
+    current=await (await api(`/api/deployments/${id}`)).json() as Deployment;
+    expect(current.savedDistribution).toEqual(saved);expect(current.spec.workerLayers).toEqual([2]);
+    expect((await api(`/api/deployments/${id}/distribution`,{method:'PUT',body:JSON.stringify({...saved,workerLayers:[99]})})).status).toBe(400);
+    expect((await api(`/api/deployments/${id}/distribution/apply`,{method:'POST'})).status).toBe(202);
+    current=await waitState(id,['ready','failed'],15000);
+    expect(current.state).toBe('ready');expect(current.plan!.tensorSplit).toEqual([3,21]);expect(current.plan!.engineTensorSplit).toEqual([3,22]);
+    await assertRouted(id);
+    await api(`/api/deployments/${id}/stop`,{method:'POST'});await waitState(id,['stopped'],10000);
+  },60000);
+
   test("split deployment: plan, workers, coordinator, route a request, stop", async () => {
     if (!hasGpu()) { console.warn("no GPU on this machine: split test skipped"); return; }
     const spec = { name: "e2e-split", profile: "qwen35-2b-q8", kind: "split", coordinatorNodeId: alpha.id.nodeId, workerNodeIds: [beta.id.nodeId], ctx: 2048, parallel: 1, chain: 0 };

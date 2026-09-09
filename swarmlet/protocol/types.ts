@@ -288,9 +288,17 @@ export interface Plan {
   reasons: string[];
 }
 
+export interface LayerDistribution {
+  coordinatorNodeId: string;
+  workerNodeIds: string[];
+  workerLayers: number[];
+}
+
 export interface Deployment {
   id: string;
   spec: DeploymentSpec;
+  /** Saved separately: active placement and recovery change only after Apply. */
+  savedDistribution?: LayerDistribution;
   state: DeploymentState;
   plan?: Plan;
   /** Where requests go once ready. */

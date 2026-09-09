@@ -10,6 +10,7 @@ import { parseAgentMessage } from "../protocol/validate.ts";
 import type { AgentToControl, Assignment, AssignmentState, ControlToAgent, HelloMsg, StreamHeader } from "../protocol/types.ts";
 import type { Logger } from "./log.ts";
 import type { Registry } from "./registry.ts";
+import { SocketOutbox, type SocketFrame } from "./socket-outbox.ts";
 
 /** How an agent's channel reached control: the host it connected to and whether a Cloudflare edge was in front. */
 export interface ConnVia { host: string; proto: string; edge: boolean }
@@ -42,6 +43,7 @@ function randomNonce(): string {
 export class AgentChannel {
   private conns = new Map<string, ServerWebSocket<ConnData>>();
   private logs = new Map<string, string[]>();
+  private outboxes = new WeakMap<ServerWebSocket<ConnData>, SocketOutbox>();
   /** Set by the process shutdown path: connection closes are then not node failures. */
   shuttingDown = false;
 
@@ -60,8 +62,7 @@ export class AgentChannel {
   send(nodeId: string, msg: ControlToAgent): boolean {
     const ws = this.conns.get(nodeId);
     if (!ws) return false;
-    ws.send(JSON.stringify(msg));
-    return true;
+    return this.write(ws, JSON.stringify(msg));
   }
 
   assign(nodeId: string, assignment: Assignment): boolean {
@@ -81,7 +82,21 @@ export class AgentChannel {
   // ---------- Bun websocket handlers ----------
 
   open(ws: ServerWebSocket<ConnData>): void {
-    ws.send(JSON.stringify({ t: "challenge", nonce: ws.data.nonce } satisfies ControlToAgent));
+    this.write(ws, JSON.stringify({ t: "challenge", nonce: ws.data.nonce } satisfies ControlToAgent));
+  }
+
+  drain(ws: ServerWebSocket<ConnData>): void { this.outboxes.get(ws)?.drain(); }
+
+  private write(ws: ServerWebSocket<ConnData>, frame: SocketFrame): boolean {
+    let outbox = this.outboxes.get(ws);
+    if (!outbox) {
+      outbox = new SocketOutbox((value) => ws.send(value), (reason) => {
+        this.log.warn("agent outbound stream failed", { nodeId: ws.data.nodeId, reason });
+        ws.close(1011, reason);
+      });
+      this.outboxes.set(ws, outbox);
+    }
+    return outbox.send(frame);
   }
 
   async message(ws: ServerWebSocket<ConnData>, raw: string | Buffer): Promise<void> {
@@ -93,7 +108,7 @@ export class AgentChannel {
       return;
     }
     const parsed = parseAgentMessage(raw);
-    if (!parsed.ok) { this.log.warn("bad message", { nodeId: ws.data.nodeId, errors: parsed.errors }); ws.send(JSON.stringify({ t: "error", message: parsed.errors.join("; ") })); return; }
+    if (!parsed.ok) { this.log.warn("bad message", { nodeId: ws.data.nodeId, errors: parsed.errors }); this.write(ws, JSON.stringify({ t: "error", message: parsed.errors.join("; ") })); return; }
     const m = parsed.value;
     if (!ws.data.authed) {
       if (m.t !== "auth") { ws.close(1008, "auth first"); return; }
@@ -143,6 +158,7 @@ export class AgentChannel {
   }
 
   close(ws: ServerWebSocket<ConnData>): void {
+    this.outboxes.get(ws)?.close();
     const nodeId = ws.data.nodeId;
     ws.data.mux?.closeAll("node disconnected");
     if (nodeId && this.conns.get(nodeId) === ws) {
@@ -159,7 +175,7 @@ export class AgentChannel {
     const cutoff = Date.now() - staleMs;
     for (const [nodeId, ws] of this.conns) {
       if (ws.data.lastSeen < cutoff) { this.log.warn("stale connection dropped", { nodeId }); ws.close(1001, "stale"); continue; }
-      ws.send(JSON.stringify({ t: "ping", ts: new Date().toISOString() } satisfies ControlToAgent));
+      this.write(ws, JSON.stringify({ t: "ping", ts: new Date().toISOString() } satisfies ControlToAgent));
     }
   }
 
@@ -182,9 +198,9 @@ export class AgentChannel {
     if (prev && prev !== ws) { prev.data.nodeId = null; prev.close(1000, "replaced by a newer connection"); }
     ws.data.nodeId = m.nodeId;
     ws.data.authed = true;
-    ws.data.mux = new StreamMux((f) => ws.send(f), (stream) => this.onAgentStream(m.nodeId, stream), 0);
+    ws.data.mux = new StreamMux((f) => { this.write(ws, f); }, (stream) => this.onAgentStream(m.nodeId, stream), 0);
     this.conns.set(m.nodeId, ws);
-    ws.send(JSON.stringify({ t: "welcome", nodeId: m.nodeId, serverTime: new Date().toISOString(), inferenceKey: this.reg.nodeApiKey(m.nodeId) } satisfies ControlToAgent));
+    this.write(ws, JSON.stringify({ t: "welcome", nodeId: m.nodeId, serverTime: new Date().toISOString(), inferenceKey: this.reg.nodeApiKey(m.nodeId) } satisfies ControlToAgent));
   }
 
   /** A node opened a stream towards control: only relays are accepted. */

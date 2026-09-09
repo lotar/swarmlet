@@ -35,6 +35,7 @@ export class DeploymentManager {
   private waiters = new Map<string, Array<(s: AssignmentState, detail?: string) => void>>();
   private inflight = new Map<string, number>();
   private operations = new Map<string, Promise<void>>();
+  private distributionApplications = new Set<string>();
   private generations = new Map<string, number>();
   private closed = false;
   private nativeLifetimes = new Map<string, AbortController>();
@@ -221,6 +222,52 @@ export class DeploymentManager {
   async planPreview(spec: DeploymentSpec): Promise<Plan> {
     if (spec.kind === "external") throw new Error("external deployments are not planned");
     return this.plan(spec, this.usedPorts());
+  }
+
+  private distributionSpec(id: string, value: unknown): DeploymentSpec {
+    const dep = this.must(id);
+    if (dep.spec.kind !== "split") throw new Error("Layer distribution requires a split deployment.");
+    if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("A layer distribution is required.");
+    const d = value as Record<string, unknown>;
+    if (Object.keys(d).some(k => !["coordinatorNodeId", "workerNodeIds", "workerLayers"].includes(k)) ||
+        typeof d.coordinatorNodeId !== "string" || !d.coordinatorNodeId || !Array.isArray(d.workerNodeIds) || !Array.isArray(d.workerLayers)) {
+      throw new Error("Distribution needs coordinatorNodeId, workerNodeIds and workerLayers only.");
+    }
+    return { ...dep.spec, coordinatorNodeId: d.coordinatorNodeId, workerNodeIds: [...d.workerNodeIds] as string[], workerLayers: [...d.workerLayers] as number[] };
+  }
+
+  saveDistribution(id: string, value: unknown): { deployment: Deployment; plan: Plan } {
+    if (this.closed || this.distributionApplications.has(id)) throw new Error("Distribution apply is in progress; retry after it finishes.");
+    const spec = this.distributionSpec(id, value);
+    const plan = this.plan(spec, this.usedPorts());
+    this.deps.reg.saveDistribution(id, { coordinatorNodeId: spec.coordinatorNodeId!, workerNodeIds: spec.workerNodeIds!, workerLayers: spec.workerLayers! });
+    this.deps.reg.event("deployment", "layer distribution saved; active placement unchanged", { deploymentId: id });
+    return { deployment: this.must(id), plan };
+  }
+
+  /** Admission is synchronous; reloading follows the existing asynchronous Start API. */
+  applyDistribution(id: string): { accepted: true; id: string } {
+    if (this.closed || this.distributionApplications.has(id) || this.operations.has(id)) throw new Error("Deployment operation already in progress.");
+    if (this.inflight.get(id)) throw new Error("Deployment has active requests; wait for them to finish before applying.");
+    const spec = this.distributionSpec(id, this.must(id).savedDistribution);
+    this.plan(spec, this.usedPorts()); // Reject invalid/offline/over-capacity layouts before stopping anything.
+    this.distributionApplications.add(id);
+    void (async () => {
+      const stopping = this.stop(id);
+      const generation = this.generations.get(id);
+      await stopping;
+      if (this.closed) throw new Error("Control is shutting down; saved distribution retained.");
+      if (generation !== this.generations.get(id)) throw new Error("Apply cancelled by another deployment operation; saved distribution retained.");
+      this.plan(spec, this.usedPorts()); // Offers may have changed during teardown.
+      this.deps.reg.applyDistributionSpec(id, spec);
+      await this.start(id);
+    })().catch((error: unknown) => {
+      if (this.deps.reg.getDeployment(id)) {
+        this.deps.reg.updateDeployment(id, { error: `Apply distribution: ${String(error)}` });
+        this.deps.reg.event("deployment", `distribution apply failed: ${String(error)}`, { deploymentId: id });
+      }
+    }).finally(() => this.distributionApplications.delete(id));
+    return { accepted: true, id };
   }
 
   async start(id: string, recovering = false): Promise<void> {

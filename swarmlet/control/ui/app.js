@@ -266,7 +266,12 @@
 
   function servedModels(nodeId) {
     var names = {};
-    (state.deployments || []).forEach(function (d) { if (d.state === 'ready' && d.endpoint && d.endpoint.nodeId === nodeId) names[d.endpoint.modelName] = 1; });
+    (state.deployments || []).forEach(function (d) {
+      if (d.state !== 'ready' || !d.endpoint) return;
+      var plan = d.plan || {};
+      if (d.endpoint.nodeId === nodeId || (plan.workers || []).some(function (w) { return w.nodeId === nodeId; }) ||
+          (plan.nativeExecution && plan.nativeExecution.endpoints.some(function (e) { return e.nodeId === nodeId; }))) names[d.endpoint.modelName] = 1;
+    });
     return Object.keys(names);
   }
 
@@ -383,6 +388,7 @@
         td(ago(d.updatedAt), 'dim small', d.updatedAt),
         td(el('div', { class: 'actions' }, [
           el('button', { class: 'button button--small', type: 'button', text: 'Details', onclick: function () { openDrawer(d.id); } }),
+          s.kind === 'split' ? el('button', { class: 'button button--small', type: 'button', text: 'Layer distribution', onclick: function () { openDistribution(d); } }) : null,
           el('button', { class: 'button button--small', type: 'button', text: 'Start', disabled: STARTABLE.indexOf(d.state) < 0, onclick: function () { act(d, 'start'); } }),
           el('button', { class: 'button button--small', type: 'button', text: 'Stop', disabled: STOPPABLE.indexOf(d.state) < 0, onclick: function () { act(d, 'stop'); } }),
           el('button', { class: 'button button--small button--danger', type: 'button', text: 'Delete', onclick: function () { act(d, 'delete'); } }),
@@ -390,6 +396,109 @@
       ]);
     }), 'No deployments yet.');
   }
+
+  /* ---------- saved layer distribution (separate from the active spec) ---------- */
+  var distributionDraft = null;
+
+  function openDistribution(d) {
+    var profiles = state.profiles ? Promise.resolve(state.profiles) : api('GET', '/api/profiles').then(function (r) { state.profiles = r.profiles; return r.profiles; });
+    profiles.then(function (list) {
+      var profile = list.filter(function (p) { return p.id === d.spec.profile; })[0];
+      if (!profile) throw new Error('Model profile is unavailable.');
+      var source = d.savedDistribution || d.spec;
+      var ids = source.workerNodeIds || (d.plan && d.plan.workers || []).map(function (w) { return w.nodeId; });
+      var layers = source.workerLayers || (d.plan && d.plan.workers || []).map(function (w) { return w.layers; });
+      distributionDraft = { deployment: d, profile: profile, order: ids.slice(), counts: {}, dirty: false };
+      ids.forEach(function (id, i) { distributionDraft.counts[id] = layers[i] || 0; });
+      $('distribution-title').textContent = d.spec.name + ' · Layer distribution';
+      replace($('distribution-coordinator'), state.nodes.map(function (n) { return el('option', { value: n.id, text: n.hostname + (n.online ? '' : ' (offline)') }); }));
+      $('distribution-coordinator').value = source.coordinatorNodeId || (d.plan && d.plan.coordinatorNodeId) || '';
+      $('distribution-panel').hidden = false;
+      replace($('distribution-plan'), []);
+      drawDistributionInputs();
+      note('distribution-status', d.savedDistribution ? 'Saved layout loaded. Apply reloads the model; current requests must finish first.' : 'Edit the proposed layout, then save. The running placement stays unchanged.');
+      $('distribution-panel').scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }).catch(function (e) { note('dep-status', e.message, 'error'); });
+  }
+
+  function drawDistributionInputs() {
+    var draft = distributionDraft, coordinator = $('distribution-coordinator').value;
+    var ids = draft.order.concat(state.nodes.map(function (n) { return n.id; }).filter(function (id) { return draft.order.indexOf(id) < 0; }));
+    var spec = draft.deployment.spec;
+    var counts = draft.profile.envelope.filter(function (row) { return (spec.ctx || 4096) <= row.maxCtx && (spec.parallel || 1) <= row.maxParallel && (spec.chain || 0) <= row.maxChain; }).map(function (row) { return row.workerLayers; });
+    var max = Math.max.apply(Math, [0].concat(counts));
+    replace($('distribution-workers'), ids.filter(function (id) { return id !== coordinator; }).map(function (id) {
+      var input = el('input', { type: 'number', min: '0', max: String(max), step: '1', value: String(draft.counts[id] || 0), 'data-distribution-node': id, 'aria-label': nodeName(id) + ' layers' });
+      input.addEventListener('input', function () { draft.counts[id] = Number(input.value); draft.dirty = true; drawDistributionSummary(); note('distribution-status', 'Unsaved changes. Check and save before applying.'); replace($('distribution-plan'), []); });
+      return el('label', { class: 'field' }, [el('span', { class: 'label', text: nodeName(id) + ' · verified counts: 0' + (counts.length ? ', ' + counts.filter(function (n, i) { return counts.indexOf(n) === i; }).join(', ') : '') }), input]);
+    }));
+    drawDistributionSummary();
+  }
+
+  function readDistribution() {
+    var value = { coordinatorNodeId: $('distribution-coordinator').value, workerNodeIds: [], workerLayers: [] };
+    [].forEach.call($('distribution-workers').querySelectorAll('input'), function (input) {
+      var count = Number(input.value);
+      if (input.value.trim() === '' || !Number.isSafeInteger(count) || count < 0) throw new Error('Layer counts must be whole numbers, zero or greater.');
+      if (count) { value.workerNodeIds.push(input.getAttribute('data-distribution-node')); value.workerLayers.push(count); }
+    });
+    if (!value.workerNodeIds.length) throw new Error('Choose at least one worker for a split deployment.');
+    if (value.workerLayers.reduce(function (a, b) { return a + b; }, 0) >= distributionDraft.profile.layers) throw new Error('Leave at least one layer on the coordinator.');
+    return value;
+  }
+
+  function drawDistributionSummary() {
+    $('distribution-apply').disabled = distributionDraft.dirty || !distributionDraft.deployment.savedDistribution;
+    try {
+      var value = readDistribution(), total = distributionDraft.profile.layers, next = 1;
+      var ids = value.workerNodeIds.concat(value.coordinatorNodeId);
+      var counts = value.workerLayers.concat(total - value.workerLayers.reduce(function (a, b) { return a + b; }, 0));
+      var legend = [];
+      replace($('distribution-bar'), ids.map(function (id, i) {
+        var range = next + '–' + (next + counts[i] - 1); next += counts[i];
+        var label = nodeName(id) + ': layers ' + range + ' (' + counts[i] + ')';
+        legend.push(el('span', { text: label }));
+        return el('div', { class: 'distribution-segment', style: 'flex-grow:' + counts[i], text: String(counts[i]), title: label, 'aria-label': label });
+      }));
+      replace($('distribution-legend'), legend);
+      $('distribution-total').textContent = total + ' layers · ' + nodeName(value.coordinatorNodeId) + ' keeps ' + counts[counts.length - 1] + ' · ' + ids.length + ' nodes';
+    } catch (e) { replace($('distribution-bar'), []); replace($('distribution-legend'), []); $('distribution-total').textContent = e.message; }
+  }
+
+  $('distribution-coordinator').addEventListener('change', function () { distributionDraft.dirty = true; drawDistributionInputs(); });
+  $('distribution-close').addEventListener('click', function () { $('distribution-panel').hidden = true; distributionDraft = null; });
+  $('distribution-preview').addEventListener('click', function () {
+    try {
+      var spec = Object.assign({}, distributionDraft.deployment.spec, readDistribution());
+      note('distribution-status', 'Checking layout…');
+      api('POST', '/api/deployments/plan-preview', spec).then(function (plan) { replace($('distribution-plan'), renderPlan(plan)); note('distribution-status', 'Layout fits the verified profile and current node offers.', 'ok'); }).catch(function (e) { note('distribution-status', e.message, 'error'); });
+    } catch (e) { note('distribution-status', e.message, 'error'); }
+  });
+  $('distribution-panel').addEventListener('submit', function (ev) {
+    ev.preventDefault();
+    try {
+      var value = readDistribution(), draft = distributionDraft;
+      $('distribution-save').disabled = true;
+      [].forEach.call($('distribution-panel').querySelectorAll('input, select, button'), function (control) { control.disabled = true; });
+      api('PUT', '/api/deployments/' + encodeURIComponent(draft.deployment.id) + '/distribution', value).then(function (result) {
+        if (distributionDraft !== draft) return;
+        draft.deployment = result.deployment; draft.dirty = false;
+        replace($('distribution-plan'), renderPlan(result.plan)); drawDistributionSummary();
+        note('distribution-status', 'Distribution saved. Apply when ready to reload the model.', 'ok');
+        return loadDeployments();
+      }).catch(function (e) { note('distribution-status', e.message, 'error'); }).then(function () {
+        [].forEach.call($('distribution-panel').querySelectorAll('input, select, button'), function (control) { control.disabled = false; });
+        if (distributionDraft) drawDistributionSummary();
+      });
+    } catch (e) { note('distribution-status', e.message, 'error'); }
+  });
+  $('distribution-apply').addEventListener('click', function () {
+    if (!distributionDraft || distributionDraft.dirty || !window.confirm('Reload ' + distributionDraft.deployment.spec.name + ' with the saved layer distribution?')) return;
+    $('distribution-apply').disabled = true;
+    api('POST', '/api/deployments/' + encodeURIComponent(distributionDraft.deployment.id) + '/distribution/apply').then(function () {
+      note('distribution-status', 'Applying saved distribution. Follow the deployment state while the model reloads.', 'ok'); return loadDeployments();
+    }).catch(function (e) { note('distribution-status', e.message, 'error'); $('distribution-apply').disabled = false; });
+  });
 
   function act(d, what) {
     var name = (d.spec && d.spec.name) || shortId(d.id);
