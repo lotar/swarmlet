@@ -241,7 +241,40 @@ hashes, artifact hashes and cross-proof SHA-256
 An independent executable comparison matched every record to the actual proof
 identities. Maximum measured host RSS was 2,205.60 MiB and GPU residency 2,072 MiB;
 the records reserve the entire source model plus 512 MiB GPU workspace and 3 GiB
-host RAM. Package installation and routed native API qualification remain pending.
+host RAM. Routed native API qualification remains pending; installation and its
+first live integration findings are recorded below.
+
+## Installed integration checks
+
+The full refresh of revision `b5f1cc1` installed matching GUI/service binaries on
+all three nodes and passed the real fault suite at `2026-09-09T14:04:29Z`.
+The installed Linux packages contained the qualified native engine, but the
+refresh operator left `enginePath` pointing at the old engine directory. The
+canonical refresh now verifies transferred package/helper hashes and invokes a
+guarded activation helper. That helper requires a stopped user service and empty
+assignment ownership, checks all four packaged executable hashes, privately
+backs up the configuration, and atomically changes only `enginePath`.
+
+Applying the same helper to both Legions passed. All three nodes advertised the
+qualified native ABI and actual worker hashes, and a separate installed audit
+passed 23 checks against the GUI/service release manifests. Explicit rescans
+hashed nine Mac artifacts and two artifacts on each Legion; Legion 2 retained
+both hashes across a service restart. The baseline was restored at
+`2026-09-09T14:08:16Z`. All 84 Python operator tests passed.
+
+All four native specs then passed controller admission. The first actual routed
+deployment exposed an omitted protocol case: the agent's control-message parser
+rejected `stage` assignments with `unknown assignment kind stage`, before the
+native supervisor ran. The qualification operator was interrupted through its
+cleanup handler and restored the baseline at `2026-09-09T14:11:33Z`; its failed
+attempt is retained. The canonical parser now accepts fully validated stage
+assignments, including full-model P/D contexts, and rejects malformed native
+identities, resource limits and fields. Regression tests exercise serialized
+messages through `parseControlMessage`, where the real failure occurred.
+The dispatch audit also corrected the participant processing snapshot to show
+every stage with its actual layer count, or both Prefill/Decode roles without
+inventing a percentage of computation. A matching-package refresh and repeated
+routed acceptance cases remain required.
 
 Evidence is retained privately under `~/.swarmlet/backups/`:
 
@@ -267,3 +300,9 @@ Evidence is retained privately under `~/.swarmlet/backups/`:
   `stage-cross-proof-20260909-02/result.json`,
   `stage-window-20260909-05/journal.json`, and
   `stage-final-resources-20260909.json` (final-profile proofs and restoration).
+- `20260909T135233Z/refresh.json` and `real-faults.json` (installed `b5f1cc1`
+  release and full recovery acceptance).
+- `native-activation-20260909T1406Z/` (guarded Linux activation, inventory cache
+  persistence, installed binary audit and restored baseline).
+- `native-routed-features-20260909/` (first routed attempt, parser rejection,
+  interrupted qualification and restored baseline).

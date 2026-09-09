@@ -117,6 +117,35 @@ export function validateAssignment(input: unknown): Result<Assignment> {
     if (!Array.isArray(a.allow) || !a.allow.every(FP_OK)) errors.push("allow must be a list of sha256 hex fingerprints");
   };
   switch (a.kind) {
+    case "stage": {
+      const only = (value: Record<string, unknown>, keys: string[]) => Object.keys(value).every(key => keys.includes(key));
+      const positiveInt = (value: unknown) => isNum(value) && Number.isSafeInteger(value) && value > 0;
+      if (!only(a, ["kind", "id", "deploymentId", "model", "port", "ctx", "gpuLayers", "identity", "binarySha256", "fitMiB", "allow", "enforce"])) errors.push("stage has unsupported fields");
+      if (!/^[A-Za-z0-9_-]{1,128}$/.test(a.id as string) || !(a.deploymentId as string).length || (a.deploymentId as string).length > 128) errors.push("stage needs valid assignment and deployment IDs");
+      if (!isObj(a.model) || !only(a.model, ["path", "sha256"]) || !isStr(a.model.path) || !a.model.path || a.model.path.includes("\0") || !FP_OK(a.model.sha256)) errors.push("stage needs model.path and lowercase model.sha256");
+      if (!Number.isInteger(a.port) || !PORT_OK(a.port) || a.port < 1024) errors.push("stage needs integer port in [1024,65535]");
+      if (a.ctx !== 1024 || a.gpuLayers !== 999) errors.push("stage requires ctx 1024 and gpuLayers 999");
+      if (!FP_OK(a.binarySha256)) errors.push("stage needs lowercase binarySha256");
+      if (a.fitMiB !== undefined && !positiveInt(a.fitMiB)) errors.push("stage fitMiB must be a positive integer");
+      if (!Array.isArray(a.allow) || a.allow.length !== 0) errors.push("stage requires empty allow[]; transport is agent relay only");
+      if (!isObj(a.enforce) || !only(a.enforce, ["ramMiB", "cpuCores"]) || !positiveInt(a.enforce.ramMiB) || a.enforce.cpuCores !== 2) errors.push("stage enforce requires positive integer ramMiB and cpuCores 2");
+      const identity = a.identity;
+      if (!isObj(identity)) errors.push("stage needs identity");
+      else {
+        if (!only(identity, ["schema", "engine", "model_sha256", "source_sha256", "ctx", "cache_k", "cache_v", "ubatch", "flash_attn", "stage_start", "stage_end", "stage_total"])) errors.push("stage identity has unsupported fields");
+        if (identity.schema !== 1 || !FP_OK(identity.engine) || !FP_OK(identity.model_sha256) || !FP_OK(identity.source_sha256)) errors.push("stage identity needs schema 1 and lowercase SHA256 pins");
+        if (!isObj(a.model) || identity.model_sha256 !== a.model.sha256) errors.push("stage model digest differs from identity");
+        if (identity.ctx !== 1024 || identity.cache_k !== "f32" || identity.cache_v !== "f32" || identity.ubatch !== 1 || identity.flash_attn !== "disabled") errors.push("stage identity requires ctx 1024, F32 K/V, ubatch 1 and disabled flash attention");
+        const { stage_start: start, stage_end: end, stage_total: total } = identity;
+        if (start === "" && end === "" && total === "") {
+          if (identity.source_sha256 !== identity.model_sha256) errors.push("full native context source digest must match model digest");
+        } else {
+          const block = (value: unknown) => isStr(value) && /^(?:[0-9]|1[0-9]|2[0-4])$/.test(value);
+          if (!block(start) || !block(end) || Number(start) >= Number(end) || total !== "24") errors.push("stage identity requires a nonempty canonical block range within [0,24)");
+        }
+      }
+      break;
+    }
     case "worker":
       if (!PORT_OK(a.port)) errors.push("worker needs port");
       if (!isStr(a.device)) errors.push("worker needs device");

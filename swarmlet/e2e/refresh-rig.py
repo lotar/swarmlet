@@ -186,6 +186,9 @@ def main():
         record['linuxPackageSha256'] = hash_file(backup / deb_name)
         for host in hosts:
             scp(str(backup / deb_name), host + ':' + remote + '/' + deb_name)
+            transferred = ssh(host, 'sha256sum ' + shlex.quote(remote + '/' + deb_name), capture=True).stdout.split()[0]
+            if transferred != record['linuxPackageSha256']:
+                raise AssertionError('transferred Linux package hash mismatch: ' + host)
             with args.sudo_password_file.open('rb') as password:
                 subprocess.run(['ssh', '-o', 'BatchMode=yes', host,
                     'sudo -S -p "" dpkg -i ' + shlex.quote(remote + '/' + deb_name)], stdin=password, check=True)
@@ -193,6 +196,14 @@ def main():
             hashes = ssh(host, 'sha256sum /usr/bin/swarmlet-node /home/lotar/swarmlet/swarmlet-node', capture=True).stdout.splitlines()
             if len(hashes) != 2 or any(line.split()[0] != linux_manifest['sha256'] for line in hashes):
                 raise AssertionError('installed Linux sidecar/service differ from canonical build: ' + host)
+            activation = root / 'swarmlet/e2e/activate-packaged-engine.py'
+            remote_activation = remote + '/activate-packaged-engine.py'
+            scp(str(activation), host + ':' + remote_activation)
+            helper_hash = ssh(host, 'sha256sum ' + shlex.quote(remote_activation), capture=True).stdout.split()[0]
+            if helper_hash != hash_file(activation):
+                raise AssertionError('transferred activation helper hash mismatch: ' + host)
+            activated = ssh(host, shlex.join(['python3', remote_activation, '--backup', remote + '/engine-activation']), capture=True)
+            record.setdefault('linuxEngineActivation', {})[host] = json.loads(activated.stdout)
         step('matching-service-and-gui-binaries-installed')
         run(['launchctl', 'bootstrap', domain, Path.home() / 'Library/LaunchAgents/ai.swarmlet.control.plist'])
         wait_http('http://127.0.0.1:47900/health')

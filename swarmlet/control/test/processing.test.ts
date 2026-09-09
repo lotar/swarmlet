@@ -29,3 +29,32 @@ test('external whole-model server has 100% share without invented layer counts',
   const out=processingSnapshot(f.deps,new URL('http://local/v1/mesh?model=qwen'),now)!;
   expect(out.shareBasis).toBe('whole_model'); expect(out.nodes).toHaveLength(1); expect(out.nodes[0]!.sharePct).toBe(100); expect(out.nodes[0]!.layers).toBeNull();
 });
+
+test('native stages project all endpoints in plan order with their actual layer shares',()=>{
+  const f=fixture();
+  (f.dep.spec as any).kind='stages';
+  Object.assign(f.dep.plan,{tensorSplit:[],workers:[],nativeExecution:{mode:'stages',endpoints:[
+    {nodeId:'l1',device:'CUDA0',modelPath:'/private/first.gguf',port:50200,identity:{stage_start:'0',stage_end:'3'}},
+    {nodeId:'l2',device:'CUDA0',modelPath:'/private/middle.gguf',port:50210,identity:{stage_start:'3',stage_end:'6'}},
+    {nodeId:'mac',device:'MTL0',modelPath:'/private/last.gguf',port:50220,identity:{stage_start:'6',stage_end:'24'}},
+  ]}});
+  const out=processingSnapshot(f.deps,new URL('http://local/v1/mesh?model=qwen'),now)!;
+  expect(out.nodes.map(n=>[n.id,n.role,n.layers,n.sharePct])).toEqual([
+    ['l1','Stage 1',3,12.5],['l2','Stage 2',3,12.5],['mac','Stage 3',18,75],
+  ]);
+  expect(JSON.stringify(out)).not.toMatch(/private|modelPath|50200|identity|Coordinator/);
+});
+
+test('prefill/decode projects both whole-model roles without inventing a compute share',()=>{
+  const f=fixture();
+  (f.dep.spec as any).kind='prefill-decode';
+  Object.assign(f.dep.plan,{tensorSplit:[],workers:[],nativeExecution:{mode:'prefill-decode',endpoints:[
+    {nodeId:'l1',device:'CUDA0',identity:{stage_start:'',stage_end:''}},
+    {nodeId:'mac',device:'MTL0',identity:{stage_start:'',stage_end:''}},
+  ]}});
+  const out=processingSnapshot(f.deps,new URL('http://local/v1/mesh?model=qwen'),now)!;
+  expect(out.shareBasis).toBe('whole_model');
+  expect(out.nodes.map(n=>[n.id,n.role,n.layers,n.sharePct])).toEqual([
+    ['l1','Prefill',24,null],['mac','Decode',24,null],
+  ]);
+});
