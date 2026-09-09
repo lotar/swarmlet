@@ -62,10 +62,12 @@ which explains missing original engine logs in the result files.
 
 ## Implementation and review
 
-Four distinct subagents completed five workstreams: the runtime refused a fifth
-thread, so the durable-evidence agent independently reviewed the stream and
-reconnect changes it did not author. The primary agent integrated and checked
-all changes and updated the metrics fixture to provide its required stateDir.
+Five distinct subagents contributed. An initial thread limit delayed the fifth
+agent, so the durable-evidence agent first independently reviewed the stream
+and reconnect changes it did not author. The fifth agent later audited the
+installed release and rerun evidence independently. The primary agent integrated
+and checked all changes and updated the metrics fixture to provide its required
+stateDir.
 
 The stream helper is shared by router and node gateway. It reports premature
 SSE EOF explicitly, propagates cancellation, preserves request IDs, and never
@@ -90,3 +92,43 @@ intentional-stop checks. Live results are recorded below after execution.
 - Additional regressions cover reconnect returning inside grace while cleanup
   finishes later, bounded cleanup expiry, and RPC abort reports during recovery.
 - Fresh targeted plan: 11 arms, 51 repetitions; original evidence unchanged.
+
+## Installed release and physical fault acceptance
+
+Revision `7e8092628b588195c1e4e4304bc226780293dc7b` was built and installed
+on all three machines. The installer verified matching packaged GUI sidecars
+and service binaries and all three refreshed agents online. Evidence:
+`~/.swarmlet/backups/20260909T080752Z/refresh.json` (`success: true`).
+
+The real fault operator completed at 08:20:12 UTC with `success: true` and
+`cleanupErrors: []` in the same directory's `real-faults.json`. Its physical
+stream cut returned `upstream_stream_interrupted` at 6.703 seconds from request
+start, after first content at 5.078 seconds, without a successful DONE marker.
+Fresh assignments, subsequent inference and OS process ownership checks passed.
+The channel pause with surviving worker, Legion service restart, control
+restart, intentional-stop retry-window check and final inference/process audit
+also passed. The suite ended with the standing deployment ready.
+
+The 11-arm targeted run is recorded separately at
+`~/.swarmlet/backups/mesh-matrix-failures-20260909`.
+
+## Targeted rerun results
+
+All 11 original failed arms passed all 51 planned repetitions. Independent
+artifact review counted 182 requests: all contained nonempty text and DONE,
+with zero recorded request errors. Selection exactly matches the original
+11 failures; preserved manifest/results provenance hashes match their source.
+The original failed run is retained unchanged.
+
+The rerun recorded 171 latency-threshold misses. This repair establishes
+functional acceptance for these configurations, not latency acceptance.
+The 17 blocked families remain unqualified.
+
+Final post-matrix `faults.json` completed at 09:41:50 UTC with `success: true`
+and `cleanupErrors: []`. All interruption, recovery, restart, intentional-stop,
+inference and OS ownership checks passed again after the 51 repetitions.
+`journal.json` records `deployment: null`, empty temporary `profiles`, and
+restoration at 09:36:02 UTC. The final fault suite leaves the standing deployment
+ready. Summary status `pass: 12` means 11 arms plus the fault suite, not 12 arms.
+The runner's expected exit status is 2 because 17 proposed families remain
+blocked; it does not indicate a failure among the 11 executed arms.
