@@ -5,14 +5,16 @@ const consumer = source.slice(source.indexOf("      function consume(frame)"), s
 function fixture() {
   const answer = { content: "" }, output = { textContent: "" };
   const view = { scrollHeight: 100, scrollTop: 0, clientHeight: 100 };
-  const use = new Function("answer", "output", "$", 'var done = false; var processing = {feed: function () {}};\n' + consumer + '\nreturn {consume, done:()=>done};')(answer, output, () => view);
+  const use = new Function("answer", "output", "$", "window", 'var done = false; var processing = {feed: function () {}};\n' + consumer + '\nreturn {consume, done:()=>done};')(answer, output, () => view, { SwarmletMarkdown: { render: (target: typeof output, text: string) => { target.textContent = text; } } });
   return { ...use, answer, output };
 }
-test("chat safely appends content, accepts CRLF and recognizes terminal SSE marker", () => {
+test("chat forwards accumulated Markdown to the renderer, accepts CRLF and recognizes terminal SSE marker", () => {
   const f = fixture();
   f.consume('data: {"choices":[{"delta":{"content":"<script>Živjo</script>"}}]}\r\n');
   expect(f.answer.content).toBe("<script>Živjo</script>");
   expect(f.output.textContent).toBe(f.answer.content);
+  f.consume('data: {"choices":[{"delta":{"content":"\\n**bold**"}}]}');
+  expect(f.output.textContent).toBe('<script>Živjo</script>\n**bold**');
   f.consume('data: [DONE]'); expect(f.done()).toBe(true);
 });
 test("chat exposes upstream SSE errors and does not turn reasoning into answer text", () => {

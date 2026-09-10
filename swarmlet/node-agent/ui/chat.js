@@ -14,7 +14,7 @@
   function messageNode(message) {
     var row = D.createElement('article'); row.className = 'chat-message chat-message--' + message.role;
     var name = D.createElement('h3'); name.textContent = message.role === 'user' ? 'You' : 'Mesh'; row.appendChild(name);
-    var text = D.createElement('div'); text.className = 'chat-message-text'; text.textContent = message.content; row.appendChild(text);
+    var text = D.createElement('div'); text.className = 'chat-message-text'; if (message.role === 'assistant') window.SwarmletMarkdown.render(text, message.content); else text.textContent = message.content; row.appendChild(text);
     $('chat-transcript').appendChild(row); return text;
   }
   function render() {
@@ -89,7 +89,7 @@
         var delta = payload.choices && payload.choices[0] && payload.choices[0].delta;
         if (delta && typeof delta.content === 'string') {
           var nearBottom = $('chat-transcript').scrollHeight - $('chat-transcript').scrollTop - $('chat-transcript').clientHeight < 100;
-          answer.content += delta.content; output.textContent = answer.content;
+          answer.content += delta.content; window.SwarmletMarkdown.render(output, answer.content);
           if (nearBottom) $('chat-transcript').scrollTop = $('chat-transcript').scrollHeight;
         }
       }

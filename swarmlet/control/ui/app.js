@@ -1005,6 +1005,7 @@
 
   function chatBubble(role, text) {
     var node = el('div', { class: 'msg msg--' + role }, [el('div', { class: 'msg-role', text: role === 'user' ? 'you' : 'assistant' }), el('div', { class: 'msg-text', text: text })]);
+    if (role === 'assistant') window.SwarmletMarkdown.render(node.querySelector('.msg-text'), text);
     var log = $('chat-log');
     var hint = log.querySelector('.hint');
     if (hint) hint.parentNode.removeChild(hint);
@@ -1061,13 +1062,13 @@
           reasoningNode = el('details', { class: 'msg-reasoning' }, [el('summary', { text: 'thinking' }), el('div', { class: 'msg-text dim' })]);
           bubble.insertBefore(reasoningNode, textNode);
         }
-        reasoningNode.lastChild.textContent = reasoning;
+        window.SwarmletMarkdown.render(reasoningNode.lastChild, reasoning);
         if (!tFirst) tFirst = performance.now();
       }
       if (d.content) {
         if (!tFirst) tFirst = performance.now();
         content += d.content;
-        textNode.textContent = content;
+        window.SwarmletMarkdown.render(textNode, content);
         tEnd = performance.now();
         if (chunks % 3 === 0) {
           var sec = (tEnd - tFirst) / 1000;

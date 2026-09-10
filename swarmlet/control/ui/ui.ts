@@ -1,3 +1,7 @@
+import markdownJs from "../../shared/ui/markdown.js" with { type: "text" };
+import markdownCss from "../../shared/ui/markdown.css" with { type: "text" };
+import markedJs from "../../shared/ui/vendor/marked.js" with { type: "text" };
+import purifyJs from "../../shared/ui/vendor/purify.js" with { type: "text" };
 // Web UI of the control plane. The three static assets are embedded as text at build time so the
 // compiled binary carries them. The page talks to /api/* (admin cookie set by POST /login) and
 // shows a login form when a call returns 401; see server.ts for the routes.
@@ -11,6 +15,8 @@ import processingCss from "../../shared/ui/processing.css" with { type: "text" }
 // bun-types declares `*.html` as an HTMLBundle (for Bun.serve routes); `type: "text"` makes it a string.
 const ASSETS: Record<string, { body: string; type: string }> = {
   "/": { body: indexHtml as unknown as string, type: "text/html; charset=utf-8" },
+  "/markdown.js": { body: markedJs + "\n" + purifyJs + "\n" + markdownJs, type: "application/javascript; charset=utf-8" },
+  "/markdown.css": { body: markdownCss, type: "text/css; charset=utf-8" },
   "/app.js": { body: appJs, type: "application/javascript; charset=utf-8" },
   "/processing.js": { body: processingJs, type: "application/javascript; charset=utf-8" },
   "/processing.css": { body: processingCss, type: "text/css; charset=utf-8" },
