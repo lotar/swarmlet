@@ -2,7 +2,7 @@
 // the static UI itself (ui/ui.ts). Loopback only, no auth: whoever is logged in on the machine owns it.
 
 import type { Server } from "bun";
-import { validateOffer } from "../protocol/validate.ts";
+import { validateOffer, defaultRamReserveMiB } from "../protocol/validate.ts";
 import type { Capabilities, NetMeasurement, NodeMetrics, Offer } from "../protocol/types.ts";
 import type { AssignmentSnapshot } from "./assignments.ts";
 import { serveUi } from "./ui/ui.ts";
@@ -45,7 +45,7 @@ export function startLocalApi(port: number, deps: LocalApiDeps): Server<undefine
         if (path === "/api/status") return json(deps.status());
         if (path === "/api/offer" && req.method === "GET") {
           const caps = deps.caps();
-          const ramMax = caps ? Math.max(0, caps.ramMiB - caps.ramReserveMiB) : 0;
+          const ramMax = caps ? Math.max(0, caps.ramMiB - (caps.ramReserveMiB || defaultRamReserveMiB(caps.os))) : 0;
           return json({ offer: deps.offer(), caps, limits: { ramMaxMiB: ramMax, cpuMax: caps?.cpuCores ?? 0, gpus: (caps?.gpus ?? []).map((g) => ({ id: g.id, name: g.name, totalMiB: g.totalMiB })) } });
         }
         if (path === "/api/offer" && req.method === "PUT") {

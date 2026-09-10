@@ -243,22 +243,37 @@
   var offer = { loaded: false, limits: null, gpuRows: [], ram: null, cpu: null };
 
   function rangeRow(opt) {
-    var slider = el('input', { type: 'range', min: '0', max: String(opt.max), step: String(opt.step), 'aria-label': opt.label });
-    var number = el('input', { type: 'number', min: '0', max: String(opt.max), step: String(opt.step), inputmode: 'decimal', 'aria-label': opt.label + ' value' });
+    var slider = el('input', { type: 'range', min: '0', max: '100', step: '1', 'aria-label': opt.label + ' percentage' });
+    var percent = el('input', { type: 'number', min: '0', max: '100', step: '0.01', inputmode: 'decimal', 'aria-label': opt.label + ' percentage value' });
+    var number = el('input', { type: 'number', min: '0', max: opt.allowOverMax ? null : String(opt.max), step: String(opt.quantum), inputmode: 'decimal', 'aria-label': opt.label + ' value' });
     var measured = el('span', { class: 'measured' });
-    slider.value = number.value = trim(clamp(opt.value || 0, 0, opt.max));
-    slider.addEventListener('input', function () { number.value = slider.value; });
-    number.addEventListener('input', function () { var v = parseFloat(number.value); if (isFinite(v)) slider.value = String(clamp(v, 0, opt.max)); });
-    number.addEventListener('change', function () { var v = clamp(parseFloat(number.value) || 0, 0, opt.max); number.value = trim(v); slider.value = String(v); });
+    // Absolute allocations remain authoritative: displaying a rounded percent never changes an offer.
+    number.value = String(Math.max(0, opt.value || 0));
+    function syncPercent() {
+      var pct = opt.max > 0 ? clamp((parseFloat(number.value) || 0) / opt.max * 100, 0, 100) : 0;
+      slider.value = percent.value = String(Math.round(pct * 100) / 100);
+    }
+    function setPercent(value) {
+      var pct = clamp(parseFloat(value) || 0, 0, 100);
+      var units = Math.floor((opt.max * pct / 100 + 1e-9) / opt.quantum) * opt.quantum;
+      number.value = String(units);
+      slider.value = percent.value = String(pct);
+    }
+    syncPercent();
+    slider.disabled = percent.disabled = opt.max <= 0;
+    slider.addEventListener('input', function () { setPercent(slider.value); });
+    percent.addEventListener('input', function () { setPercent(percent.value); });
+    number.addEventListener('input', syncPercent);
+    number.addEventListener('change', function () { number.value = String(clamp(parseFloat(number.value) || 0, 0, opt.allowOverMax ? Infinity : opt.max)); syncPercent(); });
     var node = el('div', { class: 'range-row' }, [
       el('div', { class: 'range-head' }, [
         el('span', { class: 'range-label' }, [opt.label, opt.sub ? el('small', { text: opt.sub }) : null]),
         measured,
       ]),
       slider,
-      el('div', { class: 'num-wrap' }, [number, el('span', { class: 'unit', text: opt.unit + ' of ' + trim(opt.max) })]),
+      el('div', { class: 'num-wrap' }, [percent, el('span', { class: 'unit', text: '%' }), number, el('span', { class: 'unit', text: opt.unit + ' / ' + trim(opt.max) })]),
     ]);
-    return { node: node, measured: measured, value: function () { return clamp(parseFloat(number.value) || 0, 0, opt.max); } };
+    return { node: node, measured: measured, value: function () { return Math.max(0, parseFloat(number.value) || 0); } };
   }
 
   function loadOffer() {
@@ -277,17 +292,18 @@
     var gpuBox = clear($('offer-gpus'));
     offer.gpuRows = (limits.gpus || []).map(function (g) {
       var cur = (o.gpu || []).filter(function (x) { return x.id === g.id; })[0];
-      var row = rangeRow({ label: g.name || g.id, sub: g.id, max: g.totalMiB / GIB, step: 0.25, unit: 'GiB', value: (cur ? cur.memMiB : 0) / GIB });
+      var row = rangeRow({ label: g.name || g.id, sub: g.id, max: g.totalMiB / GIB, quantum: 1 / GIB, unit: 'GiB', value: (cur ? cur.memMiB : 0) / GIB });
       gpuBox.appendChild(row.node);
       return { id: g.id, row: row };
     });
     if (!offer.gpuRows.length) gpuBox.appendChild(el('p', { class: 'hint', text: 'No GPU detected. A worker on this node would use RAM only.' }));
 
-    offer.ram = rangeRow({ label: 'RAM', sub: 'excluding the OS reserve', max: limits.ramMaxMiB / GIB, step: 0.25, unit: 'GiB', value: (o.ramMiB || 0) / GIB });
+    offer.ram = rangeRow({ label: 'RAM', sub: 'excluding the OS reserve', max: limits.ramMaxMiB / GIB, quantum: 1 / GIB, unit: 'GiB', value: (o.ramMiB || 0) / GIB });
     replace($('offer-ram'), offer.ram.node);
-    offer.cpu = rangeRow({ label: 'CPU cores', max: limits.cpuMax, step: 1, unit: 'cores', value: o.cpuCores || 0 });
+    offer.cpu = rangeRow({ label: 'CPU cores', max: limits.cpuMax, quantum: 1, unit: 'cores', value: o.cpuCores || 0 });
     replace($('offer-cpu'), offer.cpu.node);
-    $('offer-disk').value = trim((o.diskMiB || 0) / GIB);
+    offer.disk = rangeRow({ label: 'Disk cap', allowOverMax: true, sub: 'percentage of currently free disk', max: (data.caps && data.caps.diskFreeMiB || 0) / GIB, quantum: 1 / GIB, unit: 'GiB', value: (o.diskMiB || 0) / GIB });
+    replace($('offer-disk'), offer.disk.node);
     $('offer-models-dir').value = o.modelsDir || '';
 
     updateMeasured(data.caps);
@@ -308,7 +324,7 @@
     });
     offer.ram.measured.textContent = 'measured ' + fmtGiB(caps.ramMiB) + ' GiB total, OS reserve ' + fmtGiB(caps.ramReserveMiB) + ' GiB, ' + fmtGiB(m && m.freeRamMiB) + ' GiB free now';
     offer.cpu.measured.textContent = 'measured ' + (caps.cpuCores || NA) + ' cores, ' + num(m && m.cpuPct, 0) + ' % busy now';
-    $('offer-disk-measured').textContent = fmtGiB(caps.diskFreeMiB) + ' GiB free';
+    offer.disk.measured.textContent = fmtGiB(caps.diskFreeMiB) + ' GiB free';
   }
 
   function toMiB(gib) { return Math.round(gib * GIB); }
@@ -320,7 +336,7 @@
       gpu: offer.gpuRows.map(function (g) { return { id: g.id, memMiB: toMiB(g.row.value()) }; }),
       ramMiB: toMiB(offer.ram.value()),
       cpuCores: Math.round(offer.cpu.value()),
-      diskMiB: toMiB(Math.max(0, parseFloat($('offer-disk').value) || 0)),
+      diskMiB: toMiB(offer.disk.value()),
       modelsDir: $('offer-models-dir').value.trim(),
     };
   }

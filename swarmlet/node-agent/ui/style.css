@@ -39,5 +39,9 @@ input[type='range'] { width:100%; min-height:var(--touch); margin:0; accent-colo
 .measured,.unit { color:var(--muted); font-size:var(--text-xs); }
 .num-wrap { display:flex; align-items:center; gap:var(--s2); }
 .num-wrap input { width:var(--number-width); text-align:right; }
-@media (min-width:600px) { .range-row { grid-template-columns:minmax(0,1fr) var(--range-input); } }
+@media (min-width:600px) { .range-row { grid-template-columns:minmax(0,1fr) auto; } }
 @media (min-width:1100px) { .node-chat .chat-workspace { grid-template-columns:minmax(0,1fr) var(--topology-width); } }
+
+.range-row .num-wrap { flex-wrap:wrap; }
+.range-row .num-wrap input { width:8.5em; }
+.range-row .num-wrap input:first-child { width:5.5em; }

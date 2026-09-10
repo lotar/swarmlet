@@ -24,7 +24,7 @@ bun run agent                                     # daemon; local UI http://127.
 bun run node-agent/main.ts join http://<control>:47900 <JOIN-CODE>   # code from the control UI (Nodes > New join code)
 ```
 
-Set the offer in the local UI (Resources tab) or `bun run node-agent/main.ts offer set enabled=true roles.worker=true gpu.cuda:0=3072 ramMiB=8192 cpuCores=6`.
+Set the offer in the local UI (Resources tab: 0–100% GPU memory, RAM, CPU and free disk, with exact amounts shown; 100% RAM excludes the OS reserve and CPU rounds down to whole cores) or `bun run node-agent/main.ts offer set enabled=true roles.worker=true gpu.cuda:0=3072 ramMiB=8192 cpuCores=6`.
 Create a deployment in the control UI (Deployments > New), preview the plan, start it, then:
 
 ```bash

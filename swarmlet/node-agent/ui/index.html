@@ -73,13 +73,14 @@
         </fieldset>
         <fieldset>
           <legend class="label">RAM and CPU</legend>
+          <p class="hint">Choose 0–100% of each resource. RAM at 100% leaves the OS reserve untouched. CPU allocations round down to whole cores; the amount shown is what you share. Limits apply to mesh workloads; other apps still use system resources.</p>
           <div id="offer-ram"></div>
           <div id="offer-cpu"></div>
         </fieldset>
         <fieldset>
           <legend class="label">Disk and models</legend>
           <div class="form-row">
-            <label class="field"><span class="label">Disk cap</span><div class="num-wrap"><input type="number" id="offer-disk" min="0" step="1" inputmode="decimal"><span class="unit">GiB</span><span class="measured" id="offer-disk-measured"></span></div></label>
+            <div id="offer-disk"></div>
             <label class="field"><span class="label">Models directory</span><input type="text" id="offer-models-dir" class="mono" spellcheck="false" autocomplete="off" placeholder="/path/to/models"></label>
           </div>
         </fieldset>
