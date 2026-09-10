@@ -3,7 +3,7 @@
 //           The user slice on Ubuntu 24.04 delegates cpu, memory and pids (not cpuset: no pinning).
 //   darwin, win32: no cgroups. Thread count is passed to the engine; RAM is a soft cap enforced by an
 //           RSS watchdog (ps on darwin, tasklist on Windows) that kills the process when it exceeds
-//           the cap by more than 10 %.
+//           the configured cap (no allowance that can consume the OS reserve).
 // All return the argv to spawn plus a `watch` hook the runner calls with the pid.
 
 import type { Logger } from "../../control/log.ts";
@@ -44,7 +44,7 @@ export async function enforce(unit: string, argv: string[], limits: Limits, log:
         const timer = setInterval(async () => {
           try {
             const rss = await rssMiB([pid]);
-            if (rss !== undefined && rss > cap * 1.1) kill(`rss ${rss.toFixed(0)} MiB exceeds cap ${cap} MiB by >10%`);
+            if (rss !== undefined && rss > cap) kill(`rss ${rss.toFixed(0)} MiB exceeds cap ${cap} MiB`);
           } catch { /* process gone or tool unavailable */ }
         }, 5000);
         return () => clearInterval(timer);

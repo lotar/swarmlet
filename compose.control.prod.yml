@@ -1,0 +1,58 @@
+name: swarmlet-control
+services:
+  control:
+    build:
+      context: .
+      dockerfile: deploy/control/Dockerfile
+      args:
+        SWARMLET_REVISION: ${SWARMLET_REVISION:?SWARMLET_REVISION is required}
+    image: swarmlet-control:${SWARMLET_REVISION:?SWARMLET_REVISION is required}
+    container_name: swarmlet-control
+    restart: unless-stopped
+    init: true
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    mem_limit: 1g
+    cpus: 2
+    pids_limit: 128
+    stop_grace_period: 30s
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+    environment:
+      SWARMLET_CONTROL_DIR: /data
+      SWARMLET_CONTROL_HOST: 0.0.0.0
+      SWARMLET_CONTROL_PORT: 47900
+      SWARMLET_CONTROL_URL: https://app.swarmlet.ai
+      SWARMLET_PUBLIC_WEB: "1"
+      SWARMLET_ADMIN_TRUST_LOOPBACK: "0"
+      SWARMLET_LAN_AUTO_ENROLL: "0"
+    volumes:
+      - ${SWARMLET_CONTROL_DATA:?SWARMLET_CONTROL_DATA is required}:/data
+    networks:
+      - traefik-public
+    healthcheck:
+      test: ["CMD", "bun", "-e", "const r=await fetch('http://127.0.0.1:47900/health'); if(!r.ok) process.exit(1)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    labels:
+      - traefik.enable=true
+      - traefik.docker.network=traefik-public
+      - traefik.http.routers.swarmlet-control.entrypoints=websecure
+      - traefik.http.routers.swarmlet-control.rule=Host(`app.swarmlet.ai`)
+      - traefik.http.routers.swarmlet-control.service=swarmlet-control
+      - traefik.http.routers.swarmlet-control.middlewares=cf-only@file
+      - traefik.http.routers.swarmlet-control.tls=true
+      - traefik.http.routers.swarmlet-control.tls.certresolver=letsencrypt
+      - traefik.http.services.swarmlet-control.loadbalancer.server.port=47900
+      - traefik.http.routers.swarmlet-control-http.entrypoints=web
+      - traefik.http.routers.swarmlet-control-http.rule=Host(`app.swarmlet.ai`)
+      - traefik.http.routers.swarmlet-control-http.service=swarmlet-control
+      - traefik.http.routers.swarmlet-control-http.middlewares=swarmlet-https-redirect
+networks:
+  traefik-public:
+    external: true

@@ -46,7 +46,7 @@ function bearer(req: Request): string | null {
 
 function adminOk(req: Request, cfg: ControlConfig, remoteIp?: string | null): boolean {
   if (bearer(req) === cfg.adminToken) return true;
-  if (cfg.adminTrustLoopback && (remoteIp === "127.0.0.1" || remoteIp === "::1" || remoteIp === "::ffff:127.0.0.1")) return true;
+  if (cfg.adminTrustLoopback && directLocalRequest(req, remoteIp) && (remoteIp === "127.0.0.1" || remoteIp === "::1" || remoteIp === "::ffff:127.0.0.1")) return true;
   const cookie = req.headers.get("cookie") ?? "";
   return cookie.split(/;\s*/).some((c) => c === `swarmlet_admin=${cfg.adminToken}`);
 }
@@ -175,12 +175,12 @@ export function createControlServer(deps: ControlDeps): Server<ConnData> {
       const url = new URL(req.url);
       const path = url.pathname;
       try {
-        // Public access is limited to signed agent transport and the API-key-protected /v1 API.
-        // Reject all other routes before credentials, body parsing, diagnostics, or UI routing.
+        // Public web is an explicit deployment choice. Otherwise only signed agent transport
+        // and API-key inference cross this boundary; other routes remain private.
         const agentUpgrade = path === "/agent" && req.method === "GET" && req.headers.get("upgrade")?.toLowerCase() === "websocket";
         const localRequest = directLocalRequest(req, srv.requestIP(req)?.address);
         const signedUpdatePath = path.startsWith("/releases/") || path === "/node-update-lease";
-        if (!localRequest && !agentUpgrade && !path.startsWith("/v1/") && !signedUpdatePath) {
+        if (!cfg.publicWeb && !localRequest && !agentUpgrade && !path.startsWith("/v1/") && !signedUpdatePath) {
           return new Response("not found", { status: 404, headers: { "cache-control": "no-store" } });
         }
         if (path === "/health") return json({ status: "ok", nodes: channel.onlineNodeIds().length });
@@ -217,7 +217,7 @@ export function createControlServer(deps: ControlDeps): Server<ConnData> {
         if (path.startsWith("/v1/")) {
           const key = bearer(req);
           if (!key || !reg.hasApiKey(key)) {
-            if (!localRequest || !adminOk(req, cfg, srv.requestIP(req)?.address)) return json({ error: { message: "invalid api key", type: "auth" } }, 401);
+            if ((!localRequest && !cfg.publicWeb) || !adminOk(req, cfg, srv.requestIP(req)?.address)) return json({ error: { message: "invalid api key", type: "auth" } }, 401);
           }
           if (path === "/v1/models" && url.searchParams.get("catalog") === "1") {
             if (req.method !== "GET") return json({ error: { message: "GET required" } }, 405);
@@ -239,9 +239,9 @@ export function createControlServer(deps: ControlDeps): Server<ConnData> {
           const body = await req.formData().catch(() => null);
           const token = body?.get("token");
           if (token !== cfg.adminToken) return new Response("bad token", { status: 401 });
-          return new Response(null, { status: 303, headers: { location: "/", "set-cookie": `swarmlet_admin=${cfg.adminToken}; Path=/; HttpOnly; SameSite=Strict` } });
+          return new Response(null, { status: 303, headers: { location: "/", "set-cookie": `swarmlet_admin=${cfg.adminToken}; Path=/; HttpOnly; SameSite=Strict${cfg.publicUrl.startsWith("https:") ? "; Secure" : ""}` } });
         }
-        if (path === "/logout") return new Response(null, { status: 303, headers: { location: "/", "set-cookie": "swarmlet_admin=; Path=/; Max-Age=0" } });
+        if (path === "/logout") return new Response(null, { status: 303, headers: { location: "/", "set-cookie": `swarmlet_admin=; Path=/; Max-Age=0; HttpOnly; SameSite=Strict${cfg.publicUrl.startsWith("https:") ? "; Secure" : ""}` } });
         const ui = serveUi(req, path);
         if (ui) return ui;
         return new Response("not found", { status: 404 });

@@ -19,6 +19,8 @@ export interface ControlConfig {
   adminTrustLoopback: boolean;
   /** Announce and accept signed node identities on direct private-LAN connections. */
   lanAutoEnroll?: boolean;
+  /** Explicitly host the authenticated web workspace on public connections. Off by default. */
+  publicWeb?: boolean;
 }
 
 const DEFAULT_PORT = 47900;
@@ -47,10 +49,11 @@ export function loadControlConfig(overrides: Partial<ControlConfig> = {}): Contr
     publicUrl: overrides.publicUrl ?? process.env.SWARMLET_CONTROL_URL ?? stored.publicUrl ?? `http://${host}:${port}`,
     logLevel: overrides.logLevel ?? (process.env.SWARMLET_LOG as ControlConfig["logLevel"] | undefined) ?? stored.logLevel ?? "info",
     adminTrustLoopback: overrides.adminTrustLoopback ?? process.env.SWARMLET_ADMIN_TRUST_LOOPBACK === "1",
+    publicWeb: overrides.publicWeb ?? (process.env.SWARMLET_PUBLIC_WEB === undefined ? stored.publicWeb ?? false : process.env.SWARMLET_PUBLIC_WEB === "1"),
     lanAutoEnroll: overrides.lanAutoEnroll ?? (process.env.SWARMLET_LAN_AUTO_ENROLL === undefined ? stored.lanAutoEnroll ?? true : process.env.SWARMLET_LAN_AUTO_ENROLL === "1"),
   };
-  if (!existsSync(file) || stored.adminToken !== cfg.adminToken || stored.port !== cfg.port || stored.publicUrl !== cfg.publicUrl || stored.lanAutoEnroll !== cfg.lanAutoEnroll) {
-    writeFileSync(file, JSON.stringify({ host: cfg.host, port: cfg.port, adminToken: cfg.adminToken, publicUrl: cfg.publicUrl, logLevel: cfg.logLevel, lanAutoEnroll: cfg.lanAutoEnroll }, null, 2) + "\n", { mode: 0o600 });
+  if (!existsSync(file) || stored.adminToken !== cfg.adminToken || stored.port !== cfg.port || stored.publicUrl !== cfg.publicUrl || stored.lanAutoEnroll !== cfg.lanAutoEnroll || stored.publicWeb !== cfg.publicWeb) {
+    writeFileSync(file, JSON.stringify({ host: cfg.host, port: cfg.port, adminToken: cfg.adminToken, publicUrl: cfg.publicUrl, logLevel: cfg.logLevel, lanAutoEnroll: cfg.lanAutoEnroll, publicWeb: cfg.publicWeb }, null, 2) + "\n", { mode: 0o600 });
   }
   return cfg;
 }
