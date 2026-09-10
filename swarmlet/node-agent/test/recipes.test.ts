@@ -23,6 +23,7 @@ describe("recipes", () => {
       extraArgs: ["-ot", "ple_ngram_embd=CPU", "-fa", "on", "--cache-ram", "0", "--ctx-checkpoints", "0"], port: 8096, modelName: "qwen3.8-flash-next", allow: [],
     };
     const r = coordinatorArgv("/eng", a, [52201, 52202]);
+    expect(coordinatorArgv("/eng", { ...a, extraArgs: ["-t", "99", "-tb", "99"], enforce: { ramMiB: 8192, cpuCores: 3 } }, [52201, 52202]).argv.slice(-4)).toEqual(["-t", "3", "-tb", "3"]);
     const s = r.argv.join(" ");
     expect(s).toContain("--rpc 127.0.0.1:52201,127.0.0.1:52202 --device RPC0,RPC1,MTL0 --tensor-split 1,1,46 -ngl 999 -c 1536 --parallel 3");
     expect(s).toContain("--spec-type draft-mtp -md /m/mtp.gguf --spec-draft-n-max 4 -ngld 999");

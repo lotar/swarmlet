@@ -6,11 +6,11 @@ import { AssignmentRunner } from "../assignments.ts";
 import { SupervisedProcess } from "../roles/process.ts";
 import type { Assignment } from "../../protocol/types.ts";
 
-function fixture(freeRamMiB: () => Promise<number | undefined>, externals: unknown[] = []) {
+function fixture(freeRamMiB: () => Promise<number | undefined>, externals: unknown[] = [], offer = { ramMiB: 4096, cpuCores: 3 }) {
   const dir = mkdtempSync(join(tmpdir(), "swarmlet-lifecycle-unit-"));
   const reports: Array<{ id: string; state: string }> = [];
   const runner = new AssignmentRunner({
-    cfg: () => ({ enginePath: "/no-engine", externals }) as never,
+    cfg: () => ({ enginePath: "/no-engine", externals, offer }) as never,
     stateDir: dir, certPem: "", keyPem: "", freeRamMiB,
     log: { info() {}, warn() {}, error() {}, debug() {} },
     report: (id, state) => reports.push({ id, state }), logLine() {}, openRelay: () => null,
@@ -92,4 +92,32 @@ test("stop during external health check cannot resurrect watch or ready state", 
     expect(f.reports.filter((r) => r.state === "stopped").length).toBe(1);
     expect(f.reports.some((r) => r.state === "ready")).toBe(false);
   } finally { fetchMock.mockRestore(); f.dispose(); }
+});
+
+ test("owned replica passes owner RAM and CPU limits to process enforcement", async () => {
+  const f = fixture(async () => 10000);
+  const internal = f.runner as unknown as { spawn: (...args: unknown[]) => Promise<void> };
+  const spawn = spyOn(internal, "spawn").mockRejectedValue(new Error("launch captured"));
+  try {
+    f.runner.handle({ id: "limited", deploymentId: "dep", kind: "replica", port: 8100, model: { path: "/m.gguf" }, extraArgs: ["-t", "99", "-tb", "99"], allow: [] } as Assignment);
+    for (let i = 0; i < 100 && !spawn.mock.calls.length; i++) await Bun.sleep(1);
+    expect(spawn).toHaveBeenCalledTimes(1);
+    const args = spawn.mock.calls[0]!;
+    expect(args[4]).toEqual({ ramMiB: 4096, cpuCores: 3 });
+    expect((args[2] as string[]).slice(-4)).toEqual(["-t", "3", "-tb", "3"]);
+  } finally { await f.runner.stop("limited", "cleanup"); spawn.mockRestore(); f.dispose(); }
+});
+
+test("owned replica refuses zero RAM or CPU before spawning", async () => {
+  for (const offer of [{ ramMiB: 0, cpuCores: 3 }, { ramMiB: 4096, cpuCores: 0 }]) {
+    const f = fixture(async () => 10000, [], offer);
+    const internal = f.runner as unknown as { spawn: (...args: unknown[]) => Promise<void> };
+    const spawn = spyOn(internal, "spawn").mockRejectedValue(new Error("unexpected launch"));
+    try {
+      f.runner.handle({ id: "empty", deploymentId: "dep", kind: "replica", port: 8100, model: { path: "/m.gguf" }, allow: [] } as Assignment);
+      for (let i = 0; i < 100 && !f.reports.some(r => r.state === "failed"); i++) await Bun.sleep(1);
+      expect(f.runner.snapshot()[0]?.detail).toContain("positive RAM budget and at least one CPU core");
+      expect(spawn).not.toHaveBeenCalled();
+    } finally { await f.runner.stop("empty", "cleanup"); spawn.mockRestore(); f.dispose(); }
+  }
 });

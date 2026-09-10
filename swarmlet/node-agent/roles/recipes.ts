@@ -39,6 +39,7 @@ export function coordinatorArgv(engine: string, a: CoordinatorAssignment, rpcLoc
   if (a.modelName) argv.push("--alias", a.modelName);
   argv.push(...speculationArgs(a));
   argv.push(...a.extraArgs);
+  if (a.enforce?.cpuCores) argv.push("-t", String(a.enforce.cpuCores), "-tb", String(a.enforce.cpuCores));
   const env: Record<string, string> = {
     GGML_RPC_FORWARD: "1", GGML_RPC_PIPELINE: "1", GGML_SCHED_PIPELINED_COPY: "1", GGML_RPC_GET_PIPELINE: "1", GGML_RPC_WIRE: "off",
     ...a.env,
@@ -47,7 +48,7 @@ export function coordinatorArgv(engine: string, a: CoordinatorAssignment, rpcLoc
 }
 
 /** Whole-model llama-server (replica role). */
-export function replicaArgv(engine: string, a: ReplicaAssignment): WorkerRecipe {
+export function replicaArgv(engine: string, a: ReplicaAssignment, cpuCores?: number): WorkerRecipe {
   if (!a.model) throw new Error("replica recipe needs a model");
   const argv = [`${engine}/${exeName("llama-server")}`, "-m", a.model.path, "--host", "127.0.0.1", "--port", String(a.port), "-ngl", "999", "--metrics"];
   if (a.ctx) argv.push("-c", String(a.ctx));
@@ -56,5 +57,6 @@ export function replicaArgv(engine: string, a: ReplicaAssignment): WorkerRecipe 
   if (a.device) argv.push("--device", a.device);
   argv.push(...speculationArgs(a));
   argv.push(...(a.extraArgs ?? []));
+  if (cpuCores) argv.push("-t", String(cpuCores), "-tb", String(cpuCores));
   return { argv, env: {} };
 }

@@ -324,8 +324,11 @@ export class AssignmentRunner {
       x.healthTimer = setInterval(() => { void check(); }, 10_000);
       return;
     }
-    const recipe = replicaArgv(this.deps.cfg().enginePath, a);
-    await this.spawn(x, `replica-${a.id}`, recipe.argv, recipe.env);
+    const cfg = this.deps.cfg();
+    const limits = { ramMiB: cfg.offer.ramMiB, cpuCores: cfg.offer.cpuCores };
+    if (limits.ramMiB <= 0 || limits.cpuCores < 1) throw new Error("replica needs a positive RAM budget and at least one CPU core");
+    const recipe = replicaArgv(cfg.enginePath, a, limits.cpuCores);
+    await this.spawn(x, `replica-${a.id}`, recipe.argv, recipe.env, limits);
     this.set(x, "loading");
     const ok = await waitForHealth(`http://127.0.0.1:${a.port}/health`, x.proc!, LOAD_TIMEOUT_MS);
     if (!ok) throw new Error(`llama-server not healthy: ${this.tail(x)}`);

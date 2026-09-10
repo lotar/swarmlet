@@ -54,6 +54,7 @@ export function validateOffer(input: unknown, caps: Capabilities): Result<Offer>
     else if (mem > dev.totalMiB) errors.push(`gpu ${g.id}: memMiB ${mem} exceeds device total ${dev.totalMiB}`);
     else offer.gpu.push({ id: g.id, memMiB: mem });
   }
+  if (offer.enabled && (offer.roles.worker || offer.roles.coordinator || offer.roles.replica) && offer.cpuCores < 1) errors.push("enabled compute roles need at least one CPU core");
   if (offer.enabled && offer.roles.worker && offer.gpu.every((g) => g.memMiB === 0) && offer.ramMiB === 0) {
     errors.push("worker role needs GPU memory or RAM");
   }

@@ -37,6 +37,14 @@ describe("identity", () => {
 
 describe("offer validation", () => {
   const good = { enabled: true, roles: { worker: true, coordinator: false, replica: false }, gpu: [{ id: "cuda:0", memMiB: 3072 }], ramMiB: 8192, cpuCores: 6, diskMiB: 50000, modelsDir: "/home/lotar/models" };
+  test("enabled compute roles require a CPU core; disabled offers can have zero", () => {
+    for (const role of ["worker", "coordinator", "replica"]) {
+      const offer = { ...good, cpuCores: 0, roles: { worker: false, coordinator: false, replica: false, [role]: true } };
+      expect(validateOffer(offer, caps).ok).toBe(false);
+      expect(validateOffer({ ...offer, enabled: false }, caps).ok).toBe(true);
+      expect(validateOffer({ ...offer, cpuCores: 1 }, caps).ok).toBe(true);
+    }
+  });
   test("accepts a sane offer", () => {
     const r = validateOffer(good, caps);
     expect(r.ok).toBe(true);
