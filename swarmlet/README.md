@@ -74,7 +74,7 @@ Physical acceptance and outstanding gates are recorded in the
 ## Tests
 
 ```bash
-bun run typecheck && bun test protocol control node-agent   # unit + in-process integration
+bun run typecheck && bun test protocol control node-agent   # unit, HTTP and compiled-process integration
 bun test e2e                                                  # control + two agents + fake engine, full loop
 ```
 
@@ -89,11 +89,48 @@ bun run node-agent/build.ts [darwin] [linux] [windows]   # dist/agent/<target>/s
 The Windows node (agent, scheduled-task service, Mica desktop shell, NSIS installer) is described in
 [docs/WINDOWS_NODE_20260909.md](../docs/WINDOWS_NODE_20260909.md).
 
+## Services and signed updates
+
+Run `swarmlet-node install` to register the stable supervisor with launchd, systemd --user, or
+Windows Task Scheduler. macOS and Windows start it at login; Linux enables linger for operation
+after logout. `swarmlet-node uninstall` removes the service. Build into a separate directory with
+`SWARMLET_AGENT_DIST=/path/to/staging` when the current executable is still serving requests.
+
+Enrolled nodes check their controller after 30 seconds, then every five minutes. A release must
+match the OS/architecture and carry a newer sequence signed by the pinned controller key. Downloads
+are authenticated by the enrolled node, including through a controller tunnel. Every file is length
+and SHA-256 checked before activation. The controller grants one idle update window at a time; local
+inference must also finish. Active and previous releases remain separate, and failed health checks
+or interrupted activation select the previous release without lowering the replay floor.
+
+After building the final native bundle, publish its exact agent directory on the controller host:
+
+```bash
+bun run control/publish-release.ts /path/to/control-data dist/agent/darwin darwin arm64 2026091001 0.1.0-release1
+# Linux: dist/agent/linux linux x64; Windows: dist/agent/windows win32 x64
+```
+
+The command uses the controller's existing signing key and refuses to overwrite a sequence.
+Keep that private key on the controller. Existing installations without `controlPubJwk` need their
+existing controller identity pinned through trusted enrollment before updates are enabled.
+The supervisor's update messages appear in the normal service log; `/api/status` reports the active
+release sequence and process ID. Native shell/bootstrap replacement and privileged fan-provider
+installation remain installer operations; the automatic feed updates the agent, web UI, and engines.
+
+Fan telemetry detects exposed OS/driver capabilities. The bundled macOS SMC and Linux hwmon
+providers request maximum cooling through an administrator-installed helper; the one-time installer
+is `node-agent/native-fans/install-root.sh <user> <built-helper>`. Normal shutdown restores control.
+Missing permission and unsupported firmware/drivers are shown explicitly. Windows monitoring can
+read LibreHardwareMonitor sensors when available; it does not claim a generic writable fan control.
+
 ## Security model (short)
 
-Node identity = Ed25519 key; enrollment is a signed request with a one-time join code; the agent channel
-is authenticated by a nonce signature. Engine processes bind 127.0.0.1 only. The only exposed socket is
-the agent's TLS data listener; peers must present a client certificate whose fingerprint control listed
-for the current assignment (pinning, not CA validation: certificates are self-signed and bound to the
-node by the signed enrollment), and may only reach ports of running assignments. Everything else goes
+Node identity = Ed25519 key; enrollment is a signed request with a one-time join code, or automatic
+enrollment on a direct private LAN when enabled. LAN discovery uses trust on first use and initially
+keeps resource sharing off. Set `SWARMLET_LAN_AUTO_ENROLL=0` on control to require manual enrollment.
+An already bound node retains its controller. The agent channel is authenticated by a nonce signature.
+Engine processes bind 127.0.0.1 only. Peers connecting to the agent's TLS data listener must present a
+client certificate whose fingerprint control listed for the current assignment (pinning, not CA
+validation: certificates are self-signed and bound to the node by signed enrollment). Those peers
+may only reach ports of running assignments. Everything else goes
 through the outbound control channel, relayed when no direct path exists.

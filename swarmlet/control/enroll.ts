@@ -8,7 +8,7 @@ import type { Registry } from "./registry.ts";
 
 export type EnrollOutcome = { ok: true; nodeId: string } | { ok: false; status: number; error: string };
 
-export async function handleEnroll(reg: Registry, body: unknown): Promise<EnrollOutcome> {
+export async function handleEnroll(reg: Registry, body: unknown, allowLanAutoEnroll = false): Promise<EnrollOutcome> {
   if (!body || typeof body !== "object") return { ok: false, status: 400, error: "body must be an object" };
   const req = body as Partial<EnrollRequest>;
   if (typeof req.code !== "string" || typeof req.nodeId !== "string" || !req.pubJwk || typeof req.certFp !== "string" || typeof req.hostname !== "string" || !req.caps) {
@@ -21,7 +21,7 @@ export async function handleEnroll(reg: Registry, body: unknown): Promise<Enroll
   if ((await nodeIdFromJwk(req.pubJwk)) !== req.nodeId) return { ok: false, status: 400, error: "nodeId does not match pubJwk" };
   if (!(await verifyObject(req as EnrollRequest, pub))) return { ok: false, status: 401, error: "bad signature" };
   const existing = reg.getNode(req.nodeId);
-  const refused = reg.consumeJoinCode(req.code, req.nodeId);
+  const refused = allowLanAutoEnroll && req.code === "" ? null : reg.consumeJoinCode(req.code, req.nodeId);
   if (refused && !(existing && existing.certFp === certFp)) return { ok: false, status: 403, error: refused };
   const caps = req.caps as Capabilities;
   reg.upsertNode({ id: req.nodeId, pubJwk: req.pubJwk, certFp, hostname: req.hostname, os: caps.os ?? "linux", arch: caps.arch ?? "x64", caps });

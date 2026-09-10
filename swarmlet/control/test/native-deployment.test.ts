@@ -69,6 +69,54 @@ async function until(predicate: () => boolean) {
 }
 const stageMessages = (f: ReturnType<typeof rig>) => f.sent.filter((s): s is { nodeId: string; assignment: StageAssignment } => s.assignment.kind === "stage");
 
+test("pre-existing failed deployment intent does not indefinitely block an idle node update", async () => {
+  const f = rig();
+  const { id } = await f.manager.create(stages); await f.manager.start(id); await Bun.sleep(0);
+  const broken = f.reg.createDeployment("pre-existing-failure", { ...stages, name: "pre-existing-failure" });
+  f.reg.setDeploymentIntent(broken.id, { running: true });
+  f.reg.updateDeployment(broken.id, { state: "failed", error: "insufficient memory" });
+  expect(f.manager.acquireUpdate("l1")).not.toBeNull();
+});
+
+test("update lease waits for inference, withdraws every affected route and preserves running intent", async () => {
+  const f = rig();
+  const { id } = await f.manager.create(stages);
+  await f.manager.start(id);
+  await Bun.sleep(0); // queued operation's completion callback
+  f.manager.trackInflight(id, 1);
+  expect(f.manager.acquireUpdate("l1")).toBeNull();
+  expect(f.manager.routing()).toHaveLength(1);
+  f.manager.trackInflight(id, -1);
+  const lease = f.manager.acquireUpdate("l1");
+  expect(lease?.nodeId).toBe("l1");
+  expect(f.manager.routing()).toEqual([]);
+  expect(f.reg.deploymentIntent(id).running).toBe(true);
+  expect(f.manager.acquireUpdate("l2")).toBeNull();
+  expect(f.manager.releaseUpdate("l2", lease!.token)).toBe(false);
+  expect(f.manager.releaseUpdate("l1", "wrong-token")).toBe(false);
+  expect(f.manager.routing()).toEqual([]);
+  expect(f.manager.releaseUpdate("l1", lease!.token)).toBe(true);
+  expect(f.manager.routing()).toHaveLength(1);
+  expect(f.manager.releaseUpdate("l1", lease!.token)).toBe(false);
+});
+
+test("updating node cannot enter a new placement and recovery does not spend retry budget during lease", async () => {
+  const f = rig();
+  const { id } = await f.manager.create(stages);
+  await f.manager.start(id);
+  await Bun.sleep(0);
+  const lease = f.manager.acquireUpdate("l1");
+  expect(lease).not.toBeNull();
+  await expect(f.manager.planPreview(stages)).rejects.toThrow();
+  f.online.delete("l1"); f.reg.setOnline("l1", false); f.manager.onOffline("l1");
+  const before = f.reg.deploymentIntent(id).attempts;
+  await f.manager.reconcile();
+  expect(f.reg.deploymentIntent(id).attempts).toBe(before);
+  expect(f.reg.deploymentIntent(id).running).toBe(true);
+  f.manager.releaseUpdate("l1", lease!.token);
+  expect(f.manager.acquireUpdate("l2")).toBeNull(); // previous deployment still recovering
+});
+
 test("native stage assignments pin artifact/ABI/binary and all must be ready before route publication", async () => {
   const f = rig(); f.startAcks(false);
   const { id } = await f.manager.create(stages);

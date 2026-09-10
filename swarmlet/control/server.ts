@@ -23,6 +23,9 @@ import { createRouter } from "./router.ts";
 import { TunnelPool } from "./tunnel.ts";
 import { serveUi } from "./ui/ui.ts";
 import { processingSnapshot } from "./processing.ts";
+import { modelCatalog } from "./catalog.ts";
+import { authenticatedReleaseRead, serveRelease } from "./releases.ts";
+import { createUpdateLeaseHandler } from "./update-lease.ts";
 
 export interface ControlDeps {
   cfg: ControlConfig;
@@ -71,10 +74,13 @@ export function directLocalRequest(req: Request, remoteIp: string | null | undef
 export function createControlServer(deps: ControlDeps): Server<ConnData> {
   const { cfg, reg, channel, log, deployments } = deps;
   const publicJwk = () => readPublicJwk(`${cfg.dataDir}/keys`);
+  let updateSigningKey: Promise<CryptoKey> | undefined;
+  const updateLease = createUpdateLeaseHandler(reg, deployments, () => updateSigningKey ??= Bun.file(`${cfg.dataDir}/keys/private.jwk.json`).json()
+    .then(jwk => crypto.subtle.importKey("jwk", jwk, { name: "Ed25519" }, false, ["sign"])));
 
   const nodesSnapshot = () => {
     const live = deployments.liveTokPerSecByNode();
-    return reg.listNodes().map((n) => { const r = channel.relayRate(n.id); return { ...n, pubJwk: undefined, online: channel.isOnline(n.id), via: channel.via(n.id), routedTokPerSec: live.get(n.id) ?? 0, relayInBps: r.inBps, relayOutBps: r.outBps }; });
+    return reg.listNodes().map((n) => { const r = channel.relayRate(n.id); return { ...n, pubJwk: undefined, online: channel.isOnline(n.id), via: channel.via(n.id), link: channel.link(n.id), routedTokPerSec: live.get(n.id) ?? 0, relayInBps: r.inBps, relayOutBps: r.outBps }; });
   };
 
   // HTTP/1.1 browsers share six connections across tabs. Reserve two for ordinary
@@ -173,12 +179,18 @@ export function createControlServer(deps: ControlDeps): Server<ConnData> {
         // Reject all other routes before credentials, body parsing, diagnostics, or UI routing.
         const agentUpgrade = path === "/agent" && req.method === "GET" && req.headers.get("upgrade")?.toLowerCase() === "websocket";
         const localRequest = directLocalRequest(req, srv.requestIP(req)?.address);
-        if (!localRequest && !agentUpgrade && !path.startsWith("/v1/")) {
+        const signedUpdatePath = path.startsWith("/releases/") || path === "/node-update-lease";
+        if (!localRequest && !agentUpgrade && !path.startsWith("/v1/") && !signedUpdatePath) {
           return new Response("not found", { status: 404, headers: { "cache-control": "no-store" } });
         }
         if (path === "/health") return json({ status: "ok", nodes: channel.onlineNodeIds().length });
+        if (path.startsWith("/releases/")) {
+          if (!await authenticatedReleaseRead(req, reg)) return new Response("not found", { status: 404 });
+          return serveRelease(cfg.dataDir, req);
+        }
+        if (path === "/node-update-lease") return updateLease(req);
         if (path === "/enroll" && req.method === "POST") {
-          const out = await handleEnroll(reg, await req.json().catch(() => null));
+          const out = await handleEnroll(reg, await req.json().catch(() => null), localRequest && cfg.lanAutoEnroll === true);
           if (!out.ok) return json({ error: out.error }, out.status);
           // the agent connects back through whatever path it enrolled on (LAN address, or a tunnel hostname)
           const fwdProto = req.headers.get("x-forwarded-proto") ?? url.protocol.replace(":", "");
@@ -206,6 +218,11 @@ export function createControlServer(deps: ControlDeps): Server<ConnData> {
           const key = bearer(req);
           if (!key || !reg.hasApiKey(key)) {
             if (!localRequest || !adminOk(req, cfg, srv.requestIP(req)?.address)) return json({ error: { message: "invalid api key", type: "auth" } }, 401);
+          }
+          if (path === "/v1/models" && url.searchParams.get("catalog") === "1") {
+            if (req.method !== "GET") return json({ error: { message: "GET required" } }, 405);
+            const node = reg.getNode(url.searchParams.get("node") ?? "");
+            return json(modelCatalog(deps.profiles.values(), deployments.routing(), node ? { ...node, online: channel.isOnline(node.id) } : null));
           }
           if (path === "/v1/mesh") {
             if (req.method !== "GET") return json({ error: { message: "GET required" } }, 405);

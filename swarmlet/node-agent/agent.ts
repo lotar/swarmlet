@@ -35,14 +35,20 @@ function toBase64(bytes: Uint8Array): string {
   let s = ""; for (const b of bytes) s += String.fromCharCode(b); return btoa(s);
 }
 
-export async function enroll(controlUrl: string, code: string, id: Identity, caps: Capabilities): Promise<EnrollResponse> {
+export async function enroll(controlUrl: string, code: string, id: Identity, caps: Capabilities, expectedKey?: JsonWebKey): Promise<EnrollResponse> {
   const body: EnrollRequest = { code, nodeId: id.nodeId, pubJwk: id.pubJwk, certFp: id.certFp, hostname: caps.hostname, caps };
   const signed = await signObject(body, id.keys.priv);
-  const res = await fetch(`${controlUrl.replace(/\/$/, "")}/enroll`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(signed) });
+  const res = await fetch(`${controlUrl.replace(/\/$/, "")}/enroll`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(signed), redirect: "error", signal: AbortSignal.timeout(10000) });
   const text = await res.text();
   let out: EnrollResponse | { error: string } | null = null;
   try { out = JSON.parse(text) as EnrollResponse | { error: string }; } catch { out = null; }
   if (!res.ok || !out || !("ok" in out)) throw new Error(`enroll failed (${res.status}): ${out && "error" in out ? out.error : text.replace(/\s+/g, " ").slice(0, 120) || "no body"}`);
+  if (out.nodeId !== id.nodeId) throw new Error("enrollment returned a different node identity");
+  if (expectedKey) {
+    if (canonicalize(out.controlPubJwk) !== canonicalize(expectedKey)) throw new Error("discovered controller key changed during enrollment");
+    const control = new URL(controlUrl), agent = new URL(out.agentUrl);
+    if (agent.protocol !== "ws:" || agent.host !== control.host || agent.pathname !== "/agent" || agent.username || agent.password || agent.search || agent.hash) throw new Error("discovered controller returned a different agent endpoint");
+  }
   return out;
 }
 
@@ -55,6 +61,7 @@ export class AgentClient {
   private _connected = false;
   /** Server-side only; never included in the local UI status payload. */
   inferenceKey: string | null = null;
+  link: { rttMs: number; measuredAt: string } | undefined;
   private waiters: Array<() => void> = [];
 
   constructor(
@@ -129,6 +136,7 @@ export class AgentClient {
     this.mux = null;
     this._connected = false;
     this.inferenceKey = null;
+    this.link = undefined;
     const ws = this.ws; this.ws = null;
     if (ws && ws.readyState === WebSocket.OPEN) ws.close(1000, reason);
   }
@@ -162,7 +170,9 @@ export class AgentClient {
         break;
       }
       case "assign": this.hooks.onAssign(m.assignment); break;
-      case "ping": this.send({ t: "pong", ts: m.ts }); break;
+      case "ping":
+        if (m.link && Number.isFinite(m.link.rttMs) && m.link.rttMs >= 0 && Number.isFinite(Date.parse(m.link.measuredAt))) this.link = m.link;
+        this.send({ t: "pong", ts: m.ts }); break;
       case "error": this.log.warn("control error", { message: m.message }); break;
     }
   }

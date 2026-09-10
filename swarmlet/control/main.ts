@@ -4,9 +4,11 @@
 
 import { loadControlConfig } from "./config.ts";
 import { bootControl } from "./server.ts";
+import { broadcastControl } from "./discovery.ts";
 
 const cfg = loadControlConfig();
 const { server, channel, log, deployments } = await bootControl(cfg);
+const stopBroadcast = await broadcastControl(cfg, server.port!, log);
 let sweepTicks = 0;
 const sweeper = setInterval(() => {
   if (++sweepTicks % 10 === 0) channel.sweep();
@@ -16,6 +18,7 @@ log.info(`web UI http://${cfg.host}:${server.port}/  admin token in ${cfg.dataDi
 
 const shutdown = () => {
   clearInterval(sweeper);
+  stopBroadcast();
   deployments.dispose();
   channel.shuttingDown = true; // agent disconnects caused by our exit are not node failures
   server.stop(true);

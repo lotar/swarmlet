@@ -34,6 +34,8 @@ function planNodes(plan: Plan): string[] {
 export class DeploymentManager {
   private waiters = new Map<string, Array<(s: AssignmentState, detail?: string) => void>>();
   private inflight = new Map<string, number>();
+  private updateLease: { nodeId: string; token: string; expiresAt: number } | null = null;
+  private updateRecovery = new Set<string>();
   private operations = new Map<string, Promise<void>>();
   private distributionApplications = new Set<string>();
   private generations = new Map<string, number>();
@@ -44,6 +46,39 @@ export class DeploymentManager {
   private reconnecting = new Map<string, { deadline: number; cleanupDeadline?: number; nodes: string[]; reason: string }>();
 
   constructor(private readonly deps: DeploymentDeps) {}
+
+  private updatingNode(): string | null {
+    if (this.updateLease && this.updateLease.expiresAt <= Date.now()) this.updateLease = null;
+    return this.updateLease?.nodeId ?? null;
+  }
+
+  /** Synchronous with router admission: a granted lease withdraws affected routes before
+   * another request can increment inflight. One node at a time; recover service before the next. */
+  acquireUpdate(nodeId: string): { nodeId: string; token: string; expiresAt: number } | null {
+    if (this.closed || !this.deps.channel.isOnline(nodeId) || !this.deps.reg.getNode(nodeId)) return null;
+    if (this.updatingNode()) return null;
+    if (this.operations.size || this.distributionApplications.size || this.reconnecting.size) return null;
+    for (const id of this.updateRecovery) {
+      const dep = this.deps.reg.getDeployment(id);
+      if (!dep || dep.state === "ready" || !this.deps.reg.deploymentIntent(id).running) this.updateRecovery.delete(id);
+    }
+    if (this.updateRecovery.size) return null;
+    const affected: string[] = [];
+    for (const dep of this.deps.reg.listDeployments()) {
+      const nodes = dep.plan ? planNodes(dep.plan) : dep.endpoint ? [dep.endpoint.nodeId] : [];
+      if (nodes.includes(nodeId) && (this.inflight.get(dep.id) ?? 0) > 0) return null;
+      if (nodes.includes(nodeId) && dep.state === "ready" && this.deps.reg.deploymentIntent(dep.id).running) affected.push(dep.id);
+    }
+    this.updateRecovery = new Set(affected);
+    this.updateLease = { nodeId, token: crypto.randomUUID(), expiresAt: Date.now() + 120_000 };
+    return { ...this.updateLease };
+  }
+
+  releaseUpdate(nodeId: string, token: string): boolean {
+    if (this.updateLease?.nodeId !== nodeId || this.updateLease.token !== token) return false;
+    this.updateLease = null;
+    return true;
+  }
 
   /** Relay sockets do not survive control restart. Withdraw persisted routes before serving HTTP. */
   restore(): void {
@@ -76,7 +111,7 @@ export class DeploymentManager {
 
   /** Called by the existing control sweeper; no background timers outlive the control instance. */
   async reconcile(): Promise<void> {
-    if (this.closed) return;
+    if (this.closed || this.updatingNode()) return;
     await Promise.all(this.deps.reg.listDeployments().map(async (dep) => {
       this.finishDraining(dep.id);
       const intent = this.deps.reg.deploymentIntent(dep.id);
@@ -196,7 +231,7 @@ export class DeploymentManager {
       this.cancel(dep.id);
       const nodes = dep.plan ? planNodes(dep.plan)
         : [...new Set(this.deps.reg.listAssignments(dep.id).filter(a => !a.retired).map(a => a.nodeId))];
-      this.reconnecting.set(dep.id, { deadline: Date.now() + (this.deps.reconnectGraceMs ?? 30_000), nodes, reason });
+      this.reconnecting.set(dep.id, { deadline: Math.max(Date.now(), this.updateLease?.nodeId === nodeId ? this.updateLease.expiresAt : 0) + (this.deps.reconnectGraceMs ?? 30_000), nodes, reason });
       this.deps.reg.updateDeployment(dep.id, { state: "loading", endpoint: null, error: `${reason}; reconnecting with fresh placement required` });
       this.deps.reg.event("deployment", `${reason}; route withdrawn, waiting up to ${this.deps.reconnectGraceMs ?? 30_000}ms for reconnect`, { deploymentId: dep.id });
       void this.enqueue(dep.id, () => this.teardown(dep.id)).catch((e) => this.deps.log.warn("reconnect cleanup pending", { id: dep.id, error: String(e) }));
@@ -273,6 +308,7 @@ export class DeploymentManager {
   async start(id: string, recovering = false): Promise<void> {
     const dep = this.must(id);
     if (this.closed) throw new Error("control is shutting down");
+    if (this.updatingNode()) throw new Error("node update in progress; retry after recovery");
     if (this.operations.has(id)) throw new Error("deployment operation already in progress");
     if (!["planned", "stopped", "failed"].includes(dep.state) && !(recovering && this.reconnecting.has(id) && dep.state === "loading")) throw new Error(`cannot start from state ${dep.state}`);
     if (dep.spec.kind === "external") { this.assertExternalOptions(dep.spec); this.assertUniqueExternal(dep.spec, id); }
@@ -327,6 +363,7 @@ export class DeploymentManager {
       const node = this.deps.reg.getNode(dep.endpoint.nodeId);
       const list = byModel.get(dep.endpoint.modelName) ?? [];
       const nodes = dep.plan ? planNodes(dep.plan) : [dep.endpoint.nodeId];
+      if (nodes.includes(this.updatingNode() ?? "")) continue;
       list.push({ id: dep.id, name: dep.spec.name, kind: dep.spec.kind, nodeId: dep.endpoint.nodeId, port: dep.endpoint.port, nodes, inflight: this.inflight.get(dep.id) ?? 0, tokPerSec: this.liveTokPerSec(dep.id), rttMs: node?.caps?.net?.rttMs });
       byModel.set(dep.endpoint.modelName, list);
       const registered = Math.floor(Date.parse(dep.createdAt) / 1000);
@@ -598,7 +635,7 @@ export class DeploymentManager {
     const profile = this.deps.profiles.get(spec.profile);
     if (!profile) throw new Error(`unknown profile ${spec.profile}`);
     try {
-      return planDeployment({ spec, profile, nodes: this.deps.reg.listNodes().map((n) => ({ ...n, online: n.online && this.deps.channel.isOnline(n.id) })), usedPorts, nativeQualifications: this.deps.nativeQualifications });
+      return planDeployment({ spec, profile, nodes: this.deps.reg.listNodes().map((n) => ({ ...n, online: n.online && this.deps.channel.isOnline(n.id) && n.id !== this.updatingNode() })), usedPorts, nativeQualifications: this.deps.nativeQualifications });
     } catch (e) {
       if (e instanceof PlanError) throw new Error(`no plan: ${e.message}`); // message already carries every reason
       throw e as Error;

@@ -1,0 +1,115 @@
+#!/usr/bin/python3 -I
+"""Standard hwmon fan control. No model tables or embedded-controller register writes."""
+import contextlib, fcntl, json, os, pathlib, stat, sys, tempfile
+ROOT = pathlib.Path('/sys/class/hwmon')
+JOURNAL = pathlib.Path('/var/lib/swarmlet/fan-state.json')
+BOOT = pathlib.Path('/proc/sys/kernel/random/boot_id')
+def trusted(path, directory=False):
+    info=path.lstat()
+    kind=stat.S_ISDIR if directory else stat.S_ISREG
+    if not kind(info.st_mode) or info.st_uid != 0 or info.st_mode & 0o022:
+        raise RuntimeError('Unsafe fan-state path: '+str(path))
+@contextlib.contextmanager
+def locked():
+    JOURNAL.parent.mkdir(mode=0o755, parents=True, exist_ok=True)
+    for parent in (JOURNAL.parent, *JOURNAL.parent.parents): trusted(parent, True)
+    fd=os.open(str(JOURNAL)+'.lock',os.O_CREAT|os.O_RDWR|os.O_NOFOLLOW,0o600)
+    try:
+        info=os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode) or info.st_uid!=0 or info.st_mode & 0o022: raise RuntimeError('Unsafe fan-state lock')
+        fcntl.flock(fd,fcntl.LOCK_EX)
+        yield
+    finally: os.close(fd)
+def read(path):
+    try: return path.read_text().strip()
+    except OSError: return None
+def integer(path):
+    try: return int(read(path))
+    except (TypeError, ValueError): return None
+def devices():
+    return sorted(ROOT.glob('hwmon*'))
+def controls():
+    result=[]
+    for dev in devices():
+        for file in sorted(dev.glob('pwm[0-9]*')):
+            if not file.name[3:].isdigit(): continue
+            enable=file.with_name(file.name+'_enable')
+            mode, value=integer(enable), integer(file)
+            if mode not in (0,1,2,3,4,5) or value is None or not 0 <= value <= 255: continue
+            result.append({'path':str(file.resolve()), 'enable':str(enable.resolve()), 'mode':mode, 'value':value, 'driver':read(dev/'name') or dev.name})
+    return result
+def status():
+    fans=[]; temperatures=[]
+    for dev in devices():
+        driver=read(dev/'name') or dev.name
+        for file in sorted(dev.glob('fan[0-9]*_input')):
+            value=integer(file)
+            if value is not None and 0 <= value <= 100000:
+                label=read(file.with_name(file.name.replace('_input','_label'))) or file.name.replace('_input','')
+                fans.append({'id':str(file.resolve()), 'name':driver+' '+label, 'rpm':value})
+        for file in sorted(dev.glob('temp[0-9]*_input')):
+            value=integer(file)
+            if value is not None and -40000 <= value <= 200000:
+                label=read(file.with_name(file.name.replace('_input','_label'))) or file.name.replace('_input','')
+                temperatures.append({'name':driver+' '+label, 'celsius':value/1000})
+    return {'provider':'hwmon','fans':fans,'temperatures':temperatures,'controls':controls()}
+def save(rows):
+    fd, name=tempfile.mkstemp(dir=JOURNAL.parent)
+    try:
+        with os.fdopen(fd,'w') as f: json.dump({'boot':BOOT.read_text().strip(),'rows':rows},f);f.flush();os.fsync(f.fileno())
+        os.replace(name,JOURNAL)
+    finally:
+        if os.path.exists(name): os.unlink(name)
+def saved_rows():
+    if not os.path.lexists(JOURNAL): return []
+    trusted(JOURNAL)
+    if JOURNAL.stat().st_size > 65536: raise RuntimeError('Fan-state journal exceeds size limit')
+    saved=json.loads(JOURNAL.read_text())
+    if not isinstance(saved,dict) or not isinstance(saved.get('rows'),list) or len(saved['rows'])>256: raise RuntimeError('Invalid fan-state journal')
+    # hwmon numbering and firmware state can change across boots.
+    if saved.get('boot') != BOOT.read_text().strip(): return []
+    for row in saved['rows']:
+        if not isinstance(row,dict) or any(not isinstance(row.get(k),str) for k in ('path','enable','driver')) or type(row.get('mode')) is not int or row['mode'] not in range(6) or type(row.get('value')) is not int or not 0<=row['value']<=255:
+            raise RuntimeError('Invalid saved fan setting')
+    return saved['rows']
+def restore():
+    saved=saved_rows(); current={x['path']:x for x in controls()}; failed=[]
+    for row in saved:
+        live=current.get(row['path'])
+        # A missing/replaced device is not permission to write through an old sysfs path.
+        if not live or live['enable'] != row['enable'] or live['driver'] != row['driver']: continue
+        try:
+            pathlib.Path(row['path']).write_text(str(row['value']))
+            pathlib.Path(row['enable']).write_text(str(row['mode']))
+            if integer(pathlib.Path(row['enable'])) != row['mode'] or row['mode']==1 and integer(pathlib.Path(row['path'])) != row['value']: raise OSError('Fan restoration did not persist')
+        except OSError: failed.append(row)
+    if failed: save(failed);raise RuntimeError('Some original fan settings could not be restored')
+    JOURNAL.unlink(missing_ok=True)
+def main():
+    if len(sys.argv)!=2 or sys.argv[1] not in ('status','max','auto'): raise RuntimeError('Usage: swarmlet-fans status|max|auto')
+    command=sys.argv[1]
+    if command=='status': return status()
+    if os.geteuid()!=0: raise PermissionError('Administrator access is required for fan control')
+    with locked(): return change(command)
+def change(command):
+    if command=='auto': restore();return status()
+    rows=controls()
+    if not rows: raise RuntimeError('No standard hwmon fan controls are exposed by this firmware/driver')
+    saved=saved_rows()
+    known={(row['path'],row['enable'],row['driver']) for row in saved}
+    save(saved+[row for row in rows if (row['path'],row['enable'],row['driver']) not in known])
+    try:
+        for row in rows:
+            # Stage maximum duty before switching to manual; never request a lower duty.
+            pathlib.Path(row['path']).write_text('255')
+            pathlib.Path(row['enable']).write_text('1')
+            if integer(pathlib.Path(row['path']))!=255 or integer(pathlib.Path(row['enable']))!=1: raise RuntimeError('Maximum fan setting did not persist')
+    except Exception:
+        restore();raise
+    return status()
+if __name__=='__main__':
+    try:
+        print(json.dumps(main(),separators=(',',':')))
+    except Exception as error:
+        print(json.dumps({'provider':'hwmon','error':str(error)},separators=(',',':')))
+        sys.exit(1)

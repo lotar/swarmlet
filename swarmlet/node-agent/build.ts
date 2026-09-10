@@ -19,7 +19,8 @@ const revision = process.env.SWARMLET_BUILD_REVISION ?? `${git("rev-parse", "HEA
 for (const t of targets) {
   const bt = bunTarget[t];
   if (!bt) throw new Error(`unknown target ${t} (darwin|linux|windows)`);
-  const out = join(ROOT, "dist", "agent", t);
+  // Build away from a running service executable; installation promotes the completed bundle.
+  const out = join(process.env.SWARMLET_AGENT_DIST ?? join(ROOT, "dist", "agent"), t);
   mkdirSync(out, { recursive: true });
   const bin = join(out, t === "windows" ? "swarmlet-node.exe" : "swarmlet-node");
   console.log(`compiling ${t} -> ${bin}`);
@@ -34,4 +35,8 @@ for (const t of targets) {
   rmSync(join(out, "engine"), { recursive: true, force: true });
   if (existsSync(engine)) { cpSync(engine, join(out, "engine"), { recursive: true }); console.log(`engine copied from ${engine}`); }
   else console.log(`note: no engine dist for ${t} (build it with engine/build.sh ${t})`);
+  if (t === "linux" || t === "darwin" && process.platform === "darwin") {
+    const helper = Bun.spawn(["sh", join(ROOT, "node-agent/native-fans/build.sh"), t, join(out, "engine")], { stdout: "inherit", stderr: "inherit" });
+    if (await helper.exited !== 0) throw new Error(`fan provider build failed for ${t}`);
+  }
 }

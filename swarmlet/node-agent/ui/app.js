@@ -189,9 +189,26 @@
       tile('Free RAM', fmtGiB(m && m.freeRamMiB), 'GiB', 'of ' + fmtGiB(caps.ramMiB) + ' GiB total'),
       tile('CPU', num(m && m.cpuPct, 0), '%', caps.cpuCores ? caps.cpuCores + ' cores' : ''),
     ];
+    var link = m && m.link, linkFresh = s.connected && link && Date.now() - Date.parse(link.measuredAt) < 30000;
+    tiles.push(tile('Controller latency', linkFresh ? num(link.rttMs, 1) : NA, 'ms RTT', linkFresh ? 'live connection · ' + ago(link.measuredAt) : 'Waiting for a fresh connection sample'));
     (caps.gpus || []).forEach(function (g) {
-      tiles.push(tile(g.name || g.id, fmtGiB(gpuUsed(m, g.id)), 'GiB used', 'of ' + fmtGiB(g.totalMiB) + ' GiB on ' + g.id));
+      var usage = m && (m.gpu || []).find(function (v) { return v.id === g.id; });
+      var detail = 'of ' + fmtGiB(g.totalMiB) + ' GiB on ' + g.id;
+      if (usage) detail += ' · ' + num(usage.utilizationPct, 0) + '% utilization · ' + num(usage.temperatureC, 0) + ' °C · ' + num(usage.powerW, 1) + ' W';
+      tiles.push(tile(g.name || g.id, fmtGiB(gpuUsed(m, g.id)), 'GiB used', detail));
     });
+    var hardware = m && m.hardware;
+    if (hardware) {
+      var hardwareFresh = Date.now() - Date.parse(hardware.measuredAt) < 15000;
+      tiles.push(tile('Fan control', hardwareFresh ? hardware.fanControl.state : 'stale', '', hardware.fanControl.detail));
+      (hardware.fans || []).forEach(function (f) { tiles.push(tile(f.name, hardwareFresh ? num(f.rpm, 0) : NA, 'RPM', (f.maxRpm ? 'Firmware maximum ' + f.maxRpm + ' RPM · ' : '') + (f.mode || 'Mode not reported'))); });
+      if (hardware.temperatures.length) tiles.push(el('details', { id: 'temperature-details', class: 'tile', open: $('temperature-details') && $('temperature-details').open, style: 'grid-column: 1 / -1' }, [
+        el('summary', { text: 'Temperature values (' + hardware.temperatures.length + ')' }),
+        el('dl', { class: 'kv' }, kv(hardware.temperatures.map(function (t) { return [t.name, (hardwareFresh ? num(t.celsius, 1) : NA) + ' °C']; }))),
+      ]));
+      if (!hardware.temperatures.length) tiles.push(tile('Temperature', 'Not reported', '', 'No compatible temperature sensor exposed'));
+    }
+    (m && m.network || []).forEach(function (n) { tiles.push(tile(n.name + ' traffic', isNum(n.rxBps) ? num(n.rxBps / 1024, 1) : NA, 'KiB/s received', (isNum(n.txBps) ? num(n.txBps / 1024, 1) : NA) + ' KiB/s sent · all interface traffic')); });
     if (m && (m.serving || m.serverMetricsState)) {
       var sampleAt = Date.parse(m.serverMetricsTs || m.ts);
       var fresh = sampleAt && Date.now() - sampleAt <= 10000;
@@ -202,7 +219,7 @@
       tiles.push(tile('Throughput', measured ? num(m.tokPerSec, 1) : available && m.inflight === 0 ? '0.0' : NA, 'tok/s', hint));
       tiles.push(tile('In flight', available && isNum(m.inflight) ? m.inflight : NA, 'requests', available ? 'engine sample' : hint));
     }
-    tiles.push(tile('Agent RSS', fmtGiB(m && m.rssMiB, 2), 'GiB', m ? 'sampled ' + ago(m.ts) : 'no sample yet'));
+    tiles.push(tile('Agent + engines memory', fmtGiB(m && m.rssMiB, 2), 'GiB', m ? 'sampled ' + ago(m.ts) : 'no sample yet'));
     replace($('status-metrics'), tiles);
 
     var errs = s.offerErrors || [];

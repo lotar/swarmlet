@@ -33,23 +33,28 @@
     $('chat-api-example').textContent = 'from openai import OpenAI\n\nclient = OpenAI(base_url="' + location.origin + '/v1", api_key="local")\nreply = client.chat.completions.create(\n    model=' + JSON.stringify(model) + ',\n    messages=[{"role": "user", "content": "Hello"}]\n)\nprint(reply.choices[0].message.content)';
     processing.select($('chat-model').value);
     var chosen = catalog.find(function (m) { return m.id === model; });
-    $('chat-route').textContent = chosen ? (chosen.route === 'local' ? 'Local model server · shortest route' : 'Internet mesh · shared model') : 'No model available';
+    $('chat-route').textContent = chosen ? (chosen.route === 'local' ? 'Local model server · shortest route' : 'Internet mesh · shared model') + (chosen.route !== 'local' && !chosen.local_eligible ? ' · Local unavailable: ' + (chosen.local_reasons || []).join(' ') : '') : 'No ready model available';
   }
   async function loadModels() {
     if (loading || busy || D.hidden || $('tab-chat').hidden) return;
     loading = true;
     try {
-      var res = await fetch('/v1/models', { signal: AbortSignal.timeout(10000) });
+      var res = await fetch('/v1/models?catalog=1', { signal: AbortSignal.timeout(10000) });
       var body = await res.json();
       if (!res.ok) throw new Error(body.error && body.error.message || 'Models unavailable');
       var previous = $('chat-model').value || saved.model;
       catalog = body.data || [];
       $('chat-model').replaceChildren();
       if (!catalog.length) { var empty = D.createElement('option'); empty.value = ''; empty.textContent = 'No ready models'; $('chat-model').appendChild(empty); }
-      catalog.forEach(function (model) { var option = D.createElement('option'); option.value = model.id; option.textContent = model.id + (model.route === 'local' ? ' · local' : ' · mesh'); $('chat-model').appendChild(option); });
-      if (catalog.some(function (m) { return m.id === previous; })) $('chat-model').value = previous;
+      catalog.forEach(function (model) {
+        var option = D.createElement('option'); option.value = model.id; option.disabled = model.selectable === false;
+        option.textContent = model.id + (model.route === 'local' ? ' · local' : model.route === 'mesh' ? ' · mesh' : ' · unavailable');
+        option.title = (model.local_reasons || []).join(' '); $('chat-model').appendChild(option);
+      });
+      var selectable = catalog.filter(function (m) { return m.selectable !== false; });
+      $('chat-model').value = selectable.some(function (m) { return m.id === previous; }) ? previous : selectable.length ? selectable[0].id : '';
       error(''); example(); setBusy(false);
-    } catch (e) { error(e.message); $('chat-route').textContent = 'Mesh unavailable · retry with Refresh'; }
+    } catch (e) { error(e.message); $('chat-model').value = ''; setBusy(false); $('chat-route').textContent = 'Mesh unavailable · retry with Refresh'; }
     finally { loading = false; }
   }
   async function send(ev) {

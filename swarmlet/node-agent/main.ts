@@ -20,6 +20,11 @@ import { loadIdentity, type Identity } from "./identity.ts";
 import { installService, uninstallService } from "./install.ts";
 import { startLocalApi } from "./localapi.ts";
 import { createNodeInference } from "./inference.ts";
+import { discoverControl } from "./discovery.ts";
+import { FanManager } from "./fans.ts";
+import { NetworkSampler } from "./probe/network.ts";
+import { UpdateDrain } from "./update-drain.ts";
+import { supervise } from "./supervisor.ts";
 import { agentPaths, type AgentPaths } from "./paths.ts";
 import { listModels, measureNet, probeCapabilities, probeMetrics, publicIp } from "./probe/index.ts";
 import { startDataListener } from "./transport/dataListener.ts";
@@ -38,10 +43,15 @@ export class AgentRuntime {
   runner!: AssignmentRunner;
   private agentLog: string[] = [];
   private timers: ReturnType<typeof setInterval>[] = [];
+  private ticking = false;
+  private fans: FanManager;
+  private network = new NetworkSampler();
+  private updateDrain = new UpdateDrain();
 
   constructor(home?: string) {
     this.paths = agentPaths(home);
     this.cfg = loadNodeConfig(this.paths);
+    this.fans = new FanManager(this.cfg.enginePath);
   }
 
   get hostname(): string { return this.caps?.hostname ?? osHostname(); }
@@ -80,12 +90,13 @@ export class AgentRuntime {
     return errs.length ? { ...this.cfg.offer, enabled: false } : this.cfg.offer;
   }
 
-  async join(controlUrl: string, code: string): Promise<{ nodeId: string }> {
+  async join(controlUrl: string, code: string, expectedKey?: JsonWebKey): Promise<{ nodeId: string }> {
     const caps = await this.refreshCaps();
-    const res = await enroll(controlUrl, code, this.id, caps);
+    const res = await enroll(controlUrl, code, this.id, caps, expectedKey);
     this.cfg.controlUrl = controlUrl.replace(/\/$/, "");
     this.cfg.agentUrl = res.agentUrl;
     this.cfg.enrolledNodeId = res.nodeId;
+    this.cfg.controlPubJwk = res.controlPubJwk;
     saveNodeConfig(this.paths, this.cfg);
     this.connect();
     setTimeout(() => { void this.measure().catch(() => undefined); }, 3000); // rtt/bandwidth right after joining, not only hourly
@@ -124,9 +135,10 @@ export class AgentRuntime {
           return { url: url.toString(), key: this.client.inferenceKey };
         },
         nodeId: () => this.id.nodeId,
+        admit: () => this.updateDrain.admit(),
       }),
       status: () => ({
-        nodeId: this.id.nodeId, hostname: this.hostname, agentVersion: AGENT_VERSION, certFp: this.id.certFp, connected: this.client?.connected ?? false,
+        nodeId: this.id.nodeId, pid: process.pid, releaseSequence: Number(process.env.SWARMLET_RELEASE_SEQUENCE ?? 0), hostname: this.hostname, agentVersion: AGENT_VERSION, certFp: this.id.certFp, connected: this.client?.connected ?? false,
         controlUrl: this.cfg.controlUrl, enabled: this.cfg.offer.enabled, caps: this.caps, offer: this.cfg.offer, offerErrors: this.offerErrors(),
         assignments: this.runner.snapshot(), metrics: this.metrics, net: this.net,
       }),
@@ -144,25 +156,50 @@ export class AgentRuntime {
     log.info(`local UI http://127.0.0.1:${this.cfg.uiPort}  node ${this.id.nodeId}  cert ${this.id.certFp.slice(0, 16)}`);
     this.connect();
     this.timers.push(setInterval(() => { void this.tick(); }, 2000));
+    const stopDiscovery = this.cfg.discovery !== false ? discoverControl({ bound: () => !!this.cfg.controlUrl, join: (url, key) => this.join(url, "", key), log }) : () => {};
     this.timers.push(setInterval(() => { void this.refreshCaps().then(() => this.client?.send({ t: "heartbeat", ts: new Date().toISOString(), metrics: this.metrics ?? { ts: new Date().toISOString() }, caps: this.caps ?? undefined })); }, 5 * 60_000));
     this.timers.push(setInterval(() => { void this.measure().catch(() => undefined); }, 60 * 60_000));
     if (this.cfg.controlUrl) setTimeout(() => { void this.measure().catch(() => undefined); }, 3000);
     let stopping = false;
     const shutdown = async (why: string) => {
       if (stopping) return; stopping = true;
-      log.info("shutting down", { why }); for (const t of this.timers) clearInterval(t); await this.runner.stopAll(); this.client?.stop(); process.exit(0);
+      log.info("shutting down", { why }); stopDiscovery(); for (const t of this.timers) clearInterval(t);
+      try { await this.runner.stopAll(); }
+      catch (error) { log.error("runner shutdown failed", { error: String(error) }); }
+      finally {
+        await this.fans.stop().catch(error => log.error("fan restoration failed", { error: String(error) }));
+        this.client?.stop();
+      }
+      process.exit(0);
     };
     process.on("SIGINT", () => { void shutdown("SIGINT"); });
     process.on("SIGTERM", () => { void shutdown("SIGTERM"); });
+    if (process.env.SWARMLET_SUPERVISED === "1") process.on("disconnect", () => { void shutdown("service supervisor disconnected"); });
+    // IPC exists only when our service supervisor spawned this process; no HTTP shutdown token.
+    process.on("message", (message: unknown) => {
+      const m = message as { kind?: string; id?: string; action?: string } | null;
+      if (m?.kind !== "swarmlet-supervisor" || typeof m.id !== "string" || !process.send) return;
+      if (m.action === "drain") process.send({ kind: "swarmlet-supervisor-result", id: m.id, ok: this.updateDrain.begin() });
+      if (m.action === "resume") { this.updateDrain.resume(); process.send({ kind: "swarmlet-supervisor-result", id: m.id, ok: true }); }
+      if (m.action === "stop") void shutdown("service supervisor");
+    });
+    await this.fans.start().catch(error => log.warn("fan control unavailable", { error: String(error) }));
   }
 
   private async tick(): Promise<void> {
+    if (this.ticking) return;
+    this.ticking = true;
     try {
-      const pids = this.runner.snapshot().map((s) => s.pid).filter((p): p is number => typeof p === "number");
-      const m = await probeMetrics({ pids, gpus: this.caps?.gpus ?? [], sampleMs: 500 });
+      const pids = [process.pid, ...this.runner.snapshot().map((s) => s.pid).filter((p): p is number => typeof p === "number")];
+      const [m, hardware, network] = await Promise.all([
+        probeMetrics({ pids, gpus: this.caps?.gpus ?? [], sampleMs: 500 }),
+        this.fans.sample().catch(() => undefined),
+        this.network.sample().catch(() => undefined),
+      ]);
       const srv = await this.runner.serverMetrics();
-      this.metrics = { ...m, ...(srv ?? {}) };
+      this.metrics = { ...m, ...(srv ?? {}), link: this.client?.link, hardware, network };
     } catch (e) { log.debug("metrics failed", { err: (e as Error).message }); }
+    finally { this.ticking = false; }
   }
 
   private async measure(): Promise<NetMeasurement> {
@@ -186,6 +223,10 @@ async function cli(argv: string[]): Promise<void> {
   const status = async () => (await fetch(`http://127.0.0.1:${loadNodeConfig(paths).uiPort}/api/status`, { signal: AbortSignal.timeout(3000) })).json();
   switch (cmd) {
     case "run": { const rt = new AgentRuntime(); await rt.start(); return; }
+    case "supervise": {
+      await supervise(/(^|[\\/])bun(\.exe)?$/.test(process.execPath) ? [process.execPath, import.meta.path] : [process.execPath]);
+      return;
+    }
     case "join": {
       const [url, code] = [argv[1], argv[2]];
       if (!url || !code) throw new Error("usage: join <control-url> <code>");
@@ -218,7 +259,7 @@ async function cli(argv: string[]): Promise<void> {
     }
     case "install": {
       const fromSource = /(^|[\\/])bun(\.exe)?$/.test(process.execPath); // `bun run main.ts install`: the service must run the same source
-      const p = await installService(fromSource ? `${process.execPath} ${import.meta.path}` : process.execPath, paths.home, paths.logsDir);
+      const p = await installService(fromSource ? [process.execPath, import.meta.path] : process.execPath, paths.home, paths.logsDir);
       console.log(`installed ${p}`); return;
     }
     case "uninstall": { await uninstallService(); console.log("uninstalled"); return; }

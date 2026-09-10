@@ -70,10 +70,19 @@ export interface ModelFile {
 
 export interface NodeMetrics {
   ts: string;
+  /** Measured ping/pong RTT on the live controller connection (includes relay path). */
+  link?: { rttMs: number; measuredAt: string };
   cpuPct?: number;
   rssMiB?: number;
   freeRamMiB?: number;
-  gpu?: Array<{ id: string; usedMiB: number }>;
+  gpu?: Array<{ id: string; usedMiB: number; utilizationPct?: number; temperatureC?: number; powerW?: number; fanPct?: number }>;
+  hardware?: {
+    measuredAt: string;
+    fans: Array<{ id: string; name: string; rpm?: number; targetRpm?: number; maxRpm?: number; mode?: string }>;
+    temperatures: Array<{ name: string; celsius: number }>;
+    fanControl: { state: "max" | "requested" | "automatic" | "unsupported" | "permission-required" | "error"; detail: string };
+  };
+  network?: Array<{ name: string; rxBps?: number; txBps?: number }>;
   /** Completed-token counter delta per sample interval. Counters advance at request completion;
    *  zero does not imply idle. Undefined for missing samples or a new/restarted server. */
   tokPerSec?: number;
@@ -366,7 +375,7 @@ export interface AssignmentStateMsg {
 export interface LogMsg { t: "log"; assignmentId: string; line: string }
 export interface AssignMsg { t: "assign"; assignment: Assignment }
 export interface ErrorMsg { t: "error"; message: string }
-export interface PingMsg { t: "ping"; ts: string }
+export interface PingMsg { t: "ping"; ts: string; link?: { rttMs: number; measuredAt: string } }
 export interface PongMsg { t: "pong"; ts: string }
 
 export type AgentToControl = AuthMsg | HelloMsg | HeartbeatMsg | OfferMsg | ModelsMsg | AssignmentStateMsg | LogMsg | PongMsg;

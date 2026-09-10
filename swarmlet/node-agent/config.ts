@@ -23,6 +23,8 @@ export interface NodeConfig {
   controlUrl: string | null;
   agentUrl: string | null;
   enrolledNodeId: string | null;
+  controlPubJwk?: JsonWebKey;
+  discovery?: boolean;
   offer: Offer;
   uiPort: number;
   dataPort: number;
@@ -58,7 +60,7 @@ export function defaultOffer(home: string): Offer {
 
 export function loadNodeConfig(paths: AgentPaths): NodeConfig {
   const base: NodeConfig = {
-    controlUrl: null, agentUrl: null, enrolledNodeId: null, offer: defaultOffer(paths.home),
+    controlUrl: null, agentUrl: null, enrolledNodeId: null, discovery: true, offer: defaultOffer(paths.home),
     uiPort: AGENT_UI_PORT, dataPort: AGENT_DATA_PORT, enginePath: defaultEnginePath(), advertise: [], externals: [],
   };
   if (!existsSync(paths.configFile)) { saveNodeConfig(paths, base); return base; }

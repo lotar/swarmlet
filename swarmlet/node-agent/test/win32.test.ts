@@ -55,12 +55,14 @@ test("drive letter and CIM process line", () => {
   expect(parseProcessLine("garbage")).toBeNull();
 });
 
-test("Windows service: hidden logon task runs the launcher, launcher appends logs and forwards the exit code", () => {
+test("Windows service: hidden logon task logs output, retries crashes and honors graceful shutdown", () => {
   const launcher = windowsLauncherScript("C:\\Program Files\\Swarmlet Node\\swarmlet-node.exe", "C:\\Users\\lotar\\.swarmlet", "C:\\Users\\lotar\\.swarmlet\\logs");
   expect(launcher).toContain("$env:SWARMLET_HOME = 'C:\\Users\\lotar\\.swarmlet'");
-  expect(launcher).toContain("& 'C:\\Program Files\\Swarmlet Node\\swarmlet-node.exe' run 2>&1");
+  expect(launcher).toContain("& 'C:\\Program Files\\Swarmlet Node\\swarmlet-node.exe' supervise 2>&1");
   expect(launcher).toContain("Add-Content -LiteralPath $log");
-  expect(launcher.trim().endsWith("exit $LASTEXITCODE")).toBe(true);
+  expect(launcher).toContain("if ($agentExit -eq 0) { exit 0 }");
+  expect(launcher).toContain("Start-Sleep -Seconds $retrySeconds");
+  expect(launcher).toContain("[Math]::Min(60, $retrySeconds * 2)");
   const xml = windowsTaskXml("LAPTOP\\Mladen Lotar", "C:\\Users\\Mladen Lotar\\AppData\\Local\\Swarmlet\\swarmlet-node-service.ps1");
   expect(xml).toContain("<LogonType>InteractiveToken</LogonType>");
   expect(xml).toContain("<UserId>LAPTOP\\Mladen Lotar</UserId>");

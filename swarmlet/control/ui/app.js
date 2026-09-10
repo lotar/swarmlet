@@ -258,8 +258,10 @@
 
   function viaText(via) { return via ? (via.proto === 'https' ? 'wss://' : 'ws://') + via.host + (via.edge ? ' (Cloudflare edge)' : ' (direct)') : ''; }
 
-  function netSummary(net, via) {
-    var parts = net ? ['rtt ' + num(net.rttMs, 0) + ' ms', el('br'), 'up ' + num(net.upMbit, 0) + ' / down ' + num(net.downMbit, 0) + ' Mbit'] : [el('span', { class: 'dim', text: 'not measured' })];
+  function netSummary(net, via, link) {
+    var fresh = link && Date.now() - Date.parse(link.measuredAt) < 30000;
+    var parts = [fresh ? 'live RTT ' + num(link.rttMs, 1) + ' ms' : 'live RTT not measured'];
+    if (net) parts.push(el('br'), 'probe up ' + num(net.upMbit, 0) + ' / down ' + num(net.downMbit, 0) + ' Mbit/s');
     if (via) parts.push(el('br'), el('span', { class: 'dim', title: viaText(via), text: via.edge ? 'Cloudflare relay' : 'Direct connection' }));
     return parts;
   }
@@ -302,12 +304,24 @@
     if (!m) return el('span', { class: 'dim', text: 'no metrics yet' });
     var gpuUsed = (m.gpu || []).reduce(function (s, g) { return s + (g.usedMiB || 0); }, 0);
     var relay = n && ((n.relayInBps || 0) + (n.relayOutBps || 0) > 0) ? el('span', { class: 'tps-live', text: 'relay \u2193 ' + fmtRate(n.relayInBps || 0) + ' \u2191 ' + fmtRate(n.relayOutBps || 0) }) : null;
-    return [
+    var parts = [
       'free RAM ' + fmtGiB(m.freeRamMiB) + ' GiB', el('br'),
       'GPU used ' + (m.gpu && m.gpu.length ? fmtGiB(gpuUsed) + ' GiB' : NA) + ', CPU ' + num(m.cpuPct, 0) + ' %', el('br'),
       relay, relay ? el('br') : null,
       el('span', { class: 'dim', text: ago(m.ts) }),
     ];
+    var hardware = m.hardware, fresh = n && n.online && Date.now() - Date.parse(m.ts) < 15000;
+    if (hardware) {
+      parts.push(el('br'), 'Fans: ' + (fresh ? hardware.fanControl.state : 'stale'), el('br'), el('span', { class: 'dim', text: hardware.fanControl.detail }));
+      (hardware.fans || []).forEach(function (f) { parts.push(el('br'), f.name + ': ' + (fresh ? num(f.rpm, 0) : NA) + ' RPM'); });
+      if (hardware.temperatures && hardware.temperatures.length) {
+        var sensorId = 'temperatures-' + n.id, previous = $(sensorId);
+        parts.push(el('details', { id: sensorId, open: previous && previous.open }, [el('summary', { text: 'Temperature values (' + hardware.temperatures.length + ')' }), el('dl', { class: 'kv' }, kv(hardware.temperatures.map(function (t) { return [t.name, (fresh ? num(t.celsius, 1) : NA) + ' °C']; })))]));
+      }
+    }
+    (m.gpu || []).forEach(function (g) { parts.push(el('br'), g.id + ': ' + (fresh ? num(g.utilizationPct, 0) : NA) + '% · ' + (fresh ? num(g.temperatureC, 0) : NA) + ' °C · ' + (fresh ? num(g.powerW, 1) : NA) + ' W'); });
+    (m.network || []).forEach(function (v) { parts.push(el('br'), v.name + ': ↓ ' + (fresh && isNum(v.rxBps) ? fmtRate(v.rxBps) : NA) + ' ↑ ' + (fresh && isNum(v.txBps) ? fmtRate(v.txBps) : NA)); });
+    return parts;
   }
 
   function renderNodes() {
@@ -321,7 +335,7 @@
         td([el('div', { class: 'strong', text: n.hostname }), el('div', { class: 'node-id dim small mono', title: n.id, text: shortId(n.id) + (n.agentVersion ? ' · agent ' + n.agentVersion : '') }), el('div', { class: 'dim small mono', text: (n.os || NA) + ' · ' + (n.arch || '') })]),
         td([badge(n.online ? 'online' : 'offline'), n.online ? null : el('div', { class: 'dim small', text: n.lastSeen ? 'seen ' + ago(n.lastSeen) : 'never seen' })]),
         td(offerSummary(n.offer), 'small'),
-        td(netSummary(caps.net, n.via), 'mono small'),
+        td(netSummary(caps.net, n.via, n.online ? n.link : null), 'mono small'),
         td(metricsSummary(n.metrics, n), 'mono small'),
         td(tpsCell(n.metrics, n.routedTokPerSec, servedModels(n.id)), 'num mono'),
         td(String((n.models || []).length), 'num'),
@@ -1207,6 +1221,7 @@
       ['Relay received · 3s', relayFresh && isNum(n.relayInBps) ? fmtRate(n.relayInBps) : stale],
       ['Relay sent · 3s', relayFresh && isNum(n.relayOutBps) ? fmtRate(n.relayOutBps) : stale],
       ['RTT · last probe', net && isNum(net.rttMs) ? num(net.rttMs, 0) + ' ms · ' + ago(net.measuredAt) : 'Not measured'],
+      ['Controller RTT · live', n && n.online && n.link && Date.now() - Date.parse(n.link.measuredAt) < 30000 ? num(n.link.rttMs, 1) + ' ms · ' + ago(n.link.measuredAt) : 'Not measured'],
       ['Host sample', hostAt ? ago(m.ts) + (hostFresh ? ' · live' : ' · stale') : 'Not reported'],
     ];
     var card = el('article', { class: 'topo-node topo-machine ' + (worker ? 'topo-worker' : 'topo-coord') + (served === nodeId ? ' topo-node--served' : ''), 'data-node-id': nodeId }, [

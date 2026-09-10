@@ -247,6 +247,22 @@ describe("control core", () => {
     void pipe;
   });
 
+  test("live ping/pong latency reaches the node and ignores unsolicited pong timestamps", async () => {
+    ctl.channel.sweep();
+    for (let i = 0; i < 50 && !ctl.channel.link(a.id.nodeId); i++) await Bun.sleep(10);
+    const measured = ctl.channel.link(a.id.nodeId)!;
+    expect(measured.rttMs).toBeGreaterThanOrEqual(0);
+    expect(measured.rttMs).toBeLessThan(1000);
+    a.client.send({ t: "pong", ts: "unrequested" });
+    await Bun.sleep(20);
+    expect(ctl.channel.link(a.id.nodeId)).toEqual(measured);
+    ctl.channel.sweep();
+    for (let i = 0; i < 50 && !a.client.link; i++) await Bun.sleep(10);
+    expect(a.client.link).toEqual(measured);
+    const snapshot = await (await api('/api/nodes')).json() as any;
+    expect(snapshot.nodes.find((n: any) => n.id === a.id.nodeId).link.rttMs).toBeGreaterThanOrEqual(0);
+  });
+
   test("disconnect marks the node offline", async () => {
     b.client.stop();
     for (let i = 0; i < 50 && ctl.channel.isOnline(b.id.nodeId); i++) await Bun.sleep(20);

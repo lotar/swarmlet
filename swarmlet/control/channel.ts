@@ -23,6 +23,8 @@ export interface ConnData {
   mux: StreamMux | null;
   agentVersion: string;
   lastSeen: number;
+  ping?: { ts: string; started: number };
+  link?: { rttMs: number; measuredAt: string };
 }
 
 export interface ChannelHooks {
@@ -55,6 +57,7 @@ export class AgentChannel {
 
   /** Path the node's live channel came in through (null when offline). */
   via(nodeId: string): ConnVia | null { return this.conns.get(nodeId)?.data.via ?? null; }
+  link(nodeId: string) { return this.conns.get(nodeId)?.data.link; }
 
   isOnline(nodeId: string): boolean { return this.conns.has(nodeId); }
   onlineNodeIds(): string[] { return [...this.conns.keys()]; }
@@ -152,7 +155,14 @@ export class AgentChannel {
         this.hooks.onLog?.(nodeId, m.assignmentId, m.line);
         break;
       }
-      case "pong": break;
+      case "pong": {
+        const ping = ws.data.ping;
+        if (ping && ping.ts === m.ts) {
+          ws.data.link = { rttMs: Math.round((performance.now() - ping.started) * 100) / 100, measuredAt: new Date().toISOString() };
+          ws.data.ping = undefined;
+        }
+        break;
+      }
       case "auth": break; // already authenticated
     }
   }
@@ -175,7 +185,10 @@ export class AgentChannel {
     const cutoff = Date.now() - staleMs;
     for (const [nodeId, ws] of this.conns) {
       if (ws.data.lastSeen < cutoff) { this.log.warn("stale connection dropped", { nodeId }); ws.close(1001, "stale"); continue; }
-      this.write(ws, JSON.stringify({ t: "ping", ts: new Date().toISOString() } satisfies ControlToAgent));
+      if (ws.data.ping && performance.now() - ws.data.ping.started < staleMs) continue;
+      const ts = new Date().toISOString();
+      ws.data.ping = { ts, started: performance.now() };
+      this.write(ws, JSON.stringify({ t: "ping", ts, link: ws.data.link } satisfies ControlToAgent));
     }
   }
 

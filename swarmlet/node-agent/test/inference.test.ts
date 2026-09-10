@@ -1,6 +1,7 @@
 import { afterEach, expect, test } from "bun:test";
 import { createNodeInference, type InferenceTarget } from "../inference.ts";
 import { startLocalApi, type LocalApiDeps } from "../localapi.ts";
+import { UpdateDrain } from "../update-drain.ts";
 const servers: Array<{ stop(force: boolean): void }> = [];
 afterEach(() => { for (const s of servers.splice(0)) s.stop(true); });
 function serve(fetch: (req: Request) => Response | Promise<Response>) {
@@ -8,6 +9,27 @@ function serve(fetch: (req: Request) => Response | Promise<Response>) {
   return `http://127.0.0.1:${server.port}`;
 }
 const request = (model = "shared", extra = {}, headers = {}) => new Request("http://127.0.0.1/v1/chat/completions", { method: "POST", headers: { "content-type": "application/json", ...headers }, body: JSON.stringify({ model, messages: [{ role: "user", content: "hi" }], ...extra }) });
+
+test("updates wait for the local response body to finish and block new inference until resumed", async () => {
+  const drain = new UpdateDrain();
+  let end: (() => void) | undefined;
+  const local = serve(() => new Response(new ReadableStream({ start(controller) {
+    controller.enqueue(new TextEncoder().encode('data: {"choices":[]}\n\n'));
+    end = () => { controller.enqueue(new TextEncoder().encode("data: [DONE]\n\n")); controller.close(); };
+  } }), { headers: { "content-type": "text/event-stream" } }));
+  const handler = createNodeInference({ local: () => [{ model: "shared", deploymentId: "d", url: local, created: 0 }], remote: () => null, nodeId: () => "n", admit: () => drain.admit() });
+  const response = await handler(request(), "/v1/chat/completions");
+  expect(drain.begin()).toBe(false);
+  const body = response.text();
+  end!(); await body;
+  expect(drain.begin()).toBe(true);
+  expect((await handler(request(), "/v1/chat/completions")).status).toBe(503);
+  drain.resume();
+  const resumed = await handler(request(), "/v1/chat/completions");
+  expect(resumed.status).toBe(200);
+  await resumed.body!.cancel();
+  expect(drain.begin()).toBe(true);
+});
 
 test("local ready server bypasses control, strips keys and preserves streamed UTF-8 bytes", async () => {
   let remoteCalls = 0;
@@ -109,4 +131,20 @@ test('participant telemetry follows local preference or explicit actual deployme
   expect(seen).toEqual(['local','actual']);
   const offline=createNodeInference({local:()=>[],remote:()=>null,nodeId:()=> 'n'});
   expect((await offline(new Request('http://localhost/v1/mesh'),'/v1/mesh')).status).toBe(503);
+});
+
+test('full catalog keeps unavailable models disabled and fails closed when cached mesh routes disappear', async () => {
+  let online=true;
+  const remote=serve(req=>{
+    const url=new URL(req.url); expect(url.searchParams.get('node')).toBe('worker');expect(url.searchParams.get('catalog')).toBe('1');
+    return online ? Response.json({data:[{id:'ready',ready:1,local_eligible:false,local_reasons:['Insufficient RAM']},{id:'unserved',ready:0,local_eligible:false,local_reasons:['Weights missing']}]}) : new Response('offline',{status:503});
+  });
+  const handler=createNodeInference({local:()=>[],remote:()=>({url:remote,key:'key'}),nodeId:()=> 'worker'});
+  const req=new Request('http://localhost/v1/models?catalog=1');
+  const first=await (await handler(req,'/v1/models')).json() as any;
+  expect(first.data.map((m:any)=>[m.id,m.selectable,m.route])).toEqual([['ready',true,'mesh'],['unserved',false,'unavailable']]);
+  expect(first.data[0].local_reasons).toEqual(['Insufficient RAM']);
+  online=false;
+  const cached=await (await handler(req,'/v1/models')).json() as any;
+  expect(cached.data).toHaveLength(2);expect(cached.data.every((m:any)=>!m.selectable)).toBe(true);expect(cached.mesh_available).toBe(false);
 });

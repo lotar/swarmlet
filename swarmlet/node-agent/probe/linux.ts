@@ -2,7 +2,7 @@
 // per-device usage) and the user-slice cgroup delegation. Parsers are pure.
 
 import { readFile } from "node:fs/promises";
-import type { GpuDevice } from "../../protocol/types.ts";
+import type { GpuDevice, NodeMetrics } from "../../protocol/types.ts";
 import { CODE_NOT_FOUND, exec } from "./exec.ts";
 import { clampPct } from "./host.ts";
 
@@ -101,12 +101,19 @@ export function nvidiaInventory(rows: Array<Record<string, string>>): GpuDevice[
   return out;
 }
 
-export function nvidiaUsed(rows: Array<Record<string, string>>): Array<{ id: string; usedMiB: number }> {
-  const out: Array<{ id: string; usedMiB: number }> = [];
+export function nvidiaUsed(rows: Array<Record<string, string>>): NonNullable<NodeMetrics["gpu"]> {
+  const out: NonNullable<NodeMetrics["gpu"]> = [];
   for (const r of rows) {
     const index = Number(r.index);
     const used = Number(r["memory.used"]);
-    if (Number.isInteger(index) && Number.isFinite(used)) out.push({ id: `cuda:${index}`, usedMiB: used });
+    if (Number.isInteger(index) && Number.isFinite(used)) {
+      const item: NonNullable<NodeMetrics["gpu"]>[number] = { id: `cuda:${index}`, usedMiB: used };
+      for (const [field, target, max] of [["utilization.gpu", "utilizationPct", 100], ["temperature.gpu", "temperatureC", 200], ["power.draw", "powerW", 10000], ["fan.speed", "fanPct", 100]] as const) {
+        const value = r[field]?.trim() ? Number(r[field]) : NaN;
+        if (Number.isFinite(value) && value >= 0 && value <= max) item[target] = value;
+      }
+      out.push(item);
+    }
   }
   return out;
 }
@@ -124,8 +131,9 @@ export async function linuxGpusFallback(): Promise<GpuDevice[]> {
 }
 
 /** Used VRAM per device (ids cuda:N). */
-export async function linuxGpuUsed(): Promise<Array<{ id: string; usedMiB: number }>> {
-  return nvidiaUsed(await nvidiaSmi(NVIDIA_USED_FIELDS));
+export async function linuxGpuUsed(): Promise<NonNullable<NodeMetrics["gpu"]>> {
+  try { return nvidiaUsed(await nvidiaSmi([...NVIDIA_USED_FIELDS, "utilization.gpu", "temperature.gpu", "power.draw", "fan.speed"])); }
+  catch { return nvidiaUsed(await nvidiaSmi(NVIDIA_USED_FIELDS)); }
 }
 
 export function cgroupControllersPath(uid: number): string {

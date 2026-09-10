@@ -5,12 +5,18 @@ export interface InferenceDeps {
   local: () => InferenceTarget[];
   remote: () => { url: string; key: string } | null;
   nodeId: () => string;
+  admit?: () => (() => void) | null;
 }
 const json = (value: unknown, status = 200) => Response.json(value, { status, headers: { "cache-control": "no-store" } });
 const error = (message: string, status: number) => json({ error: { message, type: "invalid_request_error" } }, status);
 const paths = new Set(["/v1/chat/completions", "/v1/completions", "/v1/embeddings"]);
+interface CatalogModel {
+  id: string; created?: number; ready?: number; local_eligible?: boolean; local_reasons?: string[];
+}
+interface ListedModel extends CatalogModel { object: string; owned_by: string; route: string; selectable?: boolean }
 
 export function createNodeInference(deps: InferenceDeps) {
+  let cachedCatalog: CatalogModel[] = [];
   return async (req: Request, path: string): Promise<Response> => {
     const local = deps.local();
     const remote = deps.remote();
@@ -29,23 +35,30 @@ export function createNodeInference(deps: InferenceDeps) {
     }
     if (path === "/v1/models") {
       if (req.method !== "GET") return error("GET required", 405);
-      const models = new Map(local.map((target) => [target.model, { id: target.model, object: "model", created: target.created, owned_by: "swarmlet", route: "local" }]));
+      const fullCatalog = new URL(req.url).searchParams.get("catalog") === "1";
+      const models = new Map<string, ListedModel>(local.map((target) => [target.model, { id: target.model, object: "model", created: target.created, owned_by: "swarmlet", route: "local", ...(fullCatalog ? { selectable: true, local_eligible: true, local_reasons: [] } : {}) }]));
       let meshAvailable = false;
       if (remote) {
         try {
-          const res = await fetch(`${remote.url.replace(/\/$/, "")}/v1/models`, {
+          const suffix = fullCatalog ? `?catalog=1&node=${encodeURIComponent(deps.nodeId())}` : "";
+          const res = await fetch(`${remote.url.replace(/\/$/, "")}/v1/models${suffix}`, {
             headers: { authorization: `Bearer ${remote.key}` }, redirect: "error",
             signal: AbortSignal.any([req.signal, AbortSignal.timeout(5000)]),
           });
           if (res.ok) {
-            const body = await res.json() as { data?: Array<{ id: string; created?: number }> };
+            const body = await res.json() as { data?: CatalogModel[] };
             if (Array.isArray(body.data)) {
               meshAvailable = true;
-              for (const model of body.data) if (typeof model.id === "string" && !models.has(model.id)) models.set(model.id, { id: model.id, object: "model", created: Number.isInteger(model.created) ? model.created! : 0, owned_by: "swarmlet", route: "mesh" });
+              if (fullCatalog) cachedCatalog = body.data.filter(model => typeof model.id === "string");
+              for (const model of body.data) if (typeof model.id === "string" && !models.has(model.id)) {
+                const ready = !fullCatalog || (model.ready ?? 0) > 0;
+                models.set(model.id, { id: model.id, object: "model", created: Number.isInteger(model.created) ? model.created! : 0, owned_by: "swarmlet", route: ready ? "mesh" : "unavailable", ...(fullCatalog ? { selectable: ready, local_eligible: model.local_eligible === true, local_reasons: model.local_reasons ?? [] } : {}) });
+              }
             }
           }
         } catch { /* local models remain usable when control cannot be reached */ }
       }
+      if (fullCatalog && !meshAvailable) for (const model of cachedCatalog) if (!models.has(model.id)) models.set(model.id, { id: model.id, object: "model", created: model.created ?? 0, owned_by: "swarmlet", route: "unavailable", selectable: false, local_eligible: false, local_reasons: ["Control is disconnected; local availability cannot be checked."] });
       if (!meshAvailable && !models.size) return error("Mesh unavailable. Connect this node to control and wait for a ready model.", 503);
       return json({ object: "list", data: [...models.values()], mesh_available: meshAvailable });
     }
@@ -68,6 +81,8 @@ export function createNodeInference(deps: InferenceDeps) {
     if (pinned) headers.set("x-swarmlet-deployment", pinned);
     const abort = new AbortController();
     const signal = AbortSignal.any([req.signal, abort.signal, AbortSignal.timeout(30 * 60_000)]);
+    const release = deps.admit ? deps.admit() : () => {};
+    if (!release) return error("Node update in progress; retry shortly.", 503);
     try {
       const upstream = await fetch(`${base.replace(/\/$/, "")}${path}`, { method: "POST", body: text, headers, signal, redirect: "error" });
       const out = new Headers({ "content-type": upstream.headers.get("content-type") ?? "application/json", "cache-control": "no-store", "x-swarmlet-route": target ? "local" : "mesh" });
@@ -76,10 +91,11 @@ export function createNodeInference(deps: InferenceDeps) {
         const value = upstream.headers.get(h); if (value) out.set(h, value);
       }
       if (target) { out.set("x-swarmlet-deployment", target.deploymentId); out.set("x-swarmlet-node", deps.nodeId()); }
-      if (!upstream.body) return new Response(null, { status: upstream.status, headers: out });
-      const stream = inferenceStream(upstream, abort);
+      if (!upstream.body) { release(); return new Response(null, { status: upstream.status, headers: out }); }
+      const stream = inferenceStream(upstream, abort, { finish: release });
       return new Response(stream, { status: upstream.status, headers: out });
     } catch (e) {
+      release();
       if (req.signal.aborted) return error("request cancelled", 499);
       return error(`${target ? "Local server" : "Mesh"} unavailable: ${(e as Error).message}`, 502);
     }

@@ -17,6 +17,8 @@ export interface ControlConfig {
   /** Dev convenience: treat requests arriving from 127.0.0.1 as admin (no token). Off unless
    *  SWARMLET_ADMIN_TRUST_LOOPBACK=1; never enable on a host others can reach through a local proxy. */
   adminTrustLoopback: boolean;
+  /** Announce and accept signed node identities on direct private-LAN connections. */
+  lanAutoEnroll?: boolean;
 }
 
 const DEFAULT_PORT = 47900;
@@ -45,9 +47,10 @@ export function loadControlConfig(overrides: Partial<ControlConfig> = {}): Contr
     publicUrl: overrides.publicUrl ?? process.env.SWARMLET_CONTROL_URL ?? stored.publicUrl ?? `http://${host}:${port}`,
     logLevel: overrides.logLevel ?? (process.env.SWARMLET_LOG as ControlConfig["logLevel"] | undefined) ?? stored.logLevel ?? "info",
     adminTrustLoopback: overrides.adminTrustLoopback ?? process.env.SWARMLET_ADMIN_TRUST_LOOPBACK === "1",
+    lanAutoEnroll: overrides.lanAutoEnroll ?? (process.env.SWARMLET_LAN_AUTO_ENROLL === undefined ? stored.lanAutoEnroll ?? true : process.env.SWARMLET_LAN_AUTO_ENROLL === "1"),
   };
-  if (!existsSync(file) || stored.adminToken !== cfg.adminToken || stored.port !== cfg.port || stored.publicUrl !== cfg.publicUrl) {
-    writeFileSync(file, JSON.stringify({ host: cfg.host, port: cfg.port, adminToken: cfg.adminToken, publicUrl: cfg.publicUrl, logLevel: cfg.logLevel }, null, 2) + "\n", { mode: 0o600 });
+  if (!existsSync(file) || stored.adminToken !== cfg.adminToken || stored.port !== cfg.port || stored.publicUrl !== cfg.publicUrl || stored.lanAutoEnroll !== cfg.lanAutoEnroll) {
+    writeFileSync(file, JSON.stringify({ host: cfg.host, port: cfg.port, adminToken: cfg.adminToken, publicUrl: cfg.publicUrl, logLevel: cfg.logLevel, lanAutoEnroll: cfg.lanAutoEnroll }, null, 2) + "\n", { mode: 0o600 });
   }
   return cfg;
 }
