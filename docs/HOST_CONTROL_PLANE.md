@@ -11,3 +11,11 @@ Before migration, save node configurations and back up the complete controller d
 After starting the hosted service, verify anonymous admin requests return 401, authenticate through the browser, and reconnect each existing node to the new HTTPS/WSS address. Existing node IDs, offers and signing-key pins must match their pre-migration records. Restore the saved deployment intent and verify generation over the public route.
 
 Finally publish a higher signed release sequence, allow the normal node updater to activate it, and verify the installed files against the signed manifest and the actual running executable path. A successful image build or a healthy web page alone does not verify node migration or automatic updates.
+
+For guarded model operations after cutover, point the existing idle gate at the hosted router:
+
+```sh
+python3 swarmlet/e2e/idle-window.py --allow-stopped --check --control-url https://app.swarmlet.ai
+```
+
+The gate still reads the admin token from `--control-config` (default `~/.swarmlet/control/control.json`), requires known zero activity, and preserves the existing production-owner and listener checks. Omit `--check` and supply the operator after `--` to run inside a verified quiet window. The default controller URL remains localhost for local installations.

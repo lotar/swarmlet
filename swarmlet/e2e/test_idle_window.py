@@ -77,6 +77,24 @@ class IdleGateTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError,'listener'):
                 module.stopped_sample(Path('/unused'))
 
+    def test_hosted_url_keeps_authenticated_routing_check(self):
+        config = Mock()
+        config.read_text.return_value = '{"adminToken":"fixture-secret"}'
+        with patch.object(module.subprocess, 'run', return_value=Mock(returncode=113, stderr='Could not find service')), \
+             patch.object(module.socket, 'create_connection', side_effect=ConnectionRefusedError), \
+             patch.object(module, 'read_json', return_value={'totals': {'inflight': 2}}) as read:
+            result = module.stopped_sample(config, 'https://app.swarmlet.ai/')
+            read.assert_called_once_with('https://app.swarmlet.ai/api/routing', {'Authorization': 'Bearer fixture-secret'})
+            self.assertEqual(result['router_inflight'], 2)
+            self.assertFalse(module.QuietGate(0).observe(result, 0))
+
+    def test_hosted_cli_passes_url_to_read_only_check(self):
+        with patch.object(module.sys, 'argv', ['idle-window.py', '--allow-stopped', '--check', '--control-url', 'https://app.swarmlet.ai']), \
+             patch.object(module, 'stopped_sample', return_value=self.metrics()) as sample, \
+             patch.object(module.signal, 'signal'):
+            self.assertEqual(module.main(), 0)
+            self.assertEqual(sample.call_args.args[1], 'https://app.swarmlet.ai')
+
     def test_interrupted_stop_attempt_restores(self):
         commands = []
         def run(script, action):

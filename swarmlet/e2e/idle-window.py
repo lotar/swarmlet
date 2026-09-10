@@ -20,7 +20,7 @@ import urllib.request
 
 
 def read_json(url, headers=None):
-    req = urllib.request.Request(url, headers={"Connection": "close", **(headers or {})})
+    req = urllib.request.Request(url, headers={"Connection": "close", "User-Agent": "Swarmlet/0.1", **(headers or {})})
     with urllib.request.urlopen(req, timeout=5) as response:
         return json.load(response)
 
@@ -38,19 +38,19 @@ def parse_metrics(text):
     return values
 
 
-def sample(base, control_config):
+def sample(base, control_config, control_url="http://127.0.0.1:47900"):
     if read_json(base + "/health").get("status") != "ok":
         raise ValueError("production health is not ok")
     req = urllib.request.Request(base + "/metrics", headers={"Connection": "close"})
     with urllib.request.urlopen(req, timeout=5) as response:
         metrics = parse_metrics(response.read().decode())
     cfg = json.loads(control_config.read_text())
-    routing = read_json("http://127.0.0.1:47900/api/routing", {"Authorization": "Bearer " + cfg["adminToken"]})
+    routing = read_json(control_url.rstrip("/") + "/api/routing", {"Authorization": "Bearer " + cfg["adminToken"]})
     metrics["router_inflight"] = routing["totals"]["inflight"]
     return metrics
 
 
-def stopped_sample(control_config):
+def stopped_sample(control_config, control_url="http://127.0.0.1:47900"):
     """Explicit stopped-service mode requires an unloaded owner and absent listener."""
     owner=subprocess.run(['launchctl','print',f'gui/{os.getuid()}/com.lotar.llm-flashnext'],capture_output=True,text=True)
     if owner.returncode==0 or 'Could not find service' not in owner.stderr:
@@ -63,7 +63,7 @@ def stopped_sample(control_config):
         connection.close()
         raise ValueError('production listener exists')
     cfg=json.loads(control_config.read_text())
-    routing=read_json('http://127.0.0.1:47900/api/routing',{'Authorization':'Bearer '+cfg['adminToken']})
+    routing=read_json(control_url.rstrip('/')+'/api/routing',{'Authorization':'Bearer '+cfg['adminToken']})
     return dict(requests_processing=0,requests_deferred=0,tokens_predicted_total=0,router_inflight=routing['totals']['inflight'])
 
 
@@ -108,6 +108,7 @@ def main():
     parser.add_argument("--allow-stopped", action="store_true", help="Require production owner unloaded and port absent; preserve its stopped state")
     parser.add_argument("--check", action="store_true", help="one read-only observation; never stops production")
     parser.add_argument("--maintenance", type=Path, default=Path(__file__).resolve().parents[2] / "sin-harness/scripts/flashnext-maintenance.sh")
+    parser.add_argument("--control-url", default="http://127.0.0.1:47900", help="Controller URL used for authenticated routing activity checks")
     parser.add_argument("--control-config", type=Path, default=Path.home() / ".swarmlet/control/control.json")
     parser.add_argument("command", nargs=argparse.REMAINDER)
     args = parser.parse_args()
@@ -127,7 +128,7 @@ def main():
     try:
         while time.monotonic() < deadline:
             try:
-                metrics = stopped_sample(args.control_config) if args.allow_stopped else sample("http://127.0.0.1:8099", args.control_config)
+                metrics = stopped_sample(args.control_config, args.control_url) if args.allow_stopped else sample("http://127.0.0.1:8099", args.control_config, args.control_url)
                 ready = gate.observe(metrics, time.monotonic())
                 print("IDLE_SAMPLE " + json.dumps(metrics) + " quiet=" + str(ready), flush=True)
             except Exception as exc:
@@ -139,7 +140,7 @@ def main():
             if args.check:
                 return 0 if all(metrics[k] == 0 for k in ("requests_processing", "requests_deferred", "router_inflight")) else 1
             if ready and args.allow_stopped:
-                stopped_sample(args.control_config)  # Recheck immediately before starting.
+                stopped_sample(args.control_config, args.control_url)  # Recheck immediately before starting.
                 print('MAINTENANCE_WINDOW_OPEN production already stopped',flush=True)
                 env=dict(os.environ,SWARMLET_IDLE_WINDOW='1')
                 child=subprocess.Popen(command,env=env,start_new_session=True)
