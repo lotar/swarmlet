@@ -1,3 +1,5 @@
+> Historical work log. See [final fleet and hosted acceptance](FLEET_ACCEPTANCE_20260910.md) for the current deployed state.
+
 REQUIREMENTS
 - Windows node installed and working | Lotar | keep: current fleet excludes Windows.
 - macOS/Windows/Linux autostart and automatic updates | Lotar | keep: unattended production operation requires both.

@@ -1,12 +1,18 @@
 # Fleet acceptance — 10 September 2026
 
+## Final deployed state
+
+**Live:** [app.swarmlet.ai](https://app.swarmlet.ai). All four nodes run signed release **2026091006** and connect to the hosted controller over HTTPS/WSS with their original identities, signing pins and resource offers. The existing **Flash-Next three-node deployment is READY and serving**. The 2B deployment remains saved as a stopped fallback. The 2B/35B allocation matrix passed all eight cases, and the hosted update and four-gateway checks passed.
+
+Remaining qualification limits: physical OS reboot/login-trigger tests were not performed; Linux/Windows fan control is unsupported by the current drivers; Windows local model inference is unavailable under its current disabled offer and absent model. These limits do not prevent its verified mesh chat.
+
 ## Result before hosted cutover
 
 PASS for the supported model/allocation matrix: **8/8 cases, 16/16 responses**, each returning `ALLOCATION_OK`. All four original resource offers were restored, and the original three-node 2B deployment returned to READY with its saved `[3,3,18]` layer split. Cleanup errors: none.
 
-The four installed nodes run signed release **2026091005**, source **5dc77f9f900deb6e1483508bad1a944229afcec2**, already pushed to `main`. Every active release file was checked against its signed inventory, and every running agent executable resolves to that release directory: Mac 10 files, each Linux node 7 files, Windows 6 files. All four nodes expose the three-entry model catalog.
+At the local acceptance checkpoint, the four installed nodes ran signed release **2026091005**, source **5dc77f9f900deb6e1483508bad1a944229afcec2**, already pushed to `main`. Every active release file was checked against its signed inventory, and every running agent executable resolves to that release directory: Mac 10 files, each Linux node 7 files, Windows 6 files. All four nodes expose the three-entry model catalog.
 
-Hosted cutover and the subsequent release-6 update test are the next phase; they have not been performed at this report checkpoint. Flash-Next local loading and physical OS reboot tests remain unqualified.
+This checkpoint preceded hosted cutover and the release-6 update test. Their completed results and the later Flash-Next recovery are recorded below.
 
 ## Actual allocation and response measurements
 
@@ -50,7 +56,7 @@ Two defects found during this qualification were corrected:
 - **Qwen3.5 2B Q8:** distributed operation and independent replicas on both Linux nodes passed.
 - **Qwen3.6 35B A3B Q4_K_M:** Mac replica passed at 25%, 50% and 100%; the registered model file is 20,419,565,568 bytes. Sampled RSS approached 19.4 GiB.
 - **Windows local inference:** not qualified. Its offer is disabled, replica role is disabled, and the model is absent; the catalog explains these conditions. Windows can use mesh inference, as verified in earlier four-node endpoint/browser tests. Its driver exposes no supported GPU/fan control interface.
-- **Flash-Next:** still blocked by runtime memory admission. The final Mac sample had 66071 MiB free, below the existing 76,016 MiB requirement. Static placement feasibility does not establish runtime fit. No unrelated Docker services were restarted to free memory.
+- **Flash-Next at the local checkpoint:** runtime admission was blocked with 66,071 MiB free, below the existing 76,016 MiB requirement. Later, available RAM increased and the normal runtime gate admitted the existing deployment; the successful hosted recovery is detailed below. No unrelated Docker services were restarted to free memory.
 
 ## Executed evidence and retained failures
 
@@ -83,4 +89,44 @@ Private raw measurements: `~/.swarmlet/backups/resource-acceptance-20260910-03/r
 
 The resource-limit diff passed correctness, contracts, data safety, time, concurrency, security, test and simplicity review. Existing offers, process enforcement and recipe builders are reused; no new wire schema or policy store was introduced. The local API and startup validator remain the offer consumers. No unresolved source-review finding remains in that diff.
 
-The hosted phase must preserve controller keys, node identities, offers and deployment intent, authenticate public administration, restore real inference, and verify a higher signed release through the public controller before completion is claimed.
+The completed hosted phase below verifies controller-key preservation, node identity/offer preservation, authenticated administration, real inference and a higher signed release.
+
+
+## Hosted controller and public update qualification
+
+The controller is deployed on the existing `the-shop` server at `46.225.53.158` as the separate `swarmlet-control` container, image `swarmlet-control:5dc77f9`. Its source is `/root/projects/swarmlet-control/releases/5dc77f9`; persistent data is `/root/projects/swarmlet-control/data`. Existing server applications retained their prior uptime and healthy states.
+
+The old Mac controller and tunnel were stopped and disabled before the final SQLite/config/key copy. A complete copy-on-write backup, original node configurations and LaunchAgent definitions are saved under `~/.swarmlet/backups/host-cutover-20260910/`. The old local controller port remains closed. The signing key, admin credential, node IDs, offers and deployment records were preserved. Each node rejoined the public HTTPS/WSS address with its existing identity; subsequent checks compared the actual saved configurations and signing pins against the pre-cutover copies.
+
+Actual public checks:
+
+- `/health`: HTTP 200; container healthy.
+- Anonymous `/api/nodes` and `/api/join-codes`: HTTP 401.
+- Valid login: HTTP 303 with Secure, HttpOnly, SameSite=Strict cookie flags.
+- Restored distributed 2B API request: `HOSTED_OK`.
+- Browser chat: `HOSTED_BROWSER_OK`, attributed to the Mac and both Linux workers; 9.4 server-reported tok/s and 4,889 ms to first token for that five-token reply. A fresh authenticated reload had no console errors. The initial unauthenticated request correctly produced a 401.
+
+Release **2026091006** was signed and published inside the hosted container. It intentionally contains the same payload bytes as release 5, with a new signed sequence, to prove public delivery and activation. All four nodes downloaded/verified/activated it through the normal updater without a forced update or service restart. The runtime audit verified every file and the actual executable path, followed by preserved-configuration checks and real requests through all four local gateways:
+
+```text
+PASS: 4/4 hosted release6 activations, signed inventories, stable identities/pins/offers, and gateway replies
+```
+
+The four `HOSTED_FLEET_OK` requests took 4.15 s (Mac), 2.81 s (Windows), 3.01 s (Linux 1), and 4.94 s (Linux 2). Release-6 inventories, replies and public node snapshots are in the cutover backup directory. Public browser screenshots are `/tmp/swarmlet-hosted-nodes.png` and `/tmp/swarmlet-hosted-chat.png`.
+
+Cloudflare rejected the operator's default Python user-agent with error 1010; the normal Bun client and explicit `Swarmlet/0.1` user-agent returned HTTP 200. The operator was corrected without changing Cloudflare security settings. The existing idle guard now accepts `--control-url` so guarded operations query the hosted router. Its ten tests passed, including busy refusal and cleanup behavior; a real hosted `--allow-stopped --check` returned known zero counters. The local URL remains the default.
+
+## Flash-Next recovery after cutover
+
+The Mac later had 77,772 MiB free after stopping the 2B fallback. The existing `flashnext-mesh` deployment passed its unchanged runtime fit gate and loaded in approximately **91.8 seconds** from the first placement sample to READY. It uses the original `[1,1,46]` layer placement on the two Linux GPUs and Mac, context 1024, one parallel slot, no speculative chain, and relay transport through the hosted controller.
+
+Two public requests returned `FLASH_RECOVERED` in **3.54 s** and **1.67 s**. Peak sampled Mac process RSS during loading was **59,961 MiB**; unified GPU allocation is not represented completely by process RSS. Then every node gateway returned `FLASH_FLEET_OK`: Mac 3.34 s, Windows 1.90 s, Linux 1 1.94 s, Linux 2 2.09 s.
+
+```text
+PASS: existing Flash-Next deployment restored over the hosted controller; 2B fallback remains stopped
+PASS: Flash-Next answers through all four node gateways on hosted release6
+```
+
+The Flash-Next deployment remains running. The stopped 2B deployment is retained for fallback. No resource offers, model placement, OS reserve, or unrelated Docker configuration were changed for this recovery. Raw load samples and replies are under `~/.swarmlet/backups/hosted-flash-recovery-20260910/`.
+
+The final hosted browser chat returned `FLASH_BROWSER_OK` with the correct three-node processing view, 5.3 server-reported tok/s and 3,116 ms to first token for that four-token reply. The browser console had no errors. Screenshot: `/tmp/swarmlet-hosted-flash-chat.png`.

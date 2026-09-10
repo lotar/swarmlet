@@ -1,3 +1,5 @@
+> Historical work log. See [final fleet and hosted acceptance](FLEET_ACCEPTANCE_20260910.md) for the current deployed state.
+
 # Windows takeover and mesh recovery — 2026-09-10
 
 Status: partial. Lotar transferred Pi's paused Windows work to Codex. The existing
