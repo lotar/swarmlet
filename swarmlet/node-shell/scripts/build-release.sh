@@ -19,17 +19,17 @@ out="$root/dist/shell/$os"
 mkdir -p "$out"
 # Clear only this script's known output name, so old releases cannot masquerade as this build.
 if [ "$os" = darwin ]; then
+  app="$build_target/release/bundle/$subdir/Swarmlet Node.app"
   # Local builds have only a linker signature until the complete app is sealed.
   # Preserve an explicitly configured signing identity; otherwise use local ad-hoc signing.
   if [ -z "${APPLE_SIGNING_IDENTITY:-}" ]; then
-    codesign --force --deep --sign - "$build_target/release/bundle/$subdir/Swarmlet Node.app"
+    codesign --force --deep --sign - "$app"
   fi
-  codesign --verify --deep --strict "$build_target/release/bundle/$subdir/Swarmlet Node.app"
   # Signing can change the sidecar bytes. Publish that exact artifact for both service
   # and GUI, and record its final hash instead of the pre-signing compiler output.
-  python3 - "$root/dist/agent/darwin" "$build_target/release/bundle/$subdir/Swarmlet Node.app/Contents/MacOS/swarmlet-node" <<'PY_SIGNED_AGENT'
+  python3 - "$root/dist/agent/darwin" "$app/Contents/MacOS/swarmlet-node" "$app/Contents/Resources/agent-build.json" <<'PY_SIGNED_AGENT'
 import hashlib, json, os, pathlib, shutil, sys
-folder, sidecar = map(pathlib.Path, sys.argv[1:])
+folder, sidecar, bundled_manifest = map(pathlib.Path, sys.argv[1:])
 manifest = json.loads((folder / "agent-build.json").read_text())
 manifest.setdefault("compiledSha256", manifest["sha256"])
 manifest["sha256"] = hashlib.sha256(sidecar.read_bytes()).hexdigest()
@@ -37,7 +37,22 @@ temporary = folder / "swarmlet-node.signed"
 shutil.copy2(sidecar, temporary)
 os.replace(temporary, folder / "swarmlet-node")
 (folder / "agent-build.json").write_text(json.dumps(manifest, indent=2) + "\n")
+bundled_manifest.write_text(json.dumps(manifest, indent=2) + "\n")
 PY_SIGNED_AGENT
+  # Updating a resource invalidates the outer seal. Re-seal only the app so the already
+  # signed sidecar keeps the exact bytes recorded in both manifests.
+  codesign --force --sign "${APPLE_SIGNING_IDENTITY:--}" --preserve-metadata=identifier,entitlements,requirements,flags,runtime "$app"
+  codesign --verify --deep --strict "$app"
+  python3 - "$root/dist/agent/darwin" "$app" <<'PY_VERIFY_BUNDLE'
+import hashlib, json, pathlib, sys
+folder, app = map(pathlib.Path, sys.argv[1:])
+manifest = json.loads((folder / "agent-build.json").read_text())
+bundled = json.loads((app / "Contents/Resources/agent-build.json").read_text())
+digest = hashlib.sha256((app / "Contents/MacOS/swarmlet-node").read_bytes()).hexdigest()
+assert digest == manifest["sha256"] == bundled["sha256"], "signed agent manifest mismatch"
+assert (app / "Contents/MacOS/swarmlet-node").read_bytes() == (folder / "swarmlet-node").read_bytes(), "service and shell agents differ"
+print("signed service and bundled agent hashes match:", digest)
+PY_VERIFY_BUNDLE
   rm -rf "$out/Swarmlet Node.app"
   cp -R "$build_target/release/bundle/$subdir/Swarmlet Node.app" "$out/"
 else

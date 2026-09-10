@@ -61,3 +61,5 @@ Remaining acceptance:
 - FlashNext remains blocked by the existing memory requirement. Do not restart unrelated Docker workloads without the outstanding authorization.
 
 Windows signal behavior reference: [official Node process documentation](https://nodejs.org/api/process.html#signal-events); verified against the real Windows runtime. The Linux packaging staging archive initially contained AppleDouble `._default.json` (magic 00051607); normal default.json parsed correctly. Removing 58 generated metadata files from the isolated staging directory allowed the native DEB build to finish successfully.
+
+Final Mac package integrity correction: bundle metadata originally matched the pre-sign agent 0d074b799195dc34ccd3716226911fed97553f4b91749fa7ea95c5a544a85f28, while the signed executable was aa44ad2d4142a5bcf795564d948be250a155c2b123765ce4f9d5ea80a06579a4. build-release.sh now updates both manifests and re-seals only the outer app. Native rebuild completed in 37.26 seconds, codesign deep/strict verification passed, and bundled/service bytes plus both manifests match the signed hash. Engine bytes remained unchanged.
