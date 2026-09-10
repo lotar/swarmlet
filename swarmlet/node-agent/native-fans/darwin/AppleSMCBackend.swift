@@ -56,7 +56,9 @@ public final class AppleSMCBackend: SMCBackend {
         var input = SMCParamStruct()
         input.key = SMCFormat.fourCharCode(key)
         input.data8 = 9
-        let output = try call(input)
+        let output: SMCParamStruct
+        do { output = try call(input) }
+        catch FanCtlError.firmware(132) { throw FanCtlError.keyNotFound(key) }
         return KeyInfo(dataSize: output.keyInfo.dataSize, dataType: SMCFormat.stringFromFourCharCode(output.keyInfo.dataType))
     }
 
@@ -103,7 +105,7 @@ public final class AppleSMCBackend: SMCBackend {
             &out, &outSize
         )
         guard result == kIOReturnSuccess else { throw FanCtlError.smc("SMC call failed: \(result)") }
-        guard out.result == 0 else { throw FanCtlError.smc("SMC firmware error: \(out.result)") }
+        guard out.result == 0 else { throw FanCtlError.firmware(out.result) }
         return out
     }
     #else

@@ -62,7 +62,8 @@ public final class FanController {
         for fan in 0..<max(0, count) {
             do { try writeAutoMode(fan: fan) } catch { if firstError == nil { firstError = error } }
         }
-        do { try write(FanKeys.forceTest, 0) } catch { if firstError == nil { firstError = error } }
+        do { if try hasForceTest() { try write(FanKeys.forceTest, 0) } }
+        catch { if firstError == nil { firstError = error } }
         if let firstError { throw firstError }
     }
 
@@ -91,9 +92,16 @@ public final class FanController {
         }
     }
 
+    private func hasForceTest() throws -> Bool {
+        do { _ = try backend.readInt(FanKeys.forceTest); return true }
+        catch FanCtlError.keyNotFound(FanKeys.forceTest) { return false }
+    }
+
     private func enableManualMode(fan: Int) throws {
-        try write(FanKeys.forceTest, 1)
-        sleep(0.5)
+        if try hasForceTest() {
+            try write(FanKeys.forceTest, 1)
+            sleep(0.5)
+        }
 
         var lastError: Error?
         for _ in 0..<10 {

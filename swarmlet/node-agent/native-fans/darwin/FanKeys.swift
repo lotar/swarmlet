@@ -53,6 +53,8 @@ public enum FanCtlError: Error, Equatable, CustomStringConvertible {
     case noFans
     case rpmOutOfRange(rpm: Int, min: Int, max: Int, fan: Int)
     case smc(String)
+    case firmware(UInt8)
+    case keyNotFound(String)
     case noTemperatureSensors
     case smcWriteFailed(key: String, value: Int, underlying: String)
     case smcVerifyFailed(key: String, expected: Int, actual: Int)
@@ -60,6 +62,8 @@ public enum FanCtlError: Error, Equatable, CustomStringConvertible {
     public var description: String {
         switch self {
         case .invalidArguments(let message), .invalidRPM(let message), .smc(let message): return message
+        case .firmware(let code): return "SMC firmware error: \(code)"
+        case .keyNotFound(let key): return "SMC key not found: \(key)"
         case .noTemperatureSensors: return "No valid temperature sensors found"
         case let .smcWriteFailed(key, value, underlying): return "write \(key)=\(value) failed: \(underlying)"
         case let .smcVerifyFailed(key, expected, actual): return "write \(key) did not stick: expected \(expected), got \(actual)"
