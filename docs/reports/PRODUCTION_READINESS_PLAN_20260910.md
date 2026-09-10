@@ -20,7 +20,7 @@ SCOPE
 - Complete the requested fleet installation, lifecycle, discovery, model availability and live E2E; no unrelated host service changes.
 
 GOAL / DONE-WHEN: four real nodes connect automatically, show full catalog with honest availability, survive service restart, and install a verified release automatically with rollback tested. Native shell and inference paths exercised before any production-ready claim.
-CURRENT STATE (updated 2026-09-10): all four real nodes are online under the stable service supervisor and have automatically activated signed release 2026091001. Windows native MSVC engine, NSIS package and scheduled task work. Catalog, LAN discovery, controller RTT, network rates, capability-based fan telemetry and signed updates are implemented. Source changes are still on the working branch; final package refresh and full final acceptance remain.
+CURRENT STATE (updated 2026-09-10): all four real nodes are online under the stable service supervisor and have automatically activated signed releases 2026091001 and 2026091002. Final Mac, Windows NSIS and Linux DEB packages are built. Catalog, LAN discovery, controller RTT, network rates, capability-based fan telemetry and signed updates are implemented and exercised on the fleet. Mac fan authentication, a Mac visual check while unlocked, physical reboot/login checks, and FlashNext memory remain unresolved.
 PREMISE CHECK: model catalog and discovery are missing. Autostart exists at login; boot-before-login semantics differ by OS. Tauri autostart uses package name, so hypothesized identifier collision is refuted by installed crate source.
 STEPS:
 1. Windows engine and power verification -> real build exit, manifest hashes and binary --version; keep-awake -Verify.
@@ -54,8 +54,8 @@ Simplicity — existing Ed25519 identities, native services, inference stream ho
 
 Remaining acceptance:
 - Isolated native supervisor rollback/crash proofs now pass on Linux (Bun 1.3.14) and Windows (both 1.4.2 and shipping 1.3.14). Windows uses the real local shutdown API because its SIGTERM kill is unconditional; exit-code-zero assertion is retained. The actual installed Windows task also exited 0 through /api/shutdown and restarted successfully.
-- Publish and activate the final second release; verify running executable hashes against signed manifests and desktop packages.
-- Finish final desktop packaging/native-window checks and browser chat/catalog/stats checks after final updates.
+- Final release 2026091002 activated automatically on all four nodes. Active process paths, every release file size and SHA-256, and package agent hashes match: Mac 10 files, Linux 7 per host, Windows 6.
+- Final desktop packages built; Mac app installed in ~/Applications, Windows NSIS installed and its service re-registered, Linux DEB extracted into ~/.local/opt/swarmlet-node/20260910 with a user desktop launcher. Native Windows and Linux screenshots verified; Mac app process and signature verified, but the locked desktop prevents visual inspection. The system-wide Linux package is unchanged because sudo authentication is unavailable.
 - Complete Mac administrator authentication, then verify maximum fan targets/RPM and restore behavior. Both current Linux hosts and Windows expose no supported generic writable fan controls; this must remain explicit, never simulated.
 - Native autostart registration and service restarts are verified; physical OS reboot/login-trigger testing has not been performed.
 - FlashNext remains blocked by the existing memory requirement. Do not restart unrelated Docker workloads without the outstanding authorization.
@@ -63,3 +63,12 @@ Remaining acceptance:
 Windows signal behavior reference: [official Node process documentation](https://nodejs.org/api/process.html#signal-events); verified against the real Windows runtime. The Linux packaging staging archive initially contained AppleDouble `._default.json` (magic 00051607); normal default.json parsed correctly. Removing 58 generated metadata files from the isolated staging directory allowed the native DEB build to finish successfully.
 
 Final Mac package integrity correction: bundle metadata originally matched the pre-sign agent 0d074b799195dc34ccd3716226911fed97553f4b91749fa7ea95c5a544a85f28, while the signed executable was aa44ad2d4142a5bcf795564d948be250a155c2b123765ce4f9d5ea80a06579a4. build-release.sh now updates both manifests and re-seals only the outer app. Native rebuild completed in 37.26 seconds, codesign deep/strict verification passed, and bundled/service bytes plus both manifests match the signed hash. Engine bytes remained unchanged.
+
+
+Final fleet acceptance (2026-09-10 11:48 UTC):
+- `python3 /tmp/swarmlet-production-acceptance.py` -> `PASS: 4/4 online; 4/4 chat endpoints; full catalogs; live RTT/network/fan status; distributed 2B ready`. Each real node's local OpenAI endpoint returned HTTP 200 and FLEET_OK. The Mac serves locally; Windows and both Linux nodes use the mesh. All three catalog entries are present everywhere; both unavailable models are unselectable.
+- Final Windows browser chat returned FINAL_WINDOWS_OK, with processing attributed to the Mac and both Linux workers. The UI disabled sending during a rolling restart and recovered on catalog refresh. A fresh browser reload after rollout reported `(no console errors)`; earlier expected disconnect/503 errors occurred during service replacement.
+- LaunchAgent is running on Mac; both Linux systemd units are enabled/active with Linger=yes; the Windows scheduled task is Running. This proves registration and restart behavior, not a physical boot test.
+- Exact final agent hashes: darwin aa44ad2d4142a5bcf795564d948be250a155c2b123765ce4f9d5ea80a06579a4; linux 160cf73024a6c71dd2eadefc46f03e405acbb4742b0d3bd6c7c8b71ae7b5e03a; windows dd200aaf8d6825a3d3987c5e2e1480be872696216c2022b624ae77fd3df19acd.
+- Evidence (local, not committed): ~/.swarmlet/backups/production-final-20260910 contains runtime/file audits, four chat responses, live fleet telemetry and native/browser screenshots. Packages are in swarmlet/dist/shell/{darwin,linux,windows}.
+- Overall status remains partial: the Mac helper authentication prompt is pending, current Linux/Windows drivers expose no supported maximum-fan control, and FlashNext is not serving because its memory fit remains unresolved. No unrelated Docker workloads were restarted.
