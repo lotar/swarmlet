@@ -5,7 +5,7 @@ func output(_ value: [String: Any]) {
 }
 do {
     let args = Array(CommandLine.arguments.dropFirst())
-    guard args.count == 1, ["status", "max", "auto"].contains(args[0]) else { throw FanCtlError.invalidArguments("Usage: swarmlet-fans status|max|auto") }
+    guard args.count == 1, ["status", "max", "auto", "hold"].contains(args[0]) else { throw FanCtlError.invalidArguments("Usage: swarmlet-fans status|max|auto|hold") }
     let backend = try AppleSMCBackend(), controller = FanController(backend: backend)
     let fans: [FanInfo]
     do { fans = try controller.status() } catch FanCtlError.noFans { fans = [] }
@@ -13,7 +13,10 @@ do {
     if args[0] != "status" {
         guard !fans.isEmpty else { throw FanCtlError.noFans }
         guard geteuid() == 0 else { throw FanCtlError.smc("Administrator access is required for fan control") }
-        if args[0] == "max" {
+        if args[0] == "hold" {
+            try holdMaximum(controller)
+            exit(0)
+        } else if args[0] == "max" {
             do { try controller.setMax() }
             catch { try? controller.autoAll(); throw error }
         } else { try controller.autoAll() }

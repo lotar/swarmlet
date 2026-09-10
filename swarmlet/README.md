@@ -120,6 +120,9 @@ installation remain installer operations; the automatic feed updates the agent, 
 Fan telemetry detects exposed OS/driver capabilities. The bundled macOS SMC and Linux hwmon
 providers request maximum cooling through an administrator-installed helper; the one-time installer
 is `node-agent/native-fans/install-root.sh <user> <built-helper>`. Normal shutdown restores control.
+On macOS the helper maintains the maximum while the node sends heartbeats over its child-process
+pipe; node exit, a closed pipe, or a 10-second heartbeat timeout restores automatic control.
+Firmware keys are detected at runtime, including systems without the optional SMC unlock key.
 Missing permission and unsupported firmware/drivers are shown explicitly. Windows monitoring can
 read LibreHardwareMonitor sensors when available; it does not claim a generic writable fan control.
 

@@ -22,6 +22,21 @@ final class Firmware: SMCBackend {
     }
 }
 func check(_ value: Bool, _ message: String) { if !value { fatalError(message) } }
+if CommandLine.arguments.contains("--hold-fixture") {
+    let firmware=Firmware(legacy:false)
+    let controller=FanController(backend:firmware,sleep:{_ in})
+    let timeout=Double(ProcessInfo.processInfo.environment["FAN_TEST_WATCHDOG"] ?? "10")!
+    var failure: Error?
+    do { try holdMaximum(controller,watchdogSeconds:timeout) } catch { failure = error }
+    check(try controller.status().allSatisfy {!$0.manualMode},"hold must restore automatic control")
+    if let result=ProcessInfo.processInfo.environment["FAN_TEST_RESULT"] {
+        try "auto".write(toFile:result,atomically:true,encoding:.utf8)
+    }
+    print("restored")
+    if let failure { fputs("\(failure)\n",stderr); exit(1) }
+    exit(0)
+}
+
 for legacy in [true,false] {
     let firmware=Firmware(legacy:legacy)
     let controller=FanController(backend:firmware,sleep:{_ in})

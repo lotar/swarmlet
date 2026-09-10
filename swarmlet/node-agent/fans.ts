@@ -2,6 +2,7 @@ import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import type { NodeMetrics } from '../protocol/types.ts';
 import { exec } from './probe/exec.ts';
+import { startFanLease } from './fan-lease.ts';
 
 type Hardware = NonNullable<NodeMetrics['hardware']>;
 interface ProviderStatus { fans?: Hardware['fans']; temperatures?: Hardware['temperatures']; controls?: Array<{value:number;mode:number}>; error?: string }
@@ -10,6 +11,9 @@ const PRIVILEGED_HELPER = process.platform === 'darwin' ? '/Library/PrivilegedHe
 /** Providers inspect exposed capabilities; no hostname, model or fan-count tables. */
 export class FanManager {
   private owned = false;
+  private lease: Awaited<ReturnType<typeof startFanLease>> | null = null;
+  private stopping = false;
+  private retryAt = 0;
   private control: Hardware['fanControl'] = {state:'unsupported',detail:'Fan control has not been probed'};
   private cache: Hardware | null = null;
   private starting: Promise<void> | null = null;
@@ -24,6 +28,18 @@ export class FanManager {
       this.control = {state:'permission-required',detail:'Administrator setup is required to enable automatic maximum fan speed'};
       return;
     }
+    if (process.platform === 'darwin') {
+      try {
+        this.lease = await startFanLease(['sudo','-n',PRIVILEGED_HELPER,'hold']);
+        this.owned = true;
+        this.control = {state:'requested',detail:'Maximum cooling held while the node is running; checking fan feedback'};
+        this.cache = null;
+      } catch (error) {
+        this.control = {state:'error',detail:'Maximum fan request failed: '+String(error).slice(0,300)};
+        this.retryAt = Date.now()+30_000;
+      }
+      return;
+    }
     const result = await exec(['sudo','-n',PRIVILEGED_HELPER,'max'],{timeoutMs:10000});
     if (result.code !== 0) {
       this.control = {state:'error',detail:'Maximum fan request failed: '+(result.stdout || result.stderr).trim().slice(0,300)};
@@ -34,14 +50,30 @@ export class FanManager {
     this.cache = null;
   }
   async stop(): Promise<void> {
+    this.stopping = true;
     await this.starting?.catch(() => undefined);
     if (!this.owned) return;
-    const result = await exec(['sudo','-n',PRIVILEGED_HELPER,'auto'],{timeoutMs:10000});
-    if (result.code !== 0) throw new Error('Could not restore automatic fan control: '+(result.stdout || result.stderr).trim());
+    if (this.lease) {
+      await this.lease.stop();
+      this.lease = null;
+    } else {
+      const result = await exec(['sudo','-n',PRIVILEGED_HELPER,'auto'],{timeoutMs:10000});
+      if (result.code !== 0) throw new Error('Could not restore automatic fan control: '+(result.stdout || result.stderr).trim());
+    }
     this.owned = false;
     this.control = {state:'automatic',detail:'Previous Linux settings or Apple automatic control restored'};
   }
   async sample(force = false): Promise<Hardware> {
+    if (this.lease && this.lease.exitCode !== null) {
+      this.lease = null; this.owned = false;
+      this.control = {state:'error',detail:'Fan helper stopped; retrying maximum cooling shortly'};
+      this.retryAt = Date.now()+30_000;
+    }
+    if (!this.stopping && this.retryAt && Date.now() >= this.retryAt) {
+      this.retryAt = 0;
+      this.starting = this.requestMaximum();
+      await this.starting;
+    }
     if (!force && this.cache && Date.now()-Date.parse(this.cache.measuredAt)<5000) return {...this.cache,fanControl:this.control};
     const helper = join(this.enginePath,'swarmlet-fans');
     let status:ProviderStatus = {};
