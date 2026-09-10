@@ -5,8 +5,8 @@
 
 .DESCRIPTION
     CPU build by default (MSVC, static). -Cuda adds the CUDA backend (needs the CUDA toolkit);
-    -Vulkan adds the Vulkan backend (needs the Vulkan SDK). Ninja is used when it is on PATH,
-    otherwise the default Visual Studio generator.
+    -Vulkan adds the Vulkan backend (needs the Vulkan SDK). Visual Studio 2022 x64 discovers
+    the installed compiler and SDK without requiring a developer command prompt.
 
     Output: <OutDir>\{ggml-rpc-server,llama-server,llama-ring-bench}.exe, sha256.txt, engine.json.
 
@@ -78,8 +78,9 @@ $Flags = @()
 $Backend = 'cpu'
 if ($Cuda) { $Flags += '-DGGML_CUDA=ON'; if ($env:CUDA_ARCH) { $Flags += "-DCMAKE_CUDA_ARCHITECTURES=$env:CUDA_ARCH" }; $Backend = 'cuda' }
 if ($Vulkan) { $Flags += '-DGGML_VULKAN=ON'; $Backend = if ($Cuda) { 'cuda+vulkan' } else { 'vulkan' } }
-$Gen = @()
-if (Get-Command ninja -ErrorAction SilentlyContinue) { $Gen = @('-G', 'Ninja') }
+# SSH sessions do not inherit VsDevCmd's PATH/INCLUDE/LIB. The Visual Studio
+# generator discovers the installed toolchain; Ninja requires that environment.
+$Gen = @('-G', 'Visual Studio 17 2022', '-A', 'x64')
 Log "configure $Build ($Backend)"
 Native cmake (@('-S', $SrcDir, '-B', $Build) + $Gen + $Common + $Flags)
 
