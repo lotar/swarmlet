@@ -18,7 +18,7 @@ test("public web opt-in keeps admin authentication and enrollment trust across a
   const request = (path: string, init: RequestInit = {}) => fetch(base + path, { ...init, headers: { ...forwarded, ...init.headers }, redirect: "manual" });
   try {
     for (const path of ["/", "/app.js", "/processing.js", "/style.css", "/health"]) expect((await request(path)).status).toBe(200);
-    for (const path of ["/api/nodes", "/api/stream", "/v1/models"]) {
+    for (const path of ["/api/nodes", "/api/stream", "/api/telemetry", "/v1/models"]) {
       expect((await request(path)).status).toBe(401); // forwarding never grants loopback admin
       expect((await request(path, { headers: { authorization: "Bearer wrong" } })).status).toBe(401);
       const res = await request(path, { headers: { authorization: `Bearer ${cfg.adminToken}` } });

@@ -5,3 +5,5 @@ declare module "*app.js" { const text: string; export default text; }
 declare module "*style.css" { const text: string; export default text; }
 declare module "*fleet.js" { const text: string; export default text; }
 declare module "*fleet.css" { const text: string; export default text; }
+declare module "*telemetry.js" { const text: string; export default text; }
+declare module "*telemetry.css" { const text: string; export default text; }

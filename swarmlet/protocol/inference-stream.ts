@@ -19,7 +19,7 @@ export function inferenceStream(upstream: Response, abort: AbortController, hook
       if (!line.startsWith("data:")) continue;
       const data = line.slice(5).trim();
       if (data === "[DONE]") terminal = true;
-      else { try { if (JSON.parse(data)?.error) terminal = true; } catch { /* not a terminal event */ } }
+      else { try { if (JSON.parse(data)?.error) { terminal = true; hooks.failure?.("Upstream reported a stream error."); } } catch { /* not a terminal event */ } }
     }
     // Bound memory for a malformed upstream that never terminates its SSE line.
     if (rest.length > 1024 * 1024) throw new Error("Upstream SSE event exceeds 1 MiB");

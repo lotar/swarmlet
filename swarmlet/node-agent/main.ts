@@ -203,7 +203,12 @@ export class AgentRuntime {
         this.network.sample().catch(() => undefined),
       ]);
       const srv = await this.runner.serverMetrics();
-      this.metrics = { ...m, ...(srv ?? {}), link: this.client?.link, hardware, network };
+      const assignments = this.runner.snapshot().filter(a => !['stopped', 'failed'].includes(a.state));
+      const count = (kind: string) => assignments.filter(a => a.kind === kind).length;
+      this.metrics = { ...m, ...(srv ?? {}), link: this.client?.link, hardware, network,
+        runtime: { releaseSequence: Number(process.env.SWARMLET_RELEASE_SEQUENCE ?? 0), uptimeSec: Math.floor(process.uptime()),
+          workers: count('worker'), coordinators: count('coordinator'), replicas: count('replica'), stages: count('stage') },
+      };
     } catch (e) { log.debug("metrics failed", { err: (e as Error).message }); }
     finally { this.ticking = false; }
   }

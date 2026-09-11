@@ -72,6 +72,8 @@ export interface ModelFile {
 
 export interface NodeMetrics {
   ts: string;
+  /** Numeric runtime diagnostics; no paths, process IDs or assignment identifiers. */
+  runtime?: { releaseSequence: number; uptimeSec: number; workers: number; coordinators: number; replicas: number; stages: number };
   /** Measured ping/pong RTT on the live controller connection (includes relay path). */
   link?: { rttMs: number; measuredAt: string };
   cpuPct?: number;

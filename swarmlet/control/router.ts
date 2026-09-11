@@ -58,7 +58,7 @@ export function createRouter(deps: { deployments: DeploymentManager; tunnels: Tu
     },
   });
   const isNative = (kind: string) => kind === "stages" || kind === "prefill-decode";
-  return async (req: Request, path: string): Promise<Response> => {
+  return async (req: Request, path: string, observation?: { failed: boolean }): Promise<Response> => {
     let table = deps.deployments.routing();
     if (path === "/v1/models") {
       return json({ object: "list", data: table.map((m) => ({ id: m.modelName, object: "model", created: m.created, owned_by: "swarmlet", ready: m.deployments.length })) });
@@ -123,7 +123,7 @@ export function createRouter(deps: { deployments: DeploymentManager; tunnels: Tu
           body: parsedBody, path, headers: out, signal,
           onFinish: () => { release(); if (nativeLifetimes.get(id) === nativeExecution.signal) nativeLifetimes.delete(id); },
           onTokens: n => deps.deployments.recordTokens(id, n),
-          onError: error => deps.log.warn("native execution failed", { requestId, deployment: id, err: String(error) }),
+          onError: error => { if (observation) observation.failed = true; deps.log.warn("native execution failed", { requestId, deployment: id, err: String(error) }); },
         });
       }
       const local = await deps.tunnels.localPort(pick.nodeId, pick.port);
@@ -143,7 +143,7 @@ export function createRouter(deps: { deployments: DeploymentManager; tunnels: Tu
       const body = inferenceStream(upstream, abort, {
         chunk: (value) => counter.feed(value),
         finish: () => { counter.finish(); release(); },
-        failure: (message) => deps.log.warn("upstream stream failed", { requestId, path, deployment: pick.id, ms: Date.now() - t0, err: message }),
+        failure: (message) => { if (observation) observation.failed = true; deps.log.warn("upstream stream failed", { requestId, path, deployment: pick.id, ms: Date.now() - t0, err: message }); },
       });
       return new Response(body, { status: upstream.status, headers: out });
     } catch (e) {

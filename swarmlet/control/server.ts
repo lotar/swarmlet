@@ -20,6 +20,8 @@ import { makeLogger, type Logger } from "./log.ts";
 import { loadProfiles } from "./planner.ts";
 import { Registry } from "./registry.ts";
 import { createRouter } from "./router.ts";
+import { TelemetryStore } from "./telemetry.ts";
+import { telemetryResponse } from "./telemetry-response.ts";
 import { TunnelPool } from "./tunnel.ts";
 import { serveUi } from "./ui/ui.ts";
 import { processingSnapshot } from "./processing.ts";
@@ -33,8 +35,9 @@ export interface ControlDeps {
   channel: AgentChannel;
   log: Logger;
   deployments: DeploymentManager;
+  telemetry?: TelemetryStore;
   profiles: Map<string, import("../protocol/types.ts").ModelProfile>;
-  router: (req: Request, path: string) => Promise<Response>;
+  router: (req: Request, path: string, observation?: { failed: boolean }) => Promise<Response>;
 }
 
 const json = (body: unknown, status = 200): Response => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json", "cache-control": "no-store" } });
@@ -90,6 +93,14 @@ export function createControlServer(deps: ControlDeps): Server<ConnData> {
     const url = new URL(req.url);
     const seg = path.split("/").filter(Boolean); // ["api", ...]
     const m = req.method;
+    if (seg[1] === 'telemetry' && seg.length === 2 && m === 'GET') {
+      if (!deps.telemetry) return json({ error: 'Telemetry unavailable' }, 503);
+      const ranges: Record<string, number> = { '1h': 3600000, '6h': 21600000, '24h': 86400000, '72h': 259200000 };
+      const range = url.searchParams.get('range') ?? '1h';
+      if (!ranges[range]) return json({ error: 'Choose 1h, 6h, 24h or 72h' }, 400);
+      try { return json(deps.telemetry.query({ rangeMs: ranges[range], source: url.searchParams.get('node') || undefined })); }
+      catch { return json({ error: 'Telemetry could not be read. Check the selected node and storage availability.' }, 400); }
+    }
     if (seg[1] === 'fleet') {
       if (m === 'GET' && seg.length === 2) return json(deployments.fleetSnapshot());
       if (m === 'POST' && seg[2] === 'preview' && seg.length === 3) {
@@ -239,7 +250,10 @@ export function createControlServer(deps: ControlDeps): Server<ConnData> {
             const snapshot = processingSnapshot(deps, url);
             return snapshot ? json(snapshot) : json({ error: { message: "No deployment available for this model" } }, 404);
           }
-          return deps.router(req, path);
+          const started = performance.now();
+          const observation = { failed: false };
+          const response = await deps.router(req, path, observation);
+          return deps.telemetry ? telemetryResponse(req, response, started, deps.telemetry, observation) : response;
         }
         if (path.startsWith("/api/")) {
           if (!adminOk(req, cfg, srv.requestIP(req)?.address)) return json({ error: "admin token required" }, 401);
@@ -276,22 +290,26 @@ export function createControlServer(deps: ControlDeps): Server<ConnData> {
 
 /** Boot a complete control plane (registry, channel, planner profiles, deployments, router, UI). */
 export async function bootControl(cfg: ControlConfig, opts: { profilesDir?: string } = {}): Promise<{
-  server: Server<ConnData>; reg: Registry; channel: AgentChannel; log: Logger; deployments: DeploymentManager; tunnels: TunnelPool;
+  server: Server<ConnData>; reg: Registry; channel: AgentChannel; log: Logger; deployments: DeploymentManager; tunnels: TunnelPool; telemetry?: TelemetryStore;
 }> {
   const log = makeLogger("control", cfg.logLevel);
   await ensureKeys(`${cfg.dataDir}/keys`);
   const reg = new Registry(`${cfg.dataDir}/control.sqlite`);
+  let telemetry: TelemetryStore | undefined;
+  try { telemetry = new TelemetryStore(`${cfg.dataDir}/telemetry`); }
+  catch { log.warn("telemetry storage unavailable; control and inference remain available"); }
   const hooks: ChannelHooks = {};
   const channel = new AgentChannel(reg, log, hooks);
   const profiles = loadProfiles(opts.profilesDir);
   const deployments = new DeploymentManager({ reg, channel, profiles, log });
   deployments.restore();
   hooks.onAssignmentState = (nodeId, id, state, detail) => deployments.onAssignmentState(nodeId, id, state, detail);
-  hooks.onHello = (nodeId, hello) => deployments.onHello(nodeId, hello.assignments);
-  hooks.onOffline = (nodeId) => { tunnels.close(nodeId); deployments.onOffline(nodeId); };
+  hooks.onMetrics = (nodeId, metrics) => { const node = reg.getNode(nodeId); if (node) telemetry?.sample(node, metrics, channel.relayRate(nodeId)); };
+  hooks.onHello = (nodeId, hello) => { telemetry?.connection(nodeId, true); deployments.onHello(nodeId, hello.assignments); };
+  hooks.onOffline = (nodeId) => { telemetry?.connection(nodeId, false); tunnels.close(nodeId); deployments.onOffline(nodeId); };
   const tunnels = new TunnelPool(channel, log);
   const router = createRouter({ deployments, tunnels, log });
-  const server = createControlServer({ cfg, reg, channel, log, deployments, profiles, router });
+  const server = createControlServer({ cfg, reg, channel, log, deployments, profiles, router, telemetry });
   log.info(`control listening on http://${cfg.host}:${server.port} (data ${cfg.dataDir}, ${profiles.size} profiles)`);
-  return { server, reg, channel, log, deployments, tunnels };
+  return { server, reg, channel, log, deployments, tunnels, telemetry };
 }

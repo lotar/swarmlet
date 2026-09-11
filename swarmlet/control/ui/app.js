@@ -7,7 +7,7 @@
   var POLL_MS = 3000;
   var GIB = 1024;          /* MiB per GiB: the API speaks MiB, people read GiB */
   var NA = '—';
-  var TABS = ['nodes', 'chat', 'fleet', 'deployments', 'routing', 'events', 'keys'];
+  var TABS = ['nodes', 'chat', 'fleet', 'deployments', 'routing', 'telemetry', 'events', 'keys'];
   var STARTABLE = ['planned', 'stopped', 'failed'];
   var STOPPABLE = ['placing', 'loading', 'ready'];
 
@@ -221,6 +221,7 @@
       deployments: ['Deployments', 'Manage the models and workloads across your machines.'],
       fleet: ['Fleet allocation', 'Match hardware to your deployments. Balance response speed, throughput and capacity.'],
       routing: ['Routing', 'One endpoint for every model. See where requests are served.'],
+      telemetry: ['Telemetry', 'Explore operational history, response performance and resource use.'],
       events: ['Events', 'A live record of connections, deployments, and system activity.'],
       keys: ['API keys', 'Connect your applications to the mesh with a dedicated API key.']
     };
@@ -1398,6 +1399,7 @@
       var extra = Promise.resolve();
       if (state.active === 'routing') extra = loadRouting();
       else if (state.active === 'fleet' && window.SwarmletFleet) extra = window.SwarmletFleet.refresh();
+      else if (state.active === 'telemetry' && window.SwarmletTelemetry) extra = window.SwarmletTelemetry.refresh();
       else if (state.active === 'events') extra = loadEvents();
       else if (state.active === 'chat') extra = chat.busy ? (topo.lastDep ? loadTopology(topo.lastDep, topo.lastOpts || {}) : Promise.resolve()) : loadChatModels();
       var nodesP = (live.ok && Date.now() - live.last < 4000) ? Promise.resolve() : loadNodes();

@@ -7,7 +7,7 @@ import type { ServerWebSocket } from "bun";
 import { StreamMux, type MuxStream } from "../protocol/frame.ts";
 import { canonicalize, importPublicJwk, normalizeFingerprint } from "../protocol/sign.ts";
 import { parseAgentMessage } from "../protocol/validate.ts";
-import type { AgentToControl, Assignment, AssignmentState, ControlToAgent, HelloMsg, StreamHeader } from "../protocol/types.ts";
+import type { AgentToControl, Assignment, AssignmentState, ControlToAgent, HelloMsg, NodeMetrics, StreamHeader } from "../protocol/types.ts";
 import type { Logger } from "./log.ts";
 import type { Registry } from "./registry.ts";
 import { SocketOutbox, type SocketFrame } from "./socket-outbox.ts";
@@ -30,6 +30,7 @@ export interface ConnData {
 export interface ChannelHooks {
   /** Assignment state change reported by a node. */
   onAssignmentState?: (nodeId: string, id: string, state: AssignmentState, detail?: string) => void;
+  onMetrics?: (nodeId: string, metrics: NodeMetrics) => void;
   onLog?: (nodeId: string, assignmentId: string, line: string) => void;
   onHello?: (nodeId: string, hello: HelloMsg) => void;
   onOffline?: (nodeId: string) => void;
@@ -137,7 +138,7 @@ export class AgentChannel {
         this.hooks.onHello?.(nodeId, m);
         break;
       }
-      case "heartbeat": this.reg.setMetrics(nodeId, m.metrics, m.caps); break;
+      case "heartbeat": this.reg.setMetrics(nodeId, m.metrics, m.caps); this.hooks.onMetrics?.(nodeId, m.metrics); break;
       case "offer": this.reg.setOffer(nodeId, m.offer); this.reg.event("offer", "offer updated", { nodeId }); break;
       case "models": this.reg.setModels(nodeId, m.models); break;
       case "assignment": {

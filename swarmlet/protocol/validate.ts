@@ -105,7 +105,7 @@ function assignmentReportShape(v: unknown): boolean {
 }
 function metricsShape(v: unknown): boolean {
   if (!isObj(v)) return false;
-  return optional(v, "ts", isStr) && numbers(v, ["cpuPct", "rssMiB", "freeRamMiB", "tokPerSec", "tokPerSecAvg", "tokensTotal", "inflight"]) &&
+  return optional(v, "runtime", v => isObj(v) && ["releaseSequence", "uptimeSec", "workers", "coordinators", "replicas", "stages"].every(k => nonnegative(v[k]))) && optional(v, "ts", isStr) && numbers(v, ["cpuPct", "rssMiB", "freeRamMiB", "tokPerSec", "tokPerSecAvg", "tokensTotal", "inflight"]) &&
     optional(v, "serving", isStr) && optional(v, "serverMetricsTs", isStr) && optional(v, "serverMetricsState", v => ["ok", "partial", "unavailable"].includes(v as string)) &&
     optional(v, "link", netShape) && optional(v, "gpu", v => Array.isArray(v) && v.every(g => isObj(g) && isStr(g.id) && nonnegative(g.usedMiB) &&
       numbers(g, ["utilizationPct", "powerW", "fanPct"]) && optional(g, "temperatureC", isNum))) &&
