@@ -86,7 +86,7 @@ export async function probeCapabilities(opts: ProbeCapabilitiesOptions): Promise
     arch,
     hostname: hostname(),
     ramMiB,
-    ramReserveMiB: defaultRamReserveMiB(os),
+    ramReserveMiB: defaultRamReserveMiB(os, ramMiB),
     cpuCores,
     gpus,
     diskFreeMiB: disk ?? 0,

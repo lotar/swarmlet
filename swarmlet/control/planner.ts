@@ -12,6 +12,7 @@
 import { readdirSync, readFileSync } from "node:fs";
 import { basename, join } from "node:path";
 import type { DeploymentSpec, EnvelopeRow, ModelFile, ModelProfile, NativeStageWorkerPlan, Plan, PlanWorker } from "../protocol/types.ts";
+import { usableGpus } from "../protocol/validate.ts";
 import type { NodeRow } from "./registry.ts";
 import { QWEN35_NATIVE_QUALIFICATIONS, type Qwen35NativeQualification } from "./profiles/qwen35-native.ts";
 
@@ -216,6 +217,8 @@ function draftHead(c: Ctx, n: NodeRow): string | undefined {
  * Device for the layers the coordinator (or replica) keeps itself, checking that `layers` plus the host-side
  * residency fit the offer: darwin = unified memory, everything against ramMiB; linux = layers against the GPU
  * offer and the host part against ramMiB (no GPU offered: everything in host RAM on the CPU backend).
+ * Owner rule: the CPU backend is used only on nodes without a usable GPU. A node that has a GPU but offers
+ * none of its memory is refused rather than silently placed on the CPU.
  */
 function placeResident(c: Ctx, n: NodeRow, layers: number, role: string): string {
   const offer = n.offer!; // eligible nodes have an offer
@@ -237,6 +240,11 @@ function placeResident(c: Ctx, n: NodeRow, layers: number, role: string): string
     if (host <= offer.ramMiB) c.reasons.push(`${role} ${n.hostname} host side: ${host} MiB of ${offer.ramMiB} MiB RAM offered.`);
     else c.errors.push(`${role} ${n.hostname} host side: ${host} MiB exceeds the ${offer.ramMiB} MiB RAM offered.`);
     return gpu.engineName;
+  }
+  const unused = usableGpus(n.caps);
+  if (unused.length) {
+    c.errors.push(`${role} ${n.hostname} offers no GPU memory but has ${unused.map((g) => `${g.name} (${g.engineName}, ${g.totalMiB} MiB)`).join(", ")}; CPU-only placement is allowed only on nodes without a usable GPU. Offer GPU memory on that node or place the ${role.toLowerCase()} elsewhere.`);
+    return "CPU";
   }
   const need = layersMiB + host;
   if (need <= offer.ramMiB) c.reasons.push(`${role} ${n.hostname} keeps ${of} on CPU (no GPU offered): ${layers} × ${p.layerMiB} + ${host} MiB host = ${need} MiB of ${offer.ramMiB} MiB RAM offered.`);

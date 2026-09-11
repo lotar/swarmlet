@@ -45,7 +45,7 @@ export function startLocalApi(port: number, deps: LocalApiDeps): Server<undefine
         if (path === "/api/status") return json(deps.status());
         if (path === "/api/offer" && req.method === "GET") {
           const caps = deps.caps();
-          const ramMax = caps ? Math.max(0, caps.ramMiB - (caps.ramReserveMiB || defaultRamReserveMiB(caps.os))) : 0;
+          const ramMax = caps ? Math.max(0, caps.ramMiB - (caps.ramReserveMiB || defaultRamReserveMiB(caps.os, caps.ramMiB))) : 0;
           return json({ offer: deps.offer(), caps, limits: { ramMaxMiB: ramMax, cpuMax: caps?.cpuCores ?? 0, gpus: (caps?.gpus ?? []).map((g) => ({ id: g.id, name: g.name, totalMiB: g.totalMiB })) } });
         }
         if (path === "/api/offer" && req.method === "PUT") {

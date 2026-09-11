@@ -320,9 +320,28 @@ describe("windows node placement (all shipped profiles)", () => {
   });
 
   test("Flash-Next replica on a Windows laptop is refused by memory, never by OS", () => {
-    const e = refused({ spec: spec({ kind: "replica", chain: 0 }), nodes: [winbox({ offer: winOffer({ roles: { worker: false, coordinator: false, replica: true }, gpu: [], ramMiB: 12288 }), models: [shard(1), shard(2), shard(3), shard(4), shard(5)] })] });
+    const e = refused({ spec: spec({ kind: "replica", chain: 0 }), nodes: [winbox({ gpus: [], offer: winOffer({ roles: { worker: false, coordinator: false, replica: true }, gpu: [], ramMiB: 12288 }), models: [shard(1), shard(2), shard(3), shard(4), shard(5)] })] });
     expect(text(e)).toMatch(/cannot hold 48 of 48 layers on CPU \(no GPU offered\): 48 × 1608 \+ 2048 MiB host = 79232 MiB exceeds the 12288 MiB RAM offered/);
     expect(text(e)).not.toMatch(/win32|Windows/);
+  });
+
+  // Owner rule: the CPU backend is allowed only on nodes without a usable GPU.
+  test("CPU-only placement is refused on a node that has a GPU but offers none of it, on every OS the rule applies to", () => {
+    const replicaRoles = { worker: false, coordinator: false, replica: true };
+    const gpuButNoOffer = winbox({ offer: winOffer({ roles: replicaRoles, gpu: [] }), models: [winTiny] });
+    const e = refused({ spec: { name: "r", profile: tiny.id, kind: "replica" }, profile: tiny, nodes: [gpuButNoOffer] });
+    expect(text(e)).toMatch(/offers no GPU memory but has RTX 3050 Laptop \(CUDA0, 4096 MiB\); CPU-only placement is allowed only on nodes without a usable GPU/);
+    expect(text(e)).not.toMatch(/keeps 24 of 24 layers on CPU/);
+
+    const linuxNoOffer = legion1({ offer: { ...legion1().offer!, roles: replicaRoles, gpu: [] }, models: [TINY] });
+    const l = refused({ spec: { name: "r", profile: tiny.id, kind: "replica" }, profile: tiny, nodes: [linuxNoOffer] });
+    expect(text(l)).toMatch(/legion1 offers no GPU memory but has GTX 1650 Ti \(CUDA0, 4096 MiB\); CPU-only placement is allowed only on nodes without a usable GPU/);
+
+    // The laptop that actually exists: Intel iGPU the engine cannot drive, so no usable GPU and a CPU replica is fine.
+    const igpuOnly = winbox({ ramMiB: 7857, cpuCores: 8, gpus: [], offer: winOffer({ roles: replicaRoles, gpu: [], ramMiB: 3072, cpuCores: 6 }), models: [winTiny] });
+    const p = plan({ spec: { name: "r", profile: tiny.id, kind: "replica" }, profile: tiny, nodes: [igpuOnly] });
+    expect(p).toMatchObject({ coordinatorNodeId: W, coordinatorDevice: "CPU" });
+    expect(p.reasons.join("\n")).toMatch(/keeps 24 of 24 layers on CPU \(no GPU offered\): 24 × 80 \+ 1024 MiB host = 2944 MiB of 3072 MiB RAM offered/);
   });
 });
 

@@ -1,7 +1,7 @@
 // Hand-written validators (zero dependencies). Every check returns a reason a person can act on;
 // the agent shows them in the Resources page, control returns them from /api.
 
-import type { Assignment, Capabilities, Offer, AgentToControl, ControlToAgent } from "./types.ts";
+import type { Assignment, Capabilities, GpuDevice, Offer, AgentToControl, ControlToAgent } from "./types.ts";
 
 export type Result<T> = { ok: true; value: T; warnings: string[] } | { ok: false; errors: string[] };
 
@@ -9,11 +9,37 @@ const isNum = (v: unknown): v is number => typeof v === "number" && Number.isFin
 const isStr = (v: unknown): v is string => typeof v === "string";
 const isObj = (v: unknown): v is Record<string, unknown> => !!v && typeof v === "object" && !Array.isArray(v);
 
-/** Default OS reserve when the probe did not set one (darwin 12 GiB, Windows 6 GiB, Linux 4 GiB). */
-export function defaultRamReserveMiB(os: Capabilities["os"]): number {
+/**
+ * Default OS reserve when the probe did not set one (darwin 12 GiB, Windows 6 GiB, Linux 4 GiB).
+ * With the machine's total RAM known, small Windows machines scale the reserve down: a fixed 6 GiB
+ * would leave an 8 GiB laptop unable to hold even the 2B model, so Windows keeps 35% of RAM
+ * (never below 2 GiB, never above the fixed 6 GiB) for the OS instead.
+ */
+export function defaultRamReserveMiB(os: Capabilities["os"], totalMiB?: number): number {
   if (os === "darwin") return 12 * 1024;
-  if (os === "win32") return 6 * 1024;
-  return 4 * 1024;
+  if (os === "linux") return 4 * 1024;
+  const fixed = 6 * 1024;
+  if (!isNum(totalMiB) || totalMiB <= 0) return fixed;
+  return Math.min(fixed, Math.max(2 * 1024, Math.round(totalMiB * 0.35)));
+}
+
+/** GPU devices the engine can run layers on. "cpu" entries and devices without memory are not usable GPUs. */
+export function usableGpus(caps: Pick<Capabilities, "gpus"> | null | undefined): GpuDevice[] {
+  return (caps?.gpus ?? []).filter((g) => g.backend !== "cpu" && g.totalMiB > 0);
+}
+
+/**
+ * Owner rule: a compute offer without GPU memory (CPU-only) is allowed only on a machine that has no
+ * usable GPU. On a machine with a GPU the offer must include GPU memory; the planner then never runs
+ * layers on the CPU there. Returns the reason when the rule refuses the offer, otherwise null.
+ */
+export function cpuOnlyRefusal(offer: Pick<Offer, "enabled" | "roles" | "gpu">, caps: Pick<Capabilities, "gpus"> | null | undefined): string | null {
+  const compute = offer.roles.worker || offer.roles.coordinator || offer.roles.replica;
+  if (!offer.enabled || !compute || offer.gpu.some((g) => g.memMiB > 0)) return null;
+  const usable = usableGpus(caps);
+  if (usable.length === 0) return null;
+  const have = usable.map((g) => `${g.name} (${g.id}, ${g.totalMiB} MiB)`).join(", ");
+  return `CPU-only offers are allowed only on machines without a usable GPU; this machine has ${have}: offer GPU memory or disable the compute roles`;
 }
 
 /**
@@ -35,7 +61,7 @@ export function validateOffer(input: unknown, caps: Capabilities): Result<Offer>
     diskMiB: isNum(o.diskMiB) ? Math.floor(o.diskMiB) : NaN,
     modelsDir: isStr(o.modelsDir) ? o.modelsDir : "",
   };
-  const reserve = caps.ramReserveMiB || defaultRamReserveMiB(caps.os);
+  const reserve = caps.ramReserveMiB || defaultRamReserveMiB(caps.os, caps.ramMiB);
   const ramMax = Math.max(0, caps.ramMiB - reserve);
   if (!isNum(offer.ramMiB) || offer.ramMiB < 0) errors.push("ramMiB must be a non-negative number");
   else if (offer.ramMiB > ramMax) errors.push(`ramMiB ${offer.ramMiB} exceeds ${ramMax} (total ${caps.ramMiB} minus OS reserve ${reserve})`);
@@ -58,6 +84,8 @@ export function validateOffer(input: unknown, caps: Capabilities): Result<Offer>
   if (offer.enabled && offer.roles.worker && offer.gpu.every((g) => g.memMiB === 0) && offer.ramMiB === 0) {
     errors.push("worker role needs GPU memory or RAM");
   }
+  const cpuOnly = cpuOnlyRefusal(offer, caps);
+  if (cpuOnly) errors.push(cpuOnly);
   if (offer.enabled && !offer.roles.worker && !offer.roles.coordinator && !offer.roles.replica) {
     warnings.push("enabled with no roles: the node will only report");
   }

@@ -157,13 +157,16 @@ export function previewFleet(request: FleetRequest, input: FleetInput): FleetPre
       const free = availableNodes(poolNodes, ledger).filter(n => n.offer?.enabled);
       let winner: { spec: DeploymentSpec; plan: Plan; score: number; networkRttMs?: number; reasons: string[] } | undefined;
       const failures = new Set<string>();
-      const attempt = (placement: FleetPlacement, cpuOnly = false) => {
+      // Owner rule: the CPU backend is only used on nodes without a usable GPU, so a node's real
+      // offer and capabilities are always planned as they are; no candidate hides a GPU to try a
+      // CPU-only placement on it.
+      const attempt = (placement: FleetPlacement) => {
         evaluatedCandidates++;
         try {
           const spec = placementSpec(dep.spec, placement);
           const ids = new Set([placement.replicaNodeId ?? placement.coordinatorNodeId!, ...(placement.workerNodeIds ?? [])]);
           if ([...ids].some(id => !pool.has(id))) throw new Error('Every assigned node must be in the selected hardware pool.');
-          const nodes = free.filter(n => ids.has(n.id)).map(n => cpuOnly && n.id === (placement.replicaNodeId ?? placement.coordinatorNodeId) ? { ...n, offer: { ...n.offer!, gpu: [] }, caps: n.caps ? { ...n.caps, gpus: [] } : null } : n);
+          const nodes = free.filter(n => ids.has(n.id));
           const base = planDeployment({ spec, profile, nodes, usedPorts: ports });
           const minima = minimumAllocations(base, profile, nodes);
           spec.allocations = minima.map(a => {
@@ -205,8 +208,7 @@ export function previewFleet(request: FleetRequest, input: FleetInput): FleetPre
         const holders = free.filter(n => modelOn(n, profile)).sort(rank);
         let feasibleReplicas = 0;
         if (!(dep.spec.chain ?? 0)) for (const n of holders.filter(n => n.offer!.roles.replica)) {
-          let feasible = attempt({ kind: 'replica', replicaNodeId: n.id });
-          if (gpuMemory(n)) feasible = attempt({ kind: 'replica', replicaNodeId: n.id }, true) || feasible;
+          const feasible = attempt({ kind: 'replica', replicaNodeId: n.id });
           if (feasible && ++feasibleReplicas >= 24) break;
         }
         const rows = profile.envelope.filter(r => (dep.spec.ctx ?? 1536) <= r.maxCtx && (dep.spec.parallel ?? 1) <= r.maxParallel && (dep.spec.chain ?? 0) <= r.maxChain).map(r => r.workerLayers).filter(n => n > 0).sort((a, b) => b - a);

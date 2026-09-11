@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { canonicalize, ensureKeys, nodeIdFromJwk, normalizeFingerprint, readPublicJwk, signObject, verifyObject } from "../sign.ts";
 import { bridge, decodeFrame, encodeFrame, OP_DATA, OP_OPEN, StreamMux, type MuxStream } from "../frame.ts";
-import { parseAgentMessage, parseControlMessage, validateAssignment, validateOffer } from "../validate.ts";
+import { defaultRamReserveMiB, parseAgentMessage, parseControlMessage, validateAssignment, validateOffer } from "../validate.ts";
 import type { Capabilities } from "../types.ts";
 
 const caps: Capabilities = {
@@ -63,6 +63,53 @@ describe("offer validation", () => {
   test("worker with nothing to give is an error", () => {
     const r = validateOffer({ ...good, gpu: [{ id: "cuda:0", memMiB: 0 }], ramMiB: 0 }, caps);
     expect(r.ok).toBe(false);
+  });
+
+  const replica = { worker: false, coordinator: false, replica: true };
+  const errorsOf = (r: ReturnType<typeof validateOffer>) => (r.ok ? [] : r.errors);
+
+  // Owner rule: CPU-only compute offers are allowed only on machines without a usable GPU.
+  describe("CPU-only rule", () => {
+    test("a machine with a GPU must offer GPU memory for any enabled compute role", () => {
+      for (const roles of [replica, { worker: true, coordinator: false, replica: false }, { worker: false, coordinator: true, replica: false }]) {
+        const noGpu = validateOffer({ ...good, roles, gpu: [] }, caps);
+        expect(errorsOf(noGpu).join("\n")).toMatch(/CPU-only offers are allowed only on machines without a usable GPU; this machine has GTX 1650 Ti \(cuda:0, 4096 MiB\)/);
+        const zeroGpu = validateOffer({ ...good, roles, gpu: [{ id: "cuda:0", memMiB: 0 }] }, caps);
+        expect(errorsOf(zeroGpu).join("\n")).toMatch(/CPU-only offers are allowed only/);
+      }
+    });
+    test("the same offer is fine when disabled, without compute roles, or with GPU memory", () => {
+      expect(validateOffer({ ...good, roles: replica, gpu: [], enabled: false }, caps).ok).toBe(true);
+      expect(validateOffer({ ...good, roles: { worker: false, coordinator: false, replica: false }, gpu: [] }, caps).ok).toBe(true);
+      expect(validateOffer({ ...good, roles: replica }, caps).ok).toBe(true);
+    });
+    test("a machine without a usable GPU may offer CPU-only compute (the Intel iGPU laptop)", () => {
+      const laptop: Capabilities = { ...caps, os: "win32", hostname: "laptop-ppn32fp0", ramMiB: 7857, ramReserveMiB: 0, cpuCores: 8, gpus: [] };
+      const r = validateOffer({ ...good, roles: replica, gpu: [], ramMiB: 3072, cpuCores: 6, modelsDir: "C:\\Users\\lotar\\.swarmlet\\models" }, laptop);
+      expect(r.ok).toBe(true);
+      // A "cpu" backend entry or a device without memory is not a usable GPU either.
+      const cpuEntry: Capabilities = { ...laptop, gpus: [{ id: "cpu:0", name: "CPU", backend: "cpu", engineName: "CPU", totalMiB: 0 }] };
+      expect(validateOffer({ ...good, roles: replica, gpu: [], ramMiB: 3072, cpuCores: 6 }, cpuEntry).ok).toBe(true);
+    });
+  });
+
+  describe("default OS reserve", () => {
+    test("darwin and linux keep their fixed reserves; Windows scales down on small machines", () => {
+      expect(defaultRamReserveMiB("darwin", 131072)).toBe(12288);
+      expect(defaultRamReserveMiB("linux", 15894)).toBe(4096);
+      expect(defaultRamReserveMiB("win32")).toBe(6144);
+      expect(defaultRamReserveMiB("win32", 32768)).toBe(6144);
+      expect(defaultRamReserveMiB("win32", 16384)).toBe(5734);
+      expect(defaultRamReserveMiB("win32", 7857)).toBe(2750);
+      expect(defaultRamReserveMiB("win32", 4096)).toBe(2048);
+    });
+    test("the 8 GiB Windows laptop can offer the 2944 MiB a CPU replica of the 2B model needs", () => {
+      const laptop: Capabilities = { ...caps, os: "win32", ramMiB: 7857, ramReserveMiB: 0, cpuCores: 8, gpus: [] };
+      const r = validateOffer({ ...good, roles: replica, gpu: [], ramMiB: 3072, cpuCores: 6 }, laptop);
+      expect(r.ok).toBe(true);
+      const tooMuch = validateOffer({ ...good, roles: replica, gpu: [], ramMiB: 5200, cpuCores: 6 }, laptop);
+      expect(errorsOf(tooMuch).join("\n")).toMatch(/ramMiB 5200 exceeds 5107 \(total 7857 minus OS reserve 2750\)/);
+    });
   });
 });
 

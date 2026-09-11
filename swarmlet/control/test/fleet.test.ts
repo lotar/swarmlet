@@ -108,6 +108,26 @@ test('fresh GPU pressure steers placement to another eligible GPU', () => {
 });
 
 
+// Owner rule: CPU-only placement is allowed only on nodes without a usable GPU. The balanced allocator
+// used to hide a node's GPU to try a CPU replica there when the GPU was full; it must not anymore.
+test('balanced allocation never places a replica on the CPU of a node that has a GPU', () => {
+  const a = fleetNode('a');
+  a.metrics = { ts, cpuPct: 0, gpu: [{ id: 'cuda:0', usedMiB: 8000 }] }; // GPU full, plenty of RAM
+  const i = input([a], [fleetDeployment('d')]); const p = previewFleet(request(i), i);
+  expect(p.canApply).toBe(false);
+  expect(p.entries[0]!.plan).toBeUndefined();
+  expect(p.entries[0]!.error ?? '').not.toMatch(/on CPU/);
+
+  // The same deployment on a node without any GPU is placed on the CPU with the RAM offer.
+  const laptop = fleetNode('laptop', { os: 'win32' });
+  laptop.caps = { ...laptop.caps!, os: 'win32', ramMiB: 7857, ramReserveMiB: 2750, cpuCores: 8, gpus: [] };
+  laptop.offer = { ...laptop.offer!, roles: { worker: false, coordinator: false, replica: true }, gpu: [], ramMiB: 3072, cpuCores: 6 };
+  const j = input([laptop], [fleetDeployment('d')]); const q = previewFleet(request(j), j);
+  expect(q.canApply).toBe(true);
+  expect(q.entries[0]!.plan).toMatchObject({ coordinatorNodeId: 'laptop', coordinatorDevice: 'CPU' });
+  expect(q.entries[0]!.plan!.allocations![0]!.gpu).toEqual([]);
+});
+
 test('GPU reservations cannot stand in for attributable reclaimed memory', () => {
   const n = fleetNode('n'), d = fleetDeployment('d');
   n.metrics = { ts, gpu: [{ id: 'cuda:0', usedMiB: 8000 }] };
