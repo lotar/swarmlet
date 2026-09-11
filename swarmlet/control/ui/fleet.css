@@ -1,0 +1,91 @@
+/* Extend the existing Swarmlet tokens; the fleet's capacity rows carry the hierarchy. */
+:root { --fleet-min-column:26rem; --fleet-number-width:5.5rem; --fleet-dialog-width:54rem; --fleet-meter-width:9rem; --fleet-track:.3rem; --fleet-page-height:85vh; }
+#tab-fleet { font-size:var(--text-lg); }
+#tab-fleet .label,#tab-fleet .hint,#tab-fleet .button--small,#tab-fleet select,#tab-fleet input,.fleet-dialog .label,.fleet-dialog .hint { font-size:var(--text-base); }
+.fleet-intro { display:flex; align-items:center; gap:var(--s4); margin-bottom:var(--s5); }
+.fleet-intro p { margin:0; color:var(--muted); }
+.fleet-objective { flex-shrink:0; padding:var(--s2) var(--s3); color:var(--signal); background:var(--accent-soft); border-radius:var(--radius-sm); font-weight:var(--semibold); }
+.fleet-summary { display:flex; align-items:center; flex-wrap:wrap; gap:var(--s6); padding:var(--s5) 0; border-top:var(--hairline) solid var(--line); border-bottom:var(--hairline) solid var(--line); margin-bottom:var(--s6); }
+.fleet-summary>div { display:flex; flex-direction:column; gap:var(--s1); }
+.fleet-summary strong { color:var(--text); font-size:var(--text-3xl); font-weight:var(--semibold); letter-spacing:var(--tracking); }
+.fleet-summary span { color:var(--muted); font-size:var(--text-base); }
+.fleet-summary>p { flex:1; min-width:var(--field-width); max-width:var(--fleet-min-column); margin-left:auto; }
+.fleet-sections { display:grid; gap:var(--s6); }
+.fleet-section { background:var(--bg-2); border:var(--hairline) solid var(--line); border-radius:var(--radius); overflow:hidden; min-width:0; margin-bottom:var(--s6); }
+.fleet-sections .fleet-section { margin-bottom:0; }
+.fleet-section-heading { display:flex; gap:var(--s3); align-items:center; padding:var(--s5); border-bottom:var(--hairline) solid var(--line-soft); }
+.fleet-section-heading>div { flex:1; min-width:0; }
+.fleet-section-heading h2 { margin:0 0 var(--s1); }
+.fleet-step { width:var(--mark); height:var(--mark); display:grid; place-items:center; background:var(--bg-3); border-radius:var(--radius-sm); font-family:var(--font-mono); color:var(--muted); flex-shrink:0; }
+.fleet-tools { display:flex; flex-wrap:wrap; align-items:end; gap:var(--s3); padding:var(--s4) var(--s5); background:var(--bg-2); }
+.fleet-search { flex:1; min-width:var(--input-width); }
+.fleet-tools input,.fleet-tools select,.fleet-deployment-controls input,.fleet-deployment-controls select,.fleet-dialog input,.fleet-dialog select { width:100%; min-height:var(--touch); border:var(--hairline) solid var(--line); border-radius:var(--radius-sm); padding:var(--s2) var(--s3); background:var(--bg-2); }
+.fleet-dialog input[type=checkbox] { width:var(--icon); min-height:var(--icon); }
+.fleet-deployments { padding:0 var(--s5); }
+.fleet-deployment-row { display:flex; align-items:center; flex-wrap:wrap; gap:var(--s4); padding:var(--s4) 0; border-top:var(--hairline) solid var(--line-soft); }
+.fleet-deployment-name { display:flex; align-items:center; gap:var(--s3); flex:1; min-width:var(--field-width); }
+.fleet-deployment-name>div { display:flex; flex-direction:column; gap:var(--s1); overflow-wrap:anywhere; }
+.fleet-deployment-controls { display:flex; align-items:end; gap:var(--s3); }
+.fleet-cpu-field { width:var(--fleet-number-width); }
+.fleet-deployment-row input[type=checkbox],.fleet-node-table input[type=checkbox] { width:var(--icon); height:var(--icon); accent-color:var(--signal); }
+.fleet-deployment-row.is-selected .fleet-deployment-name strong { color:var(--signal); }
+.fleet-hardware-detail { display:block; margin-top:var(--s1); font-size:var(--text-base); color:var(--muted); }
+.fleet-node-table td:first-child { width:var(--s7); }
+.fleet-node-table td { font-size:var(--text-base); }
+.fleet-assignment-names { max-width:var(--field-width); overflow-wrap:anywhere; }
+.fleet-meter { min-width:var(--fleet-meter-width); }
+.fleet-meter .mono { white-space:nowrap; font-size:var(--text-base); }
+.fleet-meter-track { height:var(--fleet-track); background:var(--bg-3); margin-top:var(--s2); overflow:hidden; border-radius:var(--round); }
+.fleet-meter-track span { display:block; height:100%; background:var(--signal); }
+.fleet-meter--over { color:var(--signal-light); }
+.fleet-meter--over .fleet-meter-track span { background:var(--signal-light); }
+.fleet-pagination { display:flex; align-items:center; justify-content:flex-end; gap:var(--s4); padding:var(--s3) var(--s5); border-top:var(--hairline) solid var(--line-soft); }
+.fleet-pagination .hint { text-align:center; font-variant-numeric:tabular-nums; }
+.fleet-review { margin-top:var(--s6); }
+.fleet-notice { padding:var(--s3) var(--s4); margin-bottom:var(--s4); border-left:var(--focus) solid var(--signal); background:var(--accent-soft); }
+.fleet-notice--error { border-color:var(--signal-light); background:var(--danger-soft); }
+.fleet-plan-summary { display:flex; align-items:center; flex-wrap:wrap; justify-content:space-between; gap:var(--s3); padding:var(--s5) var(--s5) var(--s3); }
+.fleet-plan-summary strong { font-size:var(--text-xl); }
+.fleet-warnings { padding:0 var(--s5) var(--s4); }
+.fleet-warnings p { margin-bottom:var(--s2); }
+.fleet-warning { padding:var(--s3); color:var(--signal-dark); background:var(--danger-soft); border-radius:var(--radius-sm); font-size:var(--text-base); }
+.fleet-result { border-top:var(--hairline) solid var(--line); padding:var(--s4) var(--s5); }
+.fleet-result-heading { display:flex; justify-content:space-between; align-items:center; gap:var(--s3); }
+.fleet-result-heading h3 { margin:0; font-size:var(--text-lg); overflow-wrap:anywhere; }
+.fleet-phase { border-radius:var(--radius-sm); background:var(--bg-3); padding:var(--s1) var(--s2); font-size:var(--text-base); flex-shrink:0; }
+.fleet-phase[data-phase=ready] { background:var(--accent-soft); color:var(--signal); }
+.fleet-phase[data-phase=failed] { background:var(--danger-soft); color:var(--signal-light); }
+.fleet-placement-change { display:flex; align-items:center; flex-wrap:wrap; gap:var(--s3); padding:var(--s3) 0; color:var(--muted); font-size:var(--text-base); }
+.fleet-placement-change strong { color:var(--text); }
+.fleet-result summary { cursor:pointer; padding:var(--s2) 0; color:var(--signal); font-size:var(--text-base); }
+.fleet-reasons { color:var(--muted); font-size:var(--text-base); padding-left:var(--s5); margin-bottom:0; }
+.fleet-budget-table td { font-size:var(--text-base); }
+.fleet-apply-bar { display:flex; gap:var(--s5); align-items:center; justify-content:space-between; border-top:var(--hairline) solid var(--line); padding:var(--s5); background:var(--bg-deep); }
+.fleet-apply-bar .button { flex-shrink:0; }
+.fleet-empty { padding:var(--s7) var(--s5); color:var(--muted); text-align:center; }
+.fleet-dialog { width:min(var(--fleet-dialog-width),calc(100% - var(--s5))); max-height:var(--fleet-page-height); border:var(--hairline) solid var(--line); border-radius:var(--radius); padding:0; background:var(--bg-2); color:var(--copy); }
+.fleet-dialog::backdrop { background:var(--backdrop); }
+.fleet-manual-fields { display:grid; grid-template-columns:1fr 1fr; gap:var(--s4); padding:var(--s5); }
+#fleet-manual-workers { padding:0 var(--s5); }
+#fleet-worker-rule { margin:var(--s3) 0; }
+#fleet-worker-rows input[type=number] { width:var(--fleet-number-width); }
+#fleet-manual-error { padding:0 var(--s5); }
+.fleet-dialog-actions { padding:var(--s5); text-align:right; border-top:var(--hairline) solid var(--line); }
+@media (max-width:700px) {
+  .fleet-intro { display:block; } .fleet-intro p { margin-top:var(--s3); }
+  .fleet-summary { gap:var(--s4); } .fleet-summary>p { min-width:0; flex-basis:100%; margin:0; }
+  .fleet-section-heading { flex-wrap:wrap; padding:var(--s4); } .fleet-section-heading>.button { width:100%; }
+  .fleet-tools,.fleet-deployments,.fleet-result,.fleet-warnings { padding-left:var(--s4); padding-right:var(--s4); }
+  .fleet-deployment-name { min-width:0; width:100%; flex-basis:100%; } .fleet-deployment-controls { width:100%; flex-wrap:wrap; }
+  .fleet-deployment-controls>label:first-child { flex:1; min-width:0; } .fleet-deployment-controls>button { width:100%; }
+  .fleet-pagination { justify-content:space-between; padding:var(--s3); gap:var(--s2); }
+  .fleet-node-table thead { position:absolute; clip-path:inset(100%); width:var(--hairline); height:var(--hairline); overflow:hidden; }
+  .fleet-node-table,.fleet-node-table tbody { display:block; width:100%; min-width:0; }
+  .fleet-node-table tr { display:grid; grid-template-columns:var(--s7) minmax(0,1fr); border-bottom:var(--hairline) solid var(--line); padding:var(--s3); }
+  .fleet-node-table td { display:block; border:0; padding:var(--s2); white-space:normal; }
+  .fleet-node-table td:first-child { grid-row:1 / 5; } .fleet-node-table td:not(:first-child) { grid-column:2; }
+  .fleet-hardware-detail { overflow-wrap:anywhere; } .fleet-assignment-names { max-width:none; }
+  .fleet-apply-bar { flex-direction:column; align-items:stretch; padding:var(--s4); }
+  .fleet-manual-fields { grid-template-columns:1fr; }
+  .fleet-plan-summary { padding:var(--s4); }
+}

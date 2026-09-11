@@ -27,6 +27,8 @@ export interface NetMeasurement {
 }
 
 export interface Capabilities {
+  /** Supports controller-assigned per-deployment RAM/CPU budgets, including replicas. */
+  allocationVersion?: 1;
   /** Node's process.platform value; "win32" is Windows. */
   os: "darwin" | "linux" | "win32";
   arch: "arm64" | "x64";
@@ -170,6 +172,8 @@ export interface ReplicaAssignment {
   mtp?: { path: string; chain: number };
   speculation?: NgramSpeculation;
   extraArgs?: string[];
+  enforce?: { ramMiB?: number; cpuCores?: number };
+  fitMiB?: number;
   allow: string[];
 }
 
@@ -247,6 +251,8 @@ export interface DeploymentSpec {
   /** Exact layer counts paired with workerNodeIds, in the same order; each must fit a profile envelope row. */
   workerLayers?: number[];
   replicaNodeId?: string;
+  /** Explicit fleet budgets. GPU memory is reserved by the planner, not a hardware partition. */
+  allocations?: NodeAllocation[];
   /** Ordered, explicitly qualified shards for kind stages. Ranges are [start,end). */
   stages?: Array<{ nodeId: string; modelPath: string; modelSha256: string; start: number; end: number }>;
   /** Two full-model resident contexts for kind prefill-decode. */
@@ -296,6 +302,14 @@ export interface Plan {
   nativeExecution?: NativeExecutionPlacement;
   /** Human-readable reasons for every choice and every clamp. */
   reasons: string[];
+  allocations?: NodeAllocation[];
+}
+
+export interface NodeAllocation {
+  nodeId: string;
+  ramMiB: number;
+  cpuCores: number;
+  gpu: Array<{ id: string; memMiB: number }>;
 }
 
 export interface LayerDistribution {

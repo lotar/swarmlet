@@ -7,7 +7,7 @@
   var POLL_MS = 3000;
   var GIB = 1024;          /* MiB per GiB: the API speaks MiB, people read GiB */
   var NA = '—';
-  var TABS = ['nodes', 'chat', 'deployments', 'routing', 'events', 'keys'];
+  var TABS = ['nodes', 'chat', 'fleet', 'deployments', 'routing', 'events', 'keys'];
   var STARTABLE = ['planned', 'stopped', 'failed'];
   var STOPPABLE = ['placing', 'loading', 'ready'];
 
@@ -219,6 +219,7 @@
       nodes: ['Nodes', 'Your machines, connected. Monitor availability and shared resources.'],
       chat: ['Chat', 'Talk to the models running on your mesh.'],
       deployments: ['Deployments', 'Manage the models and workloads across your machines.'],
+      fleet: ['Fleet allocation', 'Match hardware to your deployments. Balance response speed, throughput and capacity.'],
       routing: ['Routing', 'One endpoint for every model. See where requests are served.'],
       events: ['Events', 'A live record of connections, deployments, and system activity.'],
       keys: ['API keys', 'Connect your applications to the mesh with a dedicated API key.']
@@ -402,7 +403,7 @@
         td(ago(d.updatedAt), 'dim small', d.updatedAt),
         td(el('div', { class: 'actions' }, [
           el('button', { class: 'button button--small', type: 'button', text: 'Details', onclick: function () { openDrawer(d.id); } }),
-          s.kind === 'split' ? el('button', { class: 'button button--small', type: 'button', text: 'Layer distribution', onclick: function () { openDistribution(d); } }) : null,
+          s.allocations ? el('button', { class: 'button button--small', type: 'button', text: 'Fleet allocation', onclick: function () { showTab('fleet'); } }) : s.kind === 'split' ? el('button', { class: 'button button--small', type: 'button', text: 'Layer distribution', onclick: function () { openDistribution(d); } }) : null,
           el('button', { class: 'button button--small', type: 'button', text: 'Start', disabled: STARTABLE.indexOf(d.state) < 0, onclick: function () { act(d, 'start'); } }),
           el('button', { class: 'button button--small', type: 'button', text: 'Stop', disabled: STOPPABLE.indexOf(d.state) < 0, onclick: function () { act(d, 'stop'); } }),
           el('button', { class: 'button button--small button--danger', type: 'button', text: 'Delete', onclick: function () { act(d, 'delete'); } }),
@@ -485,7 +486,7 @@
     try {
       var spec = Object.assign({}, distributionDraft.deployment.spec, readDistribution());
       note('distribution-status', 'Checking layout…');
-      api('POST', '/api/deployments/plan-preview', spec).then(function (plan) { replace($('distribution-plan'), renderPlan(plan)); note('distribution-status', 'Layout fits the verified profile and current node offers.', 'ok'); }).catch(function (e) { note('distribution-status', e.message, 'error'); });
+      api('POST', '/api/deployments/plan-preview?replaces=' + encodeURIComponent(distributionDraft.deployment.id), spec).then(function (plan) { replace($('distribution-plan'), renderPlan(plan)); note('distribution-status', 'Layout fits the verified profile and current node offers.', 'ok'); }).catch(function (e) { note('distribution-status', e.message, 'error'); });
     } catch (e) { note('distribution-status', e.message, 'error'); }
   });
   $('distribution-panel').addEventListener('submit', function (ev) {
@@ -803,6 +804,7 @@
     }).then(function () { btn.disabled = false; });
   });
 
+  $('dep-start-immediately').addEventListener('change', function () { $('dep-create').textContent = this.checked ? 'Create and start' : 'Create for allocation'; });
   $('dep-form').addEventListener('submit', function (ev) {
     ev.preventDefault();
     var spec = readSpec();
@@ -812,15 +814,19 @@
     btn.disabled = true;
     note('dep-form-status', 'Creating…');
     var created = null;
+    var startImmediately = $('dep-start-immediately').checked;
     api('POST', '/api/deployments', spec).then(function (r) {
       created = r.id;
-      note('dep-form-status', 'Created ' + shortId(created) + ', starting…');
-      return api('POST', '/api/deployments/' + encodeURIComponent(created) + '/start');
+      note('dep-form-status', 'Created ' + shortId(created) + (startImmediately ? ', starting…' : '. Ready for allocation.'));
+      if (startImmediately) return api('POST', '/api/deployments/' + encodeURIComponent(created) + '/start');
     }).then(function () {
-      note('dep-form-status', 'Started ' + spec.name, 'ok');
+      note('dep-form-status', (startImmediately ? 'Started ' : 'Created ') + spec.name, 'ok');
       $('dep-form').hidden = true;
       clear($('dep-preview-out'));
-      return loadDeployments().then(function () { openDrawer(created); });
+      return loadDeployments().then(function () {
+        if (!startImmediately && window.SwarmletFleet) { window.SwarmletFleet.selectDeployment(created); showTab('fleet'); }
+        else openDrawer(created);
+      });
     }).catch(function (e) {
       note('dep-form-status', (created ? 'Created but not started: ' : 'Not created: ') + e.message, 'error');
       if (created) loadDeployments().catch(showError);
@@ -1391,6 +1397,7 @@
       startLive();
       var extra = Promise.resolve();
       if (state.active === 'routing') extra = loadRouting();
+      else if (state.active === 'fleet' && window.SwarmletFleet) extra = window.SwarmletFleet.refresh();
       else if (state.active === 'events') extra = loadEvents();
       else if (state.active === 'chat') extra = chat.busy ? (topo.lastDep ? loadTopology(topo.lastDep, topo.lastOpts || {}) : Promise.resolve()) : loadChatModels();
       var nodesP = (live.ok && Date.now() - live.last < 4000) ? Promise.resolve() : loadNodes();
@@ -1422,6 +1429,7 @@
   D.addEventListener('visibilitychange', resumeView);
   window.addEventListener('pagehide', stopLive);
   window.addEventListener('pageshow', resumeView);
+  window.SwarmletAdmin = { api: api, showTab: showTab };
   boot();
   setInterval(tick, POLL_MS);
 }());

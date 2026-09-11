@@ -8,6 +8,8 @@ import purifyJs from "../../shared/ui/vendor/purify.js" with { type: "text" };
 
 import indexHtml from "./index.html" with { type: "text" };
 import appJs from "./app.js" with { type: "text" };
+import fleetJs from "./fleet.js" with { type: "text" };
+import fleetCss from "./fleet.css" with { type: "text" };
 import styleCss from "./style.css" with { type: "text" };
 import processingJs from "../../shared/ui/processing.js" with { type: "text" };
 import processingCss from "../../shared/ui/processing.css" with { type: "text" };
@@ -18,6 +20,8 @@ const ASSETS: Record<string, { body: string; type: string }> = {
   "/markdown.js": { body: markedJs + "\n" + purifyJs + "\n" + markdownJs, type: "application/javascript; charset=utf-8" },
   "/markdown.css": { body: markdownCss, type: "text/css; charset=utf-8" },
   "/app.js": { body: appJs, type: "application/javascript; charset=utf-8" },
+  "/fleet.js": { body: fleetJs, type: "application/javascript; charset=utf-8" },
+  "/fleet.css": { body: fleetCss, type: "text/css; charset=utf-8" },
   "/processing.js": { body: processingJs, type: "application/javascript; charset=utf-8" },
   "/processing.css": { body: processingCss, type: "text/css; charset=utf-8" },
   "/style.css": { body: styleCss, type: "text/css; charset=utf-8" },

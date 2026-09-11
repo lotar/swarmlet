@@ -35,7 +35,7 @@ console.log('fake native worker ready');
   writeFileSync(join(enginePath, "llama-server"), "fixture presence only");
   writeFileSync(join(enginePath, "sha256.txt"), `${"f".repeat(64)}  mesh-stage-worker\n${"e".repeat(64)}  llama-server\n`);
   const reports: Array<{ id: string; state: string; detail?: string }> = [];
-  const runner = new AssignmentRunner({ cfg: () => ({ enginePath, externals: [] }) as never,
+  const runner = new AssignmentRunner({ cfg: () => ({ enginePath, externals: [], offer: { ramMiB: 8192, cpuCores: 2 } }) as never,
     stateDir, certPem: "", keyPem: "", freeRamMiB: async () => options.free ?? 8192, log,
     report: (id, state, detail) => reports.push({ id, state, detail }), logLine() {}, openRelay: () => null });
   const reservation = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch() { return new Response("reserved"); } });

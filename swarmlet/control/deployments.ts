@@ -5,7 +5,9 @@
 import { AGENT_DATA_PORT, type Assignment, type AssignmentState, type CoordinatorAssignment, type Deployment, type DeploymentSpec, type Endpoint, type ModelProfile, type NativeExecutionPlan, type Plan, type ReplicaAssignment, type StageAssignment, type WorkerAssignment } from "../protocol/types.ts";
 import type { AgentChannel } from "./channel.ts";
 import type { Logger } from "./log.ts";
-import { PlanError, planDeployment } from "./planner.ts";
+import { PlanError } from "./planner.ts";
+import { availableNodes, planWithResources, reservedResources, addAllocations, type ResourceLedger } from "./resources.ts";
+import { fleetRevision, hostMemoryErrors, parseFleetRequest, previewFleet, type FleetInput, type FleetRun } from "./fleet.ts";
 import type { NodeRow, Registry } from "./registry.ts";
 import type { Qwen35NativeQualification } from "./profiles/qwen35-native.ts";
 
@@ -40,6 +42,8 @@ export class DeploymentManager {
   private distributionApplications = new Set<string>();
   private generations = new Map<string, number>();
   private closed = false;
+  private fleetToken: symbol | null = null;
+  private fleetPlanning = false;
   private nativeLifetimes = new Map<string, AbortController>();
   // A channel loss invalidates relay RPC state. Keep routing withdrawn while acknowledged
   // teardown and bounded reconnect run, then build a fresh placement (never resume RPC state).
@@ -57,7 +61,7 @@ export class DeploymentManager {
   acquireUpdate(nodeId: string): { nodeId: string; token: string; expiresAt: number } | null {
     if (this.closed || !this.deps.channel.isOnline(nodeId) || !this.deps.reg.getNode(nodeId)) return null;
     if (this.updatingNode()) return null;
-    if (this.operations.size || this.distributionApplications.size || this.reconnecting.size) return null;
+    if (this.operations.size || this.distributionApplications.size || this.reconnecting.size || this.fleetToken || this.fleetPlanning) return null;
     for (const id of this.updateRecovery) {
       const dep = this.deps.reg.getDeployment(id);
       if (!dep || dep.state === "ready" || !this.deps.reg.deploymentIntent(id).running) this.updateRecovery.delete(id);
@@ -82,6 +86,10 @@ export class DeploymentManager {
 
   /** Relay sockets do not survive control restart. Withdraw persisted routes before serving HTTP. */
   restore(): void {
+    for (const run of this.deps.reg.fleetRuns()) if (run.status === 'applying') {
+      run.status = 'interrupted'; run.error = 'Control restarted during allocation. Review current placements and preview again before retrying.';
+      run.updatedAt = new Date().toISOString(); this.deps.reg.saveFleetRun(run);
+    }
     const externalEndpoints = new Set<string>();
     for (const dep of this.deps.reg.listDeployments().sort((a, b) => a.createdAt.localeCompare(b.createdAt) || a.id.localeCompare(b.id))) {
       if (!this.deps.reg.deploymentIntent(dep.id).running) {
@@ -111,7 +119,7 @@ export class DeploymentManager {
 
   /** Called by the existing control sweeper; no background timers outlive the control instance. */
   async reconcile(): Promise<void> {
-    if (this.closed || this.updatingNode()) return;
+    if (this.closed || this.updatingNode() || this.fleetToken) return;
     await Promise.all(this.deps.reg.listDeployments().map(async (dep) => {
       this.finishDraining(dep.id);
       const intent = this.deps.reg.deploymentIntent(dep.id);
@@ -134,7 +142,7 @@ export class DeploymentManager {
         : [dep.spec.coordinatorNodeId ?? dep.spec.replicaNodeId, ...(dep.spec.workerNodeIds ?? [])].filter((n): n is string => !!n);
       if (!required.length) {
         // An automatic placement may have failed before it ever had a plan (for example, no nodes online).
-        try { const candidate = this.plan(dep.spec, this.usedPorts()); required = planNodes(candidate); }
+        try { const candidate = this.plan(dep.spec, this.usedPorts(), dep.id); required = planNodes(candidate); }
         catch { return; } // wait for a viable offer instead of burning retries while the rig is absent
       }
       if (required.some((n) => !this.deps.channel.isOnline(n) || !this.deps.reg.getNode(n)?.online)) return;
@@ -254,13 +262,125 @@ export class DeploymentManager {
     return { id: dep.id };
   }
 
-  async planPreview(spec: DeploymentSpec): Promise<Plan> {
+  async planPreview(spec: DeploymentSpec, replacingId?: string): Promise<Plan> {
     if (spec.kind === "external") throw new Error("external deployments are not planned");
-    return this.plan(spec, this.usedPorts());
+    if (replacingId) this.must(replacingId);
+    return this.plan(spec, this.usedPorts(), replacingId);
+  }
+
+  private fleetInput(): FleetInput {
+    return { nodes: this.deps.reg.listNodes().map(n => ({ ...n, online: n.online && this.deps.channel.isOnline(n.id) && n.id !== this.updatingNode() })),
+      deployments: this.deps.reg.listDeployments(), assignments: this.deps.reg.listAssignments(), profiles: this.deps.profiles };
+  }
+
+  fleetSnapshot() {
+    const input = this.fleetInput(), reserved = reservedResources(input.deployments, input.assignments, input.nodes);
+    const free = new Map(availableNodes(input.nodes, reserved).map(n => [n.id, n.offer]));
+    return { revision: fleetRevision(input), nodes: input.nodes.map(n => ({ id: n.id, hostname: n.hostname, os: n.os, online: n.online, supported: n.caps?.allocationVersion === 1,
+      offer: n.offer, available: free.get(n.id), reserved: reserved.get(n.id), gpus: n.caps?.gpus ?? [], net: n.metrics?.link ?? n.caps?.net,
+      freeRamMiB: n.metrics?.freeRamMiB, lastSeen: n.lastSeen, modelCount: n.models.length,
+      deployments: input.deployments.filter(d => d.spec.kind !== 'external' && (d.plan ? planNodes(d.plan).includes(n.id) : false) &&
+        (['placing','loading','ready','draining'].includes(d.state) || input.assignments.some(a => a.deploymentId === d.id && a.state !== 'stopped'))).map(d => ({ id: d.id, name: d.spec.name })) })),
+      deployments: input.deployments.map(d => ({ ...d, inflight: this.inflight.get(d.id) ?? 0, observedTokPerSec: this.liveTokPerSec(d.id) })),
+      runs: this.deps.reg.fleetRuns().slice(0, 5), busy: !!this.fleetToken };
+  }
+
+  async previewAllocation(value: unknown): Promise<FleetRun> {
+    if (this.closed || this.fleetToken || this.fleetPlanning) throw new Error('An allocation operation is already in progress.');
+    const request = parseFleetRequest(value), input = this.fleetInput();
+    this.fleetPlanning = true;
+    try {
+      let result;
+      if (input.nodes.length > 64 || request.items.length > 20) {
+        // Large searches must not block relay traffic and router admission.
+        result = await new Promise<ReturnType<typeof previewFleet>>((resolve, reject) => {
+          const worker = new Worker(new URL('./fleet.worker.ts', import.meta.url).href);
+          const timer = setTimeout(() => { worker.terminate(); reject(new Error('Planning exceeded 20 seconds. Select a smaller deployment batch.')); }, 20000);
+          const finish = () => { clearTimeout(timer); worker.terminate(); };
+          worker.onmessage = event => { finish(); event.data.error ? reject(new Error(event.data.error)) : resolve(event.data.result); };
+          worker.onerror = event => { finish(); reject(new Error(event.message)); };
+          worker.postMessage({ request, input });
+        });
+      } else result = previewFleet(request, input);
+      if (this.closed || result.revision !== fleetRevision(this.fleetInput())) throw new Error('Fleet changed during planning. Preview again.');
+      const timestamp = new Date().toISOString();
+      const run: FleetRun = { ...result, id: newId('fleet'), request, status: 'preview', createdAt: timestamp, updatedAt: timestamp };
+      this.deps.reg.saveFleetRun(run); return run;
+    } finally { this.fleetPlanning = false; }
+  }
+
+  private assertFleetAccess(token?: symbol): void {
+    if (this.fleetToken && token !== this.fleetToken) throw new Error('Fleet allocation is applying; wait for its result before changing deployments.');
+  }
+
+  private validateFleetPlans(run: FleetRun): void {
+    const input = this.fleetInput(), selected = new Set(run.entries.map(e => e.deploymentId));
+    const reserved: ResourceLedger = reservedResources(input.deployments, input.assignments, input.nodes, selected);
+    for (const entry of run.entries) {
+      if (!entry.spec || !entry.plan || entry.error) throw new Error('Every selected deployment needs a valid plan.');
+      const profile = this.deps.profiles.get(entry.spec.profile); if (!profile) throw new Error('Model profile changed; preview again.');
+      const plan = planWithResources({ spec: entry.spec, profile, nodes: input.nodes, reserved, usedPorts: new Map() });
+      addAllocations(reserved, plan.allocations!);
+    }
+    const errors = hostMemoryErrors(input, run.entries, selected); if (errors.length) throw new Error(errors.join(' '));
+  }
+
+  applyAllocation(id: string): FleetRun {
+    const run = this.deps.reg.fleetRun(id); if (!run) throw new Error('Allocation preview not found. Preview again.');
+    if (run.status !== 'preview') return run; // Repeated requests never start a second apply.
+    if (this.closed || this.fleetToken || this.fleetPlanning || this.updatingNode() || this.operations.size || this.distributionApplications.size || this.reconnecting.size) throw new Error('Another deployment or node operation is in progress. Retry when it finishes.');
+    if (!run.canApply || Date.now() - Date.parse(run.createdAt) > 10 * 60000) throw new Error('This preview is invalid or expired. Preview again.');
+    if (run.revision !== fleetRevision(this.fleetInput())) throw new Error('Nodes, offers or deployments changed since this preview. Preview again.');
+    if (run.entries.some(e => (this.inflight.get(e.deploymentId) ?? 0) > 0)) throw new Error('Selected deployments have active requests. Wait for them to finish before applying.');
+    this.validateFleetPlans(run);
+    const token = Symbol('fleet-apply'); this.fleetToken = token;
+    run.status = 'applying'; run.updatedAt = new Date().toISOString();
+    for (const entry of run.entries) entry.phase = 'queued';
+    try {
+      this.deps.reg.db.transaction(() => {
+        this.deps.reg.saveFleetRun(run);
+        // Withdraw every selected route atomically with admission, before any await.
+        for (const entry of run.entries) this.deps.reg.updateDeployment(entry.deploymentId, { state: 'draining', endpoint: null });
+      })();
+    } catch (error) { this.fleetToken = null; throw error; }
+    void this.performAllocation(run, token).catch(error => this.deps.log.error("allocation persistence failed", { id: run.id, error: String(error) }));
+    return run;
+  }
+
+  private async performAllocation(run: FleetRun, token: symbol): Promise<void> {
+    const save = () => { if (!this.closed) { run.updatedAt = new Date().toISOString(); this.deps.reg.saveFleetRun(run); } };
+    try {
+      for (const entry of run.entries) entry.phase = 'stopping'; save();
+      const stopped = await Promise.allSettled(run.entries.map(e => this.stop(e.deploymentId, token)));
+      const failed = stopped.find(r => r.status === 'rejected');
+      if (failed?.status === 'rejected') throw new Error(`Cleanup was not acknowledged: ${String(failed.reason)}. Original specifications retained.`);
+      if (this.closed) return;
+      this.validateFleetPlans(run); // Offers and actual free memory may have changed.
+      this.deps.reg.applyFleetSpecs(run.entries.map(e => ({ deploymentId: e.deploymentId, spec: e.spec! })));
+      let next = 0;
+      // Bounded concurrent loads; each plan reserves capacity before dispatching.
+      await Promise.all(Array.from({ length: Math.min(4, run.entries.length) }, async () => {
+        while (!this.closed && next < run.entries.length) {
+          const entry = run.entries[next++]!; entry.phase = 'starting'; save();
+          try { await this.start(entry.deploymentId, false, token); entry.phase = 'ready'; }
+          catch (error) { entry.phase = 'failed'; entry.error = String(error); }
+          save();
+        }
+      }));
+      if (this.closed) return;
+      run.status = run.entries.every(e => e.phase === 'ready') ? 'succeeded' : 'partial';
+    } catch (error) {
+      if (this.closed) return;
+      run.status = 'partial'; run.error = String(error);
+      for (const entry of run.entries) if (entry.phase !== 'ready' && entry.phase !== 'failed') { entry.phase = 'failed'; entry.error = run.error; }
+    } finally {
+      try { save(); } finally { if (this.fleetToken === token) this.fleetToken = null; }
+    }
   }
 
   private distributionSpec(id: string, value: unknown): DeploymentSpec {
     const dep = this.must(id);
+    if (dep.spec.allocations) throw new Error('Use Fleet allocation to change a deployment with shared resource budgets.');
     if (dep.spec.kind !== "split") throw new Error("Layer distribution requires a split deployment.");
     if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("A layer distribution is required.");
     const d = value as Record<string, unknown>;
@@ -272,9 +392,10 @@ export class DeploymentManager {
   }
 
   saveDistribution(id: string, value: unknown): { deployment: Deployment; plan: Plan } {
+    this.assertFleetAccess();
     if (this.closed || this.distributionApplications.has(id)) throw new Error("Distribution apply is in progress; retry after it finishes.");
     const spec = this.distributionSpec(id, value);
-    const plan = this.plan(spec, this.usedPorts());
+    const plan = this.plan(spec, this.usedPorts(), id);
     this.deps.reg.saveDistribution(id, { coordinatorNodeId: spec.coordinatorNodeId!, workerNodeIds: spec.workerNodeIds!, workerLayers: spec.workerLayers! });
     this.deps.reg.event("deployment", "layer distribution saved; active placement unchanged", { deploymentId: id });
     return { deployment: this.must(id), plan };
@@ -282,10 +403,11 @@ export class DeploymentManager {
 
   /** Admission is synchronous; reloading follows the existing asynchronous Start API. */
   applyDistribution(id: string): { accepted: true; id: string } {
+    this.assertFleetAccess();
     if (this.closed || this.distributionApplications.has(id) || this.operations.has(id)) throw new Error("Deployment operation already in progress.");
     if (this.inflight.get(id)) throw new Error("Deployment has active requests; wait for them to finish before applying.");
     const spec = this.distributionSpec(id, this.must(id).savedDistribution);
-    this.plan(spec, this.usedPorts()); // Reject invalid/offline/over-capacity layouts before stopping anything.
+    this.plan(spec, this.usedPorts(), id); // Reject invalid/offline/over-capacity layouts before stopping anything.
     this.distributionApplications.add(id);
     void (async () => {
       const stopping = this.stop(id);
@@ -293,7 +415,7 @@ export class DeploymentManager {
       await stopping;
       if (this.closed) throw new Error("Control is shutting down; saved distribution retained.");
       if (generation !== this.generations.get(id)) throw new Error("Apply cancelled by another deployment operation; saved distribution retained.");
-      this.plan(spec, this.usedPorts()); // Offers may have changed during teardown.
+      this.plan(spec, this.usedPorts(), id); // Offers may have changed during teardown.
       this.deps.reg.applyDistributionSpec(id, spec);
       await this.start(id);
     })().catch((error: unknown) => {
@@ -305,7 +427,8 @@ export class DeploymentManager {
     return { accepted: true, id };
   }
 
-  async start(id: string, recovering = false): Promise<void> {
+  async start(id: string, recovering = false, fleetToken?: symbol): Promise<void> {
+    this.assertFleetAccess(fleetToken);
     const dep = this.must(id);
     if (this.closed) throw new Error("control is shutting down");
     if (this.updatingNode()) throw new Error("node update in progress; retry after recovery");
@@ -334,7 +457,8 @@ export class DeploymentManager {
     });
   }
 
-  async stop(id: string): Promise<void> {
+  async stop(id: string, fleetToken?: symbol): Promise<void> {
+    this.assertFleetAccess(fleetToken);
     this.must(id);
     this.reconnecting.delete(id);
     this.deps.reg.setDeploymentIntent(id, { running: false, attempts: 0, retryAt: 0 });
@@ -434,7 +558,7 @@ export class DeploymentManager {
 
   private async startReplica(dep: Deployment, generation: number): Promise<void> {
     const profile = this.deps.profiles.get(dep.spec.profile)!;
-    const plan = this.plan(dep.spec, this.usedPorts());
+    const plan = this.plan(dep.spec, this.usedPorts(), dep.id);
     this.deps.reg.updateDeployment(dep.id, { plan, state: "loading" });
     const node = this.node(plan.coordinatorNodeId);
     const port = this.freePort(node.id, serverPortBase(), this.usedPorts());
@@ -444,6 +568,8 @@ export class DeploymentManager {
       ctx: plan.ctx, parallel: plan.parallel, device: plan.coordinatorDevice,
       mtp: plan.chain > 0 && plan.mtpPath ? { path: plan.mtpPath, chain: plan.chain } : undefined,
       speculation: plan.speculation, extraArgs: profile.extraArgs, allow: [],
+      enforce: plan.allocations?.find(a => a.nodeId === node.id),
+      fitMiB: dep.spec.allocations && node.os === 'darwin' ? plan.allocations?.find(a => a.nodeId === node.id)?.ramMiB : undefined,
     };
     await this.dispatch(node.id, a, ["ready"], COORDINATOR_TIMEOUT_MS);
     this.assertRunning(dep.id, generation);
@@ -453,7 +579,7 @@ export class DeploymentManager {
 
   private async startNative(dep: Deployment, generation: number): Promise<void> {
     const profile = this.deps.profiles.get(dep.spec.profile)!;
-    const plan = this.plan(dep.spec, this.usedPorts());
+    const plan = this.plan(dep.spec, this.usedPorts(), dep.id);
     if (!plan.nativeExecution) throw new Error("native execution plan missing");
     this.deps.reg.updateDeployment(dep.id, { plan, state: "loading" });
     const assignments = plan.nativeExecution.endpoints.map(e => ({ nodeId: e.nodeId, a: {
@@ -478,7 +604,7 @@ export class DeploymentManager {
   private async startSplit(dep: Deployment, generation: number): Promise<void> {
     const profile = this.deps.profiles.get(dep.spec.profile)!;
     const used = this.usedPorts();
-    const plan = this.plan(dep.spec, used);
+    const plan = this.plan(dep.spec, used, dep.id);
     this.deps.reg.updateDeployment(dep.id, { plan });
     const coord = this.node(plan.coordinatorNodeId);
     const workers = plan.workers.map((w) => ({ w, node: this.node(w.nodeId) }));
@@ -494,7 +620,8 @@ export class DeploymentManager {
       const prev = workers[i - 1];
       const allow = [coord.certFp, ...(prev ? [prev.node.certFp] : [])];
       const peers = next && w.peerPort && next.w.peerPort ? [{ index: i + 1, endpoint: endpointFor(next.node, next.w.peerPort) }] : undefined;
-      const a: WorkerAssignment = { kind: "worker", id: newId("as"), deploymentId: dep.id, port: w.port, device: w.device, threads: w.threads, memCapMiB: w.memCapMiB, peerPort: w.peerPort, peers, allow, enforce: { ramMiB: node.offer?.ramMiB, cpuCores: node.offer?.cpuCores } };
+      const allocation = plan.allocations?.find(a => a.nodeId === node.id);
+      const a: WorkerAssignment = { kind: "worker", id: newId("as"), deploymentId: dep.id, port: w.port, device: w.device, threads: w.threads, memCapMiB: w.memCapMiB, peerPort: w.peerPort, peers, allow, enforce: { ramMiB: allocation?.ramMiB ?? node.offer?.ramMiB, cpuCores: allocation?.cpuCores ?? node.offer?.cpuCores } };
       return { nodeId: node.id, a };
     });
     for (const { nodeId, a } of assignments) { if (!this.deps.channel.assign(nodeId, a)) throw new Error(`node ${nodeId} is offline`); }
@@ -512,8 +639,8 @@ export class DeploymentManager {
       speculation: plan.speculation,
       env: plan.engineTensorSplit ? { ...plan.env, LLAMA_ARG_LOG_VERBOSITY: "4" } : plan.env,
       extraArgs: profile.extraArgs, port, modelName: profile.modelName,
-      fitMiB: coord.os === "darwin" ? coordLayers * profile.layerMiB + profile.coordinatorHostMiB : undefined,
-      stopExternal: externals[0]?.spec.name, allow: [], enforce: { ramMiB: coord.offer?.ramMiB, cpuCores: coord.offer?.cpuCores },
+      fitMiB: coord.os === "darwin" ? (dep.spec.allocations ? plan.allocations!.find(a => a.nodeId === coord.id)!.ramMiB : coordLayers * profile.layerMiB + profile.coordinatorHostMiB) : undefined,
+      stopExternal: externals[0]?.spec.name, allow: [], enforce: { ramMiB: plan.allocations?.find(a => a.nodeId === coord.id)?.ramMiB ?? coord.offer?.ramMiB, cpuCores: plan.allocations?.find(a => a.nodeId === coord.id)?.cpuCores ?? coord.offer?.cpuCores },
     };
     if (!this.deps.channel.assign(coord.id, c)) throw new Error(`coordinator ${coord.id} is offline`);
     await this.waitFor(c.id, ["ready"], COORDINATOR_TIMEOUT_MS);
@@ -631,11 +758,13 @@ export class DeploymentManager {
     if (this.closed || !this.deps.reg.deploymentIntent(id).running || generation !== (this.generations.get(id) ?? 0)) throw new Error("deployment operation cancelled");
   }
 
-  private plan(spec: DeploymentSpec, usedPorts: Map<string, Set<number>>): Plan {
+  private plan(spec: DeploymentSpec, usedPorts: Map<string, Set<number>>, replacingId?: string): Plan {
     const profile = this.deps.profiles.get(spec.profile);
     if (!profile) throw new Error(`unknown profile ${spec.profile}`);
     try {
-      return planDeployment({ spec, profile, nodes: this.deps.reg.listNodes().map((n) => ({ ...n, online: n.online && this.deps.channel.isOnline(n.id) && n.id !== this.updatingNode() })), usedPorts, nativeQualifications: this.deps.nativeQualifications });
+      const input = this.fleetInput();
+      const reserved = reservedResources(input.deployments, input.assignments, input.nodes, new Set(replacingId ? [replacingId] : []));
+      return planWithResources({ spec, profile, nodes: input.nodes, reserved, usedPorts, nativeQualifications: this.deps.nativeQualifications });
     } catch (e) {
       if (e instanceof PlanError) throw new Error(`no plan: ${e.message}`); // message already carries every reason
       throw e as Error;

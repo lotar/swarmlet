@@ -71,6 +71,37 @@ worker ports are private implementation endpoints, not OpenAI servers.
 Physical acceptance and outstanding gates are recorded in the
 [placement/execution report](../docs/reports/PLACEMENT_EXECUTION_PLAN_20260909.md).
 
+## Allocate hardware across deployments
+
+Open **Allocation** in the control web UI. Select deployments and a hardware pool,
+then recommend a balanced allocation. Each deployment can keep its current nodes
+or use manually assigned model/worker nodes and qualified worker layer counts.
+An optional CPU budget applies per node; RAM and GPU reservations come from the
+model profile with headroom. **Create deployment** here saves a workload without
+starting it so several workloads can be planned together.
+
+Review the proposed placements, budgets and reasons, then **Apply and run**.
+Applying reloads the selected workloads and starts selected stopped workloads.
+Active requests, stale previews, missing agents and capacity changes block
+admission. Cleanup must be acknowledged before capacity is reused. Progress is
+stored on the controller and survives browser reloads; interrupted or partially
+failed runs show their per-deployment outcomes.
+
+Recommendations balance model availability, memory pressure, CPU sharing,
+GPU placement, contention and measured controller RTT. They are bounded
+heuristics, not a guarantee of maximum tokens per second. GPU memory is reserved
+in the scheduler; GPU compute is shared. OS enforcement remains platform-specific.
+External services and qualified native stage placements stay fixed. Old agents
+must update before participating in shared budgets. Search and pagination support
+large inventories; large planning jobs run outside the controller request thread.
+
+The authenticated admin API uses `GET /api/fleet`, `POST /api/fleet/preview`
+(`items: [{deploymentId, mode: "balanced" | "keep" | "manual", cpuCores?, placement?}]`
+and `poolNodeIds`), `POST /api/fleet/<previewId>/apply`, and
+`GET /api/fleet/<runId>`. Previews expire after ten minutes. Repeating an accepted
+apply returns its existing run. The API accepts at most 500 workloads and 2,000
+pool nodes per request, with a 20-second planning timeout.
+
 ## Tests
 
 ```bash

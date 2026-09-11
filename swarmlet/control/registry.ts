@@ -2,6 +2,7 @@
 // Plain functions over a Database handle; JSON columns hold the protocol types verbatim.
 
 import { Database } from "bun:sqlite";
+import type { FleetRun } from "./fleet.ts";
 import type {
   Assignment, AssignmentState, Capabilities, Deployment, DeploymentSpec, DeploymentState, ModelFile,
   NodeMetrics, Offer, Plan, LayerDistribution,
@@ -55,6 +56,7 @@ CREATE TABLE IF NOT EXISTS deployment_intent (
 CREATE TABLE IF NOT EXISTS events (id INTEGER PRIMARY KEY AUTOINCREMENT, ts TEXT NOT NULL, kind TEXT NOT NULL,
   node_id TEXT, deployment_id TEXT, message TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS api_keys (key TEXT PRIMARY KEY, name TEXT NOT NULL, created_at TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS fleet_runs (id TEXT PRIMARY KEY, status TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, body TEXT NOT NULL);
 CREATE INDEX IF NOT EXISTS events_ts ON events(ts);
 CREATE INDEX IF NOT EXISTS assignments_dep ON assignments(deployment_id);
 `;
@@ -84,6 +86,27 @@ export class Registry {
   }
 
   close(): void { this.db.close(); }
+
+  saveFleetRun(run: FleetRun): void {
+    this.db.run("INSERT INTO fleet_runs (id,status,created_at,updated_at,body) VALUES (?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET status=excluded.status,updated_at=excluded.updated_at,body=excluded.body",
+      [run.id, run.status, run.createdAt, run.updatedAt, j(run)]);
+    this.db.run("DELETE FROM fleet_runs WHERE status='preview' AND id NOT IN (SELECT id FROM fleet_runs WHERE status='preview' ORDER BY created_at DESC LIMIT 20)");
+  }
+
+  fleetRun(id: string): FleetRun | null {
+    const row = this.db.query<{ body: string }, [string]>("SELECT body FROM fleet_runs WHERE id=?").get(id);
+    return row ? JSON.parse(row.body) as FleetRun : null;
+  }
+
+  fleetRuns(): FleetRun[] {
+    return this.db.query<{ body: string }, []>("SELECT body FROM fleet_runs WHERE status!='preview' ORDER BY created_at DESC LIMIT 20").all().map(r => JSON.parse(r.body) as FleetRun);
+  }
+
+  applyFleetSpecs(entries: Array<{ deploymentId: string; spec: DeploymentSpec }>): void {
+    this.db.transaction(() => {
+      for (const entry of entries) this.applyDistributionSpec(entry.deploymentId, entry.spec);
+    })();
+  }
 
   // ---------- join codes ----------
 

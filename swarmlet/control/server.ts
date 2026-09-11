@@ -90,6 +90,16 @@ export function createControlServer(deps: ControlDeps): Server<ConnData> {
     const url = new URL(req.url);
     const seg = path.split("/").filter(Boolean); // ["api", ...]
     const m = req.method;
+    if (seg[1] === 'fleet') {
+      if (m === 'GET' && seg.length === 2) return json(deployments.fleetSnapshot());
+      if (m === 'POST' && seg[2] === 'preview' && seg.length === 3) {
+        try { return json(await deployments.previewAllocation(await req.json())); } catch (e) { return json({ error: (e as Error).message }, 400); }
+      }
+      if (seg[2] && m === 'GET' && seg.length === 3) { const run = reg.fleetRun(seg[2]); return run ? json(run) : json({ error: 'Allocation not found' }, 404); }
+      if (seg[2] && seg[3] === 'apply' && m === 'POST' && seg.length === 4) {
+        try { return json(deployments.applyAllocation(seg[2]), 202); } catch (e) { return json({ error: (e as Error).message }, 409); }
+      }
+    }
     if (seg[1] === "nodes" && m === "GET" && seg.length === 2) return json({ nodes: nodesSnapshot() });
     if (seg[1] === "stream" && m === "GET") {
       if ((streamsByClient.get(client) ?? 0) >= 4) {
@@ -144,7 +154,7 @@ export function createControlServer(deps: ControlDeps): Server<ConnData> {
       const d = deployments;
       if (m === "GET" && seg.length === 2) return json({ deployments: reg.listDeployments() });
       if (m === "POST" && seg.length === 2) { const spec = (await req.json()) as DeploymentSpec; try { return json(await d.create(spec), 201); } catch (e) { return json({ error: (e as Error).message }, 400); } }
-      if (m === "POST" && seg[2] === "plan-preview") { try { return json(await d.planPreview((await req.json()) as DeploymentSpec)); } catch (e) { return json({ error: (e as Error).message }, 400); } }
+      if (m === "POST" && seg[2] === "plan-preview") { try { return json(await d.planPreview((await req.json()) as DeploymentSpec, url.searchParams.get('replaces') ?? undefined)); } catch (e) { return json({ error: (e as Error).message }, 400); } }
       if (seg[2] && m === "GET" && seg.length === 3) { const dep = reg.getDeployment(seg[2]); return dep ? json({ ...dep, assignments: reg.listAssignments(dep.id) }) : json({ error: "not found" }, 404); }
       if (seg[2] && seg[3] === "distribution" && seg.length === 4 && m === "PUT") {
         try { return json(d.saveDistribution(seg[2], await req.json())); } catch (e) { return json({ error: (e as Error).message }, 400); }

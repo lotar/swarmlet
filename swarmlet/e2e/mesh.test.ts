@@ -207,6 +207,35 @@ describe("mesh e2e (fake engine)", () => {
     await waitState(id, ["stopped"], 30_000);
   });
 
+  test("fleet HTTP apply runs two budgeted replicas through real node agents", async () => {
+    const original = structuredClone(alpha.cfg.offer), ids: string[] = [];
+    try {
+      alpha.cfg.offer = { ...original, ramMiB: 8192, gpu: original.gpu.map(g => ({ ...g, memMiB: 8192 })) };
+      alpha.client!.sendOffer();
+      await waitUntil(() => ctl.reg.getNode(alpha.id.nodeId)?.offer?.ramMiB === 8192);
+      expect(ctl.reg.getNode(alpha.id.nodeId)!.caps!.allocationVersion).toBe(1);
+      for (const name of ['fleet-one', 'fleet-two']) {
+        const response = await api('/api/deployments', { method: 'POST', body: JSON.stringify({ name, profile: 'qwen35-2b-q8', kind: 'replica', ctx: 2048 }) });
+        ids.push((await response.json() as { id: string }).id);
+      }
+      const response = await api('/api/fleet/preview', { method: 'POST', body: JSON.stringify({ items: ids.map(deploymentId => ({ deploymentId, mode: 'balanced' })), poolNodeIds: [alpha.id.nodeId] }) });
+      expect(response.status).toBe(200);
+      const run = await response.json() as import('../control/fleet.ts').FleetRun;
+      expect(run.canApply).toBe(true);
+      expect((await api('/api/fleet/' + run.id + '/apply', { method: 'POST' })).status).toBe(202);
+      await waitUntil(() => ctl.reg.fleetRun(run.id)?.status !== 'applying', 60000);
+      expect(ctl.reg.fleetRun(run.id)!.status).toBe('succeeded');
+      for (const id of ids) {
+        expect(ctl.reg.getDeployment(id)!.spec.allocations![0]!.cpuCores).toBe(1);
+        await assertRouted(id, 'qwen3.5-2b', 'echo:recovery rpc=none');
+      }
+    } finally {
+      for (const id of ids) await api('/api/deployments/' + id + '/stop', { method: 'POST' });
+      alpha.cfg.offer = original; alpha.client!.sendOffer();
+      await waitUntil(() => ctl.reg.getNode(alpha.id.nodeId)?.offer?.ramMiB === original.ramMiB);
+    }
+  }, 90000);
+
   test("external deployment is health-checked and routed", async () => {
     // an "external" server = a fake llama-server we start by hand on alpha's machine
     const proc = Bun.spawn([join(FAKE, "llama-server"), "--port", "8199", "--alias", "ext"], { env: { ...process.env, FAKE_LOAD_MS: "10" }, stdout: "ignore", stderr: "ignore" });

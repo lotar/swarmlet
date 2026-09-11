@@ -7,11 +7,13 @@
   <meta name="robots" content="noindex">
   <title>Swarmlet · Mesh control</title>
   <link rel="stylesheet" href="/style.css">
+  <link rel="stylesheet" href="/fleet.css">
   <link rel="stylesheet" href="/processing.css">
   <link rel="stylesheet" href="/markdown.css">
   <script src="/markdown.js" defer></script>
   <script src="/processing.js" defer></script>
   <script src="/app.js" defer></script>
+  <script src="/fleet.js" defer></script>
 </head>
 <body>
   <div class="login" id="login" hidden>
@@ -36,6 +38,7 @@
       <button type="button" role="tab" data-tab="nodes" aria-selected="true"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 4h6v6H4zM14 4h6v6h-6zM4 14h6v6H4zM14 14h6v6h-6z"/></svg><span>Nodes</span></button>
       <button type="button" role="tab" data-tab="chat" aria-selected="false"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 4h14a1 1 0 0 1 1 1v11a1 1 0 0 1-1 1H9l-5 4V5a1 1 0 0 1 1-1zM8 8h8M8 12h5"/></svg><span>Chat</span></button>
       <button type="button" role="tab" data-tab="deployments" aria-selected="false"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m12 3 9 5-9 5-9-5 9-5zM3 12l9 5 9-5M3 16l9 5 9-5"/></svg><span>Deployments</span></button>
+      <button type="button" role="tab" data-tab="fleet" aria-selected="false"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 4h6v6H3zM15 4h6v6h-6zM9 16h6v5H9zM6 10v3h12v-3M12 13v3"/></svg><span>Allocation</span></button>
       <button type="button" role="tab" data-tab="routing" aria-selected="false"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h11M12 4l3 3-3 3M20 17H9M12 14l-3 3 3 3"/></svg><span>Routing</span></button>
       <button type="button" role="tab" data-tab="events" aria-selected="false"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5h3M11 5h9M4 12h3M11 12h9M4 19h3M11 19h9"/></svg><span>Events</span></button>
       <button type="button" role="tab" data-tab="keys" aria-selected="false"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M14 3a7 7 0 0 0-6 10L3 18v3h4v-3h3l2-2a7 7 0 1 0 2-13zM16 7h.01"/></svg><span>API keys</span></button>
@@ -99,6 +102,31 @@
           <div id="chat-topo-body"><p class="hint">Pick a model: the deployments that can serve it appear here, and after each reply the one that actually served it.</p></div>
         </div></aside></details></div>
         </div>
+      </section>
+      <section class="tab" id="tab-fleet" data-tab="fleet" hidden>
+        <div class="fleet-intro"><span class="fleet-objective">Balanced placement</span><p>Choose workloads and a hardware pool. Review recommendations or pin your own node assignments.</p></div>
+        <div id="fleet-notice" class="fleet-notice" role="status" aria-live="polite" hidden></div>
+        <div id="fleet-summary" class="fleet-summary"><p class="hint">Loading shared capacity…</p></div>
+        <div class="fleet-sections">
+          <section class="fleet-section" aria-labelledby="fleet-workloads-title">
+            <header class="fleet-section-heading"><span class="fleet-step" aria-hidden="true">1</span><div><h2 id="fleet-workloads-title">Deployments</h2><p id="fleet-deployment-count" class="hint">Choose deployments to allocate together</p></div><button id="fleet-new-deployment" type="button" class="button button--small">Create deployment</button></header>
+            <div class="fleet-tools"><label class="fleet-search"><span class="label">Find a deployment</span><input type="search" id="fleet-deployment-search" placeholder="Name or model"></label><button id="fleet-select-deployments" type="button" class="button button--small">Select all managed</button><button id="fleet-clear-deployments" type="button" class="button button--small">Clear</button></div>
+            <div id="fleet-deployments" class="fleet-deployments"></div>
+            <div class="fleet-pagination"><button type="button" id="fleet-dep-prev" class="button button--small">Previous</button><span id="fleet-dep-page" class="hint"></span><button type="button" id="fleet-dep-next" class="button button--small">Next</button></div>
+          </section>
+          <section class="fleet-section" aria-labelledby="fleet-pool-title">
+            <header class="fleet-section-heading"><span class="fleet-step" aria-hidden="true">2</span><div><h2 id="fleet-pool-title">Hardware pool</h2><p id="fleet-pool-count" class="hint">Only selected nodes are considered</p></div></header>
+            <div class="fleet-tools"><label class="fleet-search"><span class="label">Find hardware</span><input type="search" id="fleet-node-search" placeholder="Node, GPU or deployment"></label><label><span class="label">Show</span><select id="fleet-node-filter"><option value="all">All nodes</option><option value="eligible">Eligible</option><option value="allocated">Allocated</option><option value="selected">Selected</option></select></label><button id="fleet-select-nodes" type="button" class="button button--small">Select eligible</button><button id="fleet-clear-nodes" type="button" class="button button--small">Clear</button></div>
+            <div class="table-wrap"><table class="data fleet-node-table"><thead><tr><th scope="col">Use</th><th scope="col">Hardware</th><th scope="col">RAM reserved</th><th scope="col">CPU reserved</th><th scope="col">Current deployments</th></tr></thead><tbody id="fleet-nodes"></tbody></table></div>
+            <div class="fleet-pagination"><button type="button" id="fleet-node-prev" class="button button--small">Previous</button><span id="fleet-node-page" class="hint"></span><button type="button" id="fleet-node-next" class="button button--small">Next</button></div>
+          </section>
+        </div>
+        <section class="fleet-section fleet-review" aria-labelledby="fleet-review-title">
+          <header class="fleet-section-heading"><span class="fleet-step" aria-hidden="true">3</span><div><h2 id="fleet-review-title">Review allocation</h2><p class="hint">Recommendations respect model profiles and concurrent resource budgets.</p></div><button type="button" class="button button--signal" id="fleet-preview">Recommend balanced allocation</button></header>
+          <div id="fleet-review-empty" class="fleet-empty">Select one or more deployments to see how they can share your fleet.</div>
+          <div id="fleet-review-content" hidden><div id="fleet-plan-summary" class="fleet-plan-summary"></div><div id="fleet-warnings" class="fleet-warnings"></div><div id="fleet-results"></div><div class="fleet-pagination"><button type="button" id="fleet-result-prev" class="button button--small">Previous</button><span id="fleet-result-page" class="hint"></span><button type="button" id="fleet-result-next" class="button button--small">Next</button></div><div class="fleet-apply-bar"><p id="fleet-apply-hint" class="hint">Applying reloads selected deployments and starts any that are stopped. Active requests must finish first.</p><button type="button" id="fleet-apply" class="button button--signal" disabled>Apply allocation</button></div></div>
+        </section>
+        <dialog id="fleet-manual-dialog" class="fleet-dialog" aria-labelledby="fleet-manual-title"><form id="fleet-manual-form"><header class="fleet-section-heading"><div><h2 id="fleet-manual-title">Assign nodes</h2><p id="fleet-manual-hint" class="hint"></p></div><button id="fleet-manual-cancel" type="button" class="button button--small">Cancel</button></header><div class="fleet-manual-fields"><label><span class="label">Placement</span><select id="fleet-manual-kind"><option value="replica">Whole model on one node</option><option value="split">Split across nodes</option></select></label><label><span id="fleet-manual-node-label" class="label">Model node</span><select id="fleet-manual-coordinator"></select></label></div><section id="fleet-manual-workers"><label><span class="label">Find workers</span><input type="search" id="fleet-worker-search" placeholder="Node name or GPU"></label><p id="fleet-worker-rule" class="hint"></p><div class="table-wrap"><table class="data"><thead><tr><th>Worker</th><th>GPU</th><th>Layers / use</th></tr></thead><tbody id="fleet-worker-rows"></tbody></table></div><div class="fleet-pagination"><button type="button" id="fleet-worker-prev" class="button button--small">Previous</button><span id="fleet-worker-page" class="hint"></span><button type="button" id="fleet-worker-next" class="button button--small">Next</button></div></section><p id="fleet-manual-error" class="err" role="alert"></p><div class="fleet-dialog-actions"><button type="submit" class="button button--signal">Use these assignments</button></div></form></dialog>
       </section>
       <section class="tab" id="tab-deployments" data-tab="deployments" hidden>
         <div class="toolbar">
@@ -164,6 +192,7 @@
           </div>
           <div class="form-actions">
             <button class="button" type="button" id="dep-preview">Preview plan</button>
+            <label class="check"><input type="checkbox" id="dep-start-immediately" checked><span>Start immediately</span></label>
             <button class="button button--signal" type="submit" id="dep-create">Create and start</button>
             <span class="form-status" id="dep-form-status"></span>
           </div>

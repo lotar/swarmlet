@@ -81,6 +81,7 @@ export async function probeCapabilities(opts: ProbeCapabilitiesOptions): Promise
   const ip = controlUrl ? await publicIp(controlUrl) : undefined;
 
   const caps: Capabilities = {
+    allocationVersion: 1,
     os,
     arch,
     hostname: hostname(),

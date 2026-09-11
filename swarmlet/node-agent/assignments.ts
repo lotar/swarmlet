@@ -325,8 +325,10 @@ export class AssignmentRunner {
       return;
     }
     const cfg = this.deps.cfg();
-    const limits = { ramMiB: cfg.offer.ramMiB, cpuCores: cfg.offer.cpuCores };
+    const limits = { ramMiB: a.enforce?.ramMiB ?? cfg.offer.ramMiB, cpuCores: a.enforce?.cpuCores ?? cfg.offer.cpuCores };
     if (limits.ramMiB <= 0 || limits.cpuCores < 1) throw new Error("replica needs a positive RAM budget and at least one CPU core");
+    if (!Number.isSafeInteger(limits.ramMiB) || !Number.isSafeInteger(limits.cpuCores) || limits.ramMiB > cfg.offer.ramMiB || limits.cpuCores > cfg.offer.cpuCores) throw new Error("replica allocation exceeds this node's current offer");
+    await this.fitGate(x, a);
     const recipe = replicaArgv(cfg.enginePath, a, limits.cpuCores);
     await this.spawn(x, `replica-${a.id}`, recipe.argv, recipe.env, limits);
     this.set(x, "loading");
@@ -342,6 +344,9 @@ export class AssignmentRunner {
   }
 
   private async spawn(x: Active, unit: string, argv: string[], env: Record<string, string>, limits?: { ramMiB?: number; cpuCores?: number }): Promise<void> {
+    const offer = this.deps.cfg().offer;
+    if (limits?.ramMiB !== undefined && (!Number.isSafeInteger(limits.ramMiB) || limits.ramMiB < 1 || limits.ramMiB > offer.ramMiB) ||
+        limits?.cpuCores !== undefined && (!Number.isSafeInteger(limits.cpuCores) || limits.cpuCores < 1 || limits.cpuCores > offer.cpuCores)) throw new Error("assignment allocation exceeds this node's current offer");
     const enf = await enforce(`swarmlet-${unit}`, argv, limits ?? {}, this.deps.log);
     this.assertStarting(x);
     x.detail = enf.summary;
