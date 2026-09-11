@@ -2,6 +2,8 @@ import markdownJs from "../../shared/ui/markdown.js" with { type: "text" };
 import markdownCss from "../../shared/ui/markdown.css" with { type: "text" };
 import markedJs from "../../shared/ui/vendor/marked.js" with { type: "text" };
 import purifyJs from "../../shared/ui/vendor/purify.js" with { type: "text" };
+import { createHash } from "node:crypto";
+import updateJs from "./update.js" with { type: "text" };
 // Web UI of the node agent (127.0.0.1:47800, owner only, no auth). The three static assets are
 // embedded as text at build time so the compiled binary carries them; they call the agent's local
 // JSON API (/api/*), which lives next to this module in the agent's HTTP server.
@@ -19,6 +21,7 @@ const ASSETS: Record<string, { body: string; type: string }> = {
   "/": { body: indexHtml as unknown as string, type: "text/html; charset=utf-8" },
   "/markdown.js": { body: markedJs + "\n" + purifyJs + "\n" + markdownJs, type: "application/javascript; charset=utf-8" },
   "/markdown.css": { body: markdownCss, type: "text/css; charset=utf-8" },
+  "/update.js": { body: updateJs, type: "application/javascript; charset=utf-8" },
   "/app.js": { body: appJs, type: "application/javascript; charset=utf-8" },
   "/chat.js": { body: chatJs, type: "application/javascript; charset=utf-8" },
   "/processing.js": { body: processingJs, type: "application/javascript; charset=utf-8" },
@@ -26,6 +29,11 @@ const ASSETS: Record<string, { body: string; type: string }> = {
   "/workspace.css": { body: workspaceCss, type: "text/css; charset=utf-8" },
   "/style.css": { body: styleCss, type: "text/css; charset=utf-8" },
 };
+
+// Identify the actual embedded UI, including CSS, rather than the agent process lifetime.
+const version = createHash("sha256").update(JSON.stringify(Object.keys(ASSETS).sort().map(path => [path, ASSETS[path]]))).digest("hex");
+ASSETS["/"]!.body = ASSETS["/"]!.body.replace("__SWARMLET_UI_VERSION__", version);
+ASSETS["/ui-version.json"] = { body: JSON.stringify({ version }), type: "application/json; charset=utf-8" };
 
 /** Serve a UI asset; null when `path` is not a UI path (the caller falls through to its API or 404). */
 export function serveUi(req: Request, path: string): Response | null {

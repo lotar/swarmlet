@@ -3,6 +3,8 @@
   'use strict';
 
   var D = document;
+  // A release may switch between the HTML request and its script requests.
+  if (!D.querySelector('meta[name="swarmlet-ui-version"]')) { window.location.reload(); return; }
   var POLL_MS = 3000;
   var GIB = 1024;          /* MiB per GiB: the API speaks MiB, the owner reads GiB */
   var NA = '—';
@@ -112,6 +114,7 @@
 
   /* ---------- API ---------- */
   function api(method, path, body) {
+    var release = method === 'GET' ? function () {} : window.SwarmletUiUpdate.hold();
     var init = { method: method, headers: {} };
     if (body !== undefined) { init.headers['content-type'] = 'application/json'; init.body = JSON.stringify(body); }
     return fetch(path, init).then(function (res) {
@@ -126,7 +129,7 @@
         }
         return data;
       });
-    });
+    }).finally(release);
   }
 
   /* ---------- tabs ---------- */
@@ -310,6 +313,7 @@
     listMsgs('offer-errors', []);
     listMsgs('offer-warnings', []);
     note('offer-status', '');
+    window.SwarmletUiUpdate.clean($('offer-form'));
   }
 
   /* Measured totals next to each control; refreshed from every status poll without touching the inputs. */
@@ -345,12 +349,14 @@
     ev.preventDefault();
     if (!offer.loaded) return;
     var btn = $('offer-save');
+    var savedChanges = window.SwarmletUiUpdate.checkpoint($('offer-form'));
     btn.disabled = true;
     note('offer-status', 'Saving…');
     api('PUT', '/api/offer', readOffer()).then(function (r) {
       listMsgs('offer-errors', []);
       listMsgs('offer-warnings', r.warnings);
       note('offer-status', 'Saved' + (r.warnings && r.warnings.length ? ' with warnings' : ''), 'ok');
+      savedChanges();
       tick();
     }).catch(function (e) {
       listMsgs('offer-errors', (e.data && e.data.errors) || [e.message]);
@@ -360,13 +366,16 @@
   }
 
   function setEnabled() {
+    var savedChanges = window.SwarmletUiUpdate.checkpoint($('offer-enabled'));
     var on = $('offer-enabled').checked;
     note('enabled-status', on ? 'Enabling…' : 'Disabling…');
     api('POST', '/api/enabled', { enabled: on }).then(function () {
       note('enabled-status', on ? 'Enabled: the node accepts assignments.' : 'Disabled: the node only reports.', 'ok');
+      savedChanges();
       tick();
     }).catch(function (e) {
       $('offer-enabled').checked = !on;
+      savedChanges();
       note('enabled-status', e.message, 'error');
     });
   }
@@ -437,6 +446,7 @@
 
   $('join-form').addEventListener('submit', function (ev) {
     ev.preventDefault();
+    var savedChanges = window.SwarmletUiUpdate.checkpoint($('join-form'));
     var controlUrl = $('join-url').value.trim();
     var code = $('join-code').value.trim().toUpperCase();
     if (!controlUrl || !code) { listMsgs('join-errors', ['Control URL and join code are both required.']); return; }
@@ -447,6 +457,7 @@
     api('POST', '/api/join', { controlUrl: controlUrl, code: code }).then(function (r) {
       note('join-status', 'Joined as ' + (r.nodeId || 'this node') + '. Connecting…', 'ok');
       $('join-code').value = '';
+      savedChanges();
       tick();
     }).catch(function (e) {
       listMsgs('join-errors', [e.message]);

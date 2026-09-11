@@ -9,7 +9,15 @@
     saved = JSON.parse(localStorage.getItem(savedKey) || '{}') || {};
     if (Array.isArray(saved.messages)) messages = saved.messages.filter(function (m) { return m && ['user', 'assistant'].indexOf(m.role) >= 0 && typeof m.content === 'string'; }).slice(-80);
   } catch (_) {}
-  function save() { try { localStorage.setItem(savedKey, JSON.stringify({ model: $('chat-model').value, messages: messages })); } catch (_) {} }
+  function save() {
+    try {
+      localStorage.setItem(savedKey, JSON.stringify({ model: $('chat-model').value || saved.model, messages: messages, draft: $('chat-input').value }));
+      return true;
+    } catch (_) { return false; }
+  }
+  if (typeof saved.draft === 'string') $('chat-input').value = saved.draft;
+  D.addEventListener('swarmlet:before-ui-update', function (ev) { if (busy || !save()) ev.preventDefault(); });
+  window.addEventListener('pagehide', save);
   function error(text) { $('chat-error').textContent = text || ''; $('chat-error').hidden = !text; }
   function messageNode(message) {
     var row = D.createElement('article'); row.className = 'chat-message chat-message--' + message.role;

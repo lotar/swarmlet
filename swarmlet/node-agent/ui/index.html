@@ -3,6 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="swarmlet-ui-version" content="__SWARMLET_UI_VERSION__">
   <meta name="theme-color" content="#f5f7f8">
   <meta name="robots" content="noindex">
   <title>Swarmlet node</title>
@@ -11,6 +12,7 @@
   <link rel="stylesheet" href="/processing.css">
   <link rel="stylesheet" href="/markdown.css">
   <script src="/markdown.js" defer></script>
+  <script src="/update.js" defer></script>
   <script src="/processing.js" defer></script>
   <script src="/app.js" defer></script>
   <script src="/chat.js" defer></script>
@@ -28,6 +30,7 @@
 </nav><div class="sidebar-foot"><span class="workspace-avatar" aria-hidden="true">N</span><div><strong>Your contribution</strong><span>Shared intelligence</span></div></div></aside>
   <main id="main-content">
     <div class="banner banner--error" id="agent-error" role="alert" hidden></div>
+    <div class="banner" id="ui-update-note" role="status" hidden>App update ready. It will apply after the current reply finishes and any settings changes are saved or reset.</div>
 
     <section class="tab" id="tab-status" data-tab="status">
       <div class="page-heading"><div><span class="eyebrow">Node overview</span><h1>Your machine</h1><p>Availability, resources and the work you contribute.</p></div></div><h2 class="label">This node</h2>
