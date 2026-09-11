@@ -39,6 +39,12 @@ describe("recipes", () => {
     expect(r.argv).toEqual(["/eng/llama-server", "-m", "/m/x.gguf", "--host", "127.0.0.1", "--port", "8100", "-ngl", "999", "--metrics", "-c", "4096", "--parallel", "4", "--alias", "x", "-fa", "on"]);
   });
 
+  test("replica on the planner's CPU device runs llama-server with no offload device", () => {
+    const r = replicaArgv("/eng", { kind: "replica", id: "r", deploymentId: "d", port: 8100, model: { path: "/m/x.gguf" }, device: "CPU", ctx: 2048, parallel: 1, allow: [] }, 6);
+    expect(r.argv).toEqual(["/eng/llama-server", "-m", "/m/x.gguf", "--host", "127.0.0.1", "--port", "8100", "-ngl", "0", "--metrics", "-c", "2048", "--parallel", "1", "--device", "none", "-t", "6", "-tb", "6"]);
+    expect(r.argv.join(" ")).not.toContain("--device CPU");
+  });
+
   test("both serving roles launch native ngram verification without a draft model", () => {
     const common = { id: "s", deploymentId: "d", port: 8100, model: { path: "/m/x.gguf" }, ctx: 4096, parallel: 1, allow: [], speculation: { type: "ngram-simple" as const } };
     const replica = replicaArgv("/eng", { ...common, kind: "replica", device: "CUDA0" });

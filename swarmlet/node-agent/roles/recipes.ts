@@ -47,14 +47,18 @@ export function coordinatorArgv(engine: string, a: CoordinatorAssignment, rpcLoc
   return { argv, env };
 }
 
-/** Whole-model llama-server (replica role). */
+/**
+ * Whole-model llama-server (replica role). The planner names the device "CPU" on a node without a GPU
+ * offer; llama-server has no device by that name, so that case runs with no offload device at all.
+ */
 export function replicaArgv(engine: string, a: ReplicaAssignment, cpuCores?: number): WorkerRecipe {
   if (!a.model) throw new Error("replica recipe needs a model");
-  const argv = [`${engine}/${exeName("llama-server")}`, "-m", a.model.path, "--host", "127.0.0.1", "--port", String(a.port), "-ngl", "999", "--metrics"];
+  const cpuOnly = a.device === "CPU";
+  const argv = [`${engine}/${exeName("llama-server")}`, "-m", a.model.path, "--host", "127.0.0.1", "--port", String(a.port), "-ngl", cpuOnly ? "0" : "999", "--metrics"];
   if (a.ctx) argv.push("-c", String(a.ctx));
   if (a.parallel) argv.push("--parallel", String(a.parallel));
   if (a.modelName) argv.push("--alias", a.modelName);
-  if (a.device) argv.push("--device", a.device);
+  if (a.device) argv.push("--device", cpuOnly ? "none" : a.device);
   argv.push(...speculationArgs(a));
   argv.push(...(a.extraArgs ?? []));
   if (cpuCores) argv.push("-t", String(cpuCores), "-tb", String(cpuCores));
