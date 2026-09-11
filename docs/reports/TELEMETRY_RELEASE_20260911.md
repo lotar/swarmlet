@@ -43,3 +43,35 @@ FINDINGS: no unresolved source findings. Review corrected invalid non-finite sto
 | Simplicity | Existing channel/router/UI extended; no duplicate collector. Search for `telemetry`, `retention` and `anonymousId` confirmed the new store is the sole history implementation. |
 
 QUESTIONS: none for source scope. Installed component identity and hosted acceptance are rollout checks, not inferred from local tests.
+
+## Published and accepted
+
+Release `2026091104`, version `0.1.0-telemetry.20260911.4`, was published on the existing signed feeds for darwin-arm64, linux-x64 and win32-x64. Source commit: `8f194b155ccffd44b57b9c36d6d9ae8a65964866`. Hosted controller: `swarmlet-control:8f194b1`, healthy. The registry/config/signing keys were backed up to the controller's `data/backups/telemetry-2026091104` before replacement.
+
+All four nodes activated the release through the existing updater. Each active executable path and every signed inventory file was checked: Mac 16 files, both Linux nodes 7 each, Windows 6. The Mac app automatically installed; all 15 app files match the signed desktop descriptor, `codesign --verify --deep --strict` passes, and the previous app is retained.
+
+The four stable service supervisors were refreshed separately, with old binaries/service definitions saved under each node's `.swarmlet/backups/telemetry-2026091104-supervisor*`. The running service commands and installed bootstrap hashes were checked independently of the child release:
+
+| Platform | Canonical / installed supervisor SHA-256 |
+| --- | --- |
+| Mac | `568d165d837fc45c03a8d1557d5020fdd82053cc7bd8047edd4cf973e5598f1f` |
+| Linux, both nodes | `11bbcf81f5af4753f7dbaa68bc35ff98fede99f2793db43b1d14ae17e25f262d` |
+| Windows | `179af00d83b0e519048e4e935fe51d75ef05c4e741aa03f2f9a47bd7679f4d93` |
+
+The installed Mac privileged fan helper already matches the canonical release (`2bc2a4cb871567edab5178d8964b2e4054afd308fd1301a42b6fa0895690c572`). Neither Linux host has a privileged helper at `/usr/local/libexec/swarmlet-fans`; their bundled provider scripts were delivered and verified in the signed inventory. No new privilege configuration was installed.
+
+Operator observations: the first controller attempt stopped at backup-directory permissions, before replacing the controller; an owned backup directory resolved it. The first Mac refresh encountered transient launchd bootstrap EIO, restored its saved bootstrap, and recovered on a delayed native restart. The repeated refresh used a bounded restart retry and successfully installed the intended supervisor. Services were refreshed serially using signed controller maintenance leases; the operator waited for the standing model to recover between affected nodes. The outer idle-window guard preserved the external production service's pre-existing stopped state.
+
+## Executed evidence
+
+- `bun run --cwd swarmlet typecheck` → `$ tsc --noEmit`, exit 0.
+- `bun test swarmlet` → `385 pass`, `0 fail`, `4264 expect() calls`, `Ran 385 tests across 56 files.`
+- Python operator, Linux fan and numerical verifier suites → `Ran 92 tests`, `Ran 10 tests`, `Ran 3 tests`, each `OK`.
+- Telemetry/privacy/HTTP/SSE checks in the actual hosted shipping image with production read-only/memory limits → `16 pass`, `0 fail`, `108 expect() calls`.
+- Real hosted Chromium flows → `HOSTED_TELEMETRY_BROWSER_OK charts=true node_filter=true range_filter=true mobile=true private_names_absent=true console_errors=0`.
+- Active stored SQLite bytes → `HOSTED_STORAGE_PRIVACY_OK files=2 bytes=2068512 known_identities_absent=true` at the recorded check.
+- `/tmp/swarmlet-telemetry-release/hosted-audit.py`, inside the idle maintenance window → `HOSTED_TELEMETRY_OK nodes=4 release=2026091104 privacy=true admin_only=true limits=72h/2000000000B dropped=0 history_growing=true response_recorded=true` and `HOSTED_CHAT_OK marker=TELEMETRY_READY standing_specs_unchanged=true canonical_ui=true`.
+
+The hosted API exposes all four anonymous runtime release numbers, grows between observations, rejects unauthenticated access, and matches the committed UI assets. The live 2B response's count/timing was recorded; its prompt/reply marker was absent from telemetry. Existing deployment specifications were compared before and after and are unchanged. The pre-existing failed FlashNext mesh specification and loading external watch are not asserted healthy by this release.
+
+Final review verdict: merge/released; no unresolved findings in the eight-lens source review above. Retention's 72-hour boundary and size rotation were exercised with an isolated clock/size budget; acceptance does not claim that three actual days have elapsed. No remaining rollout work for this requested release.
