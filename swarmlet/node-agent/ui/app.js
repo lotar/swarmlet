@@ -185,7 +185,7 @@
       ['Node id', s.nodeId],
       ['Certificate', el('span', { title: s.certFp || '', text: shortFp(s.certFp) })],
       ['Agent', (s.agentVersion || NA) + ' on ' + (s.hostname || caps.hostname || NA) + (caps.os ? ' (' + caps.os + ' ' + caps.arch + ')' : '')],
-      ['Installed update', s.releaseSequence || 'bootstrap'],
+      ['Installed update', String(s.releaseSequence || 'bootstrap')],
       ['Offer', s.enabled ? (roles.length ? 'enabled: ' + roles.join(', ') : 'enabled, no roles') : 'disabled'],
     ].concat(s.desktopUpdate && s.desktopUpdate.state !== 'not-applicable' ? [['Mac app', s.desktopUpdate.state === 'installed' ? 'Up to date · ' + s.desktopUpdate.version : s.desktopUpdate.detail || s.desktopUpdate.state]] : [])));
 
