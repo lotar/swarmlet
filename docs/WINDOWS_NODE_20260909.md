@@ -77,6 +77,30 @@ Access model: key-only SSH from the Mac (`~/.ssh/id_ed25519_winbox`, `Host winbo
 5. Stage the 2B model: `scp ~/.swarmlet/models/Qwen3.5-2B-Q8_0.gguf winbox:.swarmlet/models/` (follow the symlink; 1.87 GiB), then `Get-FileHash` on the laptop equals `1b04acba...f2c1`.
 6. Install the NSIS package in the interactive session, launch, screenshot, enroll with a join code from the Mac control plane (`http://192.168.1.53:47900`), then run the go-live checklist above (replica 2B, split 2B, Flash-Next plan preview, tray quit and relaunch, service install).
 
-## Status
+## CPU-only compute rule (2026-09-11)
 
-The initial Mac-side implementation is committed, but Windows acceptance is NOT RUN. On 2026-09-10 the laptop hostname still resolves to `192.168.1.188`; TCP probes of SSH (22), Remote Desktop (3389), SMB (445), WinRM (5985/5986), VNC (5900), and Swarmlet (47800/47801) time out. These probes do not distinguish a firewall block from an unavailable service or sleeping host. The Mac serves the bootstrap script successfully on its LAN address. A watcher records when port 22 opens (`/tmp/winbox-watch.log`). The laptop's actual power settings, compiler installation, engine build, rendered shell, Mica effect, drag and caption behavior, scheduled task, model hash, and routed reply remain unverified until remote access works.
+Owner rule: a node may offer CPU-only compute (a worker, coordinator or replica role with no GPU memory in the offer) only when it has no usable GPU. A usable GPU is a device the engine can see whose backend is not `cpu` and whose memory is above zero (`usableGpus` in `protocol/validate.ts`). Free GPU memory does not matter; only whether a usable device exists. The rule is enforced in three places:
+
+- `validateOffer` refuses a CPU-only compute offer on a machine with a usable GPU and names the device (`cpuOnlyRefusal`).
+- `placeResident` in the planner refuses to place a coordinator or replica on the CPU of a node that has a usable GPU but offers none of it; the error asks for GPU memory or a different node.
+- The fleet allocator no longer hides a node's GPU to try a CPU-only replica.
+
+The laptop (`LAPTOP-PPN32FP0`, Intel UHD graphics only, no CUDA device, `caps.gpus = []`) qualifies. Two node-agent changes were needed for it to hold the 2B model:
+
+- The Windows RAM reserve is no longer a fixed 6 GiB. `defaultRamReserveMiB` keeps 6 GiB on large machines and scales down to 35% of total RAM, never below 2 GiB. On the 7857 MiB laptop the reserve is 2750 MiB, so the largest offer is 5107 MiB (the 2B replica needs 24 x 80 + 1024 = 2944 MiB).
+- The replica recipe maps the planner's `CPU` device to `--device none -ngl 0`. llama-server has no device named `CPU` and exited with usage text (the first start attempt failed this way; release 2026091106 carries the fix).
+
+## Status (2026-09-11)
+
+Windows acceptance of the CPU-only replica path is DONE end to end on the hosted control plane (`https://app.swarmlet.ai`, image `swarmlet-control:6a4128e`).
+
+- Access: key-only SSH to `winbox` works; PowerShell runs through `-EncodedCommand`.
+- Releases: signed win32-x64 releases 2026091105 (`0.1.0-cpuonly.20260911.5`, reserve change) and 2026091106 (`0.1.0-cpuonly.20260911.6`, replica recipe fix, exe sha256 `bac68cef0c43...900e32`) were published for the Windows feed only. The laptop supervisor activated each within 5 minutes with no manual step (`state\updates.json` active sequence 2026091106). Mac and Linux nodes were not restarted.
+- Model: `C:\Users\lotar\.swarmlet\models\Qwen3.5-2B-Q8_0.gguf`, sha256 `1b04acba...f2c1`, listed by the controller.
+- Offer: enabled, roles replica only, `gpu: []`, `ramMiB 3584`, `cpuCores 6`; accepted with no warnings; the local API reports `ramMaxMiB 5107`.
+- Deployment `dep-4fe6dbe93f1a` (`win-2b-cpu`, profile `qwen35-2b-q8`, kind replica, ctx 2048, parallel 1): plan preview places 24 of 24 layers on CPU, state `ready`, RSS watchdog cap 3.5 GiB, llama-server RSS about 2.2 GiB, laptop free RAM about 1.3 GiB while serving.
+- Routed reply: `POST /v1/chat/completions` with `x-swarmlet-deployment: dep-4fe6dbe93f1a` returned `x-swarmlet-node: 01f78366eb893349` and the text "Mercury is the planet closest to the Sun." (17 tokens per second generation, 32 tokens per second prompt). With thinking left on, a 40-token budget is spent in `reasoning_content` and `content` stays empty; that is the model's thinking mode, not a routing fault. Pass `chat_template_kwargs.enable_thinking=false` or a larger `max_tokens` for a visible answer.
+- Routing: `qwen3.5-2b` is now served by two deployments, this replica and the 3-node internet split `mesh-2b-internet` (`dep-65bedf5278d1`, still `ready`, 5 tokens per second on the same prompt). The router picks the lowest inflight, then the lowest RTT, so unpinned 2B requests currently land on the laptop (30 ms RTT against 41 ms). Stop the replica with `POST /api/deployments/dep-4fe6dbe93f1a/stop` if that is not wanted.
+- Tests: `bun test` in `swarmlet`: 394 pass, 0 fail; `tsc --noEmit` clean.
+
+Not done: the split-coordinator path on a CPU-only node still emits `--device ...,CPU`, which llama-server would also reject; the laptop offers only the replica role, so this is not reachable today. The go-live checklist items above that were not part of this run (2B split with the laptop as worker, Flash-Next plan preview from the laptop, tray quit and relaunch, service install) are unchanged from their earlier state.
