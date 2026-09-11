@@ -5,6 +5,20 @@
   var processing = window.SwarmletProcessing.create($('chat-processing'));
   var messages = [], busy = false, loading = false, controller = null, catalog = [], saved = {};
   var savedKey = 'swarmlet.node.chat.v1';
+  var transcript = $('chat-transcript'), following = true, lastScrollTop = 0;
+  function trackScroll() {
+    if (transcript.scrollTop < lastScrollTop) following = false;
+    if (transcript.scrollTop > lastScrollTop && transcript.scrollHeight - transcript.clientHeight - transcript.scrollTop <= 1) following = true;
+    lastScrollTop = transcript.scrollTop;
+  }
+  function followReply() {
+    if (!following) return;
+    transcript.scrollTop = transcript.scrollHeight;
+    lastScrollTop = transcript.scrollTop;
+  }
+  transcript.addEventListener('scroll', trackScroll, { passive: true });
+  // Record upward intent before a chunk can arrive, even before the browser scrolls.
+  transcript.addEventListener('wheel', function (ev) { if (ev.deltaY < 0) following = false; }, { passive: true });
   try {
     saved = JSON.parse(localStorage.getItem(savedKey) || '{}') || {};
     if (Array.isArray(saved.messages)) messages = saved.messages.filter(function (m) { return m && ['user', 'assistant'].indexOf(m.role) >= 0 && typeof m.content === 'string'; }).slice(-80);
@@ -73,6 +87,7 @@
     error(''); messages.push({ role: 'user', content: prompt });
     var history = messages.map(function (m) { return { role: m.role, content: m.content }; });
     var answer = { role: 'assistant', content: '' }; messages.push(answer); render();
+    following = true; followReply();
     var output = $('chat-transcript').lastElementChild.querySelector('.chat-message-text');
     $('chat-input').value = ''; setBusy(true); save();
     processing.begin($('chat-model').value);
@@ -97,9 +112,10 @@
         if (payload.error) throw new Error(payload.error.message || 'Generation failed');
         var delta = payload.choices && payload.choices[0] && payload.choices[0].delta;
         if (delta && typeof delta.content === 'string') {
-          var nearBottom = $('chat-transcript').scrollHeight - $('chat-transcript').scrollTop - $('chat-transcript').clientHeight < 100;
+          // A user scroll may have happened before its queued scroll event was delivered.
+          trackScroll();
           answer.content += delta.content; window.SwarmletMarkdown.render(output, answer.content);
-          if (nearBottom) $('chat-transcript').scrollTop = $('chat-transcript').scrollHeight;
+          followReply();
         }
       }
       while (!done) {
@@ -119,7 +135,7 @@
     } finally {
       if (reader) await reader.cancel().catch(function () {});
       if (!answer.content) messages.pop();
-      save(); setBusy(false); controller = null; $('chat-input').focus();
+      save(); setBusy(false); controller = null; $('chat-input').focus({ preventScroll: true });
     }
   }
   $('chat-form').addEventListener('submit', send);

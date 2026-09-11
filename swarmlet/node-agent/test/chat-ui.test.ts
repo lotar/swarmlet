@@ -5,7 +5,7 @@ const consumer = source.slice(source.indexOf("      function consume(frame)"), s
 function fixture() {
   const answer = { content: "" }, output = { textContent: "" };
   const view = { scrollHeight: 100, scrollTop: 0, clientHeight: 100 };
-  const use = new Function("answer", "output", "$", "window", 'var done = false; var processing = {feed: function () {}};\n' + consumer + '\nreturn {consume, done:()=>done};')(answer, output, () => view, { SwarmletMarkdown: { render: (target: typeof output, text: string) => { target.textContent = text; } } });
+  const use = new Function("answer", "output", "$", "window", 'var done = false; var processing = {feed: function () {}}; function trackScroll() {} function followReply() {}\n' + consumer + '\nreturn {consume, done:()=>done};')(answer, output, () => view, { SwarmletMarkdown: { render: (target: typeof output, text: string) => { target.textContent = text; } } });
   return { ...use, answer, output };
 }
 test("chat forwards accumulated Markdown to the renderer, accepts CRLF and recognizes terminal SSE marker", () => {
