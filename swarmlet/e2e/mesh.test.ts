@@ -5,7 +5,7 @@
 // -> stop -> cleanup; plus a replica deployment and the external (health-only) kind.
 
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import { chmodSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { loadControlConfig, type ControlConfig } from "../control/config.ts";
@@ -61,13 +61,27 @@ async function assertRouted(id: string, model = "qwen3.5-2b", expected = "echo:r
   expect(body.choices[0]?.message.content).toBe(expected);
 }
 
-async function makeNode(name: string, roles: Offer["roles"], withModel: boolean, uiPort: number, dataPort: number): Promise<AgentRuntime> {
+/** argv the GPU-less node's fake llama-server was started with (written by the wrapper's FAKE_ARGV_FILE). */
+let cpuOnlyArgvFile = "";
+
+async function makeNode(name: string, roles: Offer["roles"], withModel: boolean, uiPort: number, dataPort: number, opts: { cpuOnly?: boolean } = {}): Promise<AgentRuntime> {
   const home = mkdtempSync(join(tmpdir(), `swarmlet-e2e-${name}-`));
   const models = join(home, "models"); mkdirSync(models, { recursive: true });
   if (withModel) { writeFileSync(join(models, "Qwen3.5-2B-Q8_0.gguf"), "not a real model"); }
-  process.env.SWARMLET_ENGINE = FAKE;
+  let engine = FAKE;
+  if (opts.cpuOnly) {
+    // A machine without a GPU: wrappers run the same fake engine with no GPU listed and record llama-server's argv.
+    engine = join(home, "engine"); mkdirSync(engine);
+    cpuOnlyArgvFile = join(home, "llama-server.argv");
+    for (const bin of ["llama-server", "ggml-rpc-server"]) {
+      writeFileSync(join(engine, bin), `#!/bin/sh\nFAKE_NO_GPU=1 FAKE_ARGV_FILE=${JSON.stringify(cpuOnlyArgvFile)} exec ${JSON.stringify(join(FAKE, bin))} "$@"\n`);
+      chmodSync(join(engine, bin), 0o755);
+    }
+  }
+  process.env.SWARMLET_ENGINE = engine;
   const rt = new AgentRuntime(home);
-  rt.cfg.uiPort = uiPort; rt.cfg.dataPort = dataPort; rt.cfg.enginePath = FAKE;
+  process.env.SWARMLET_ENGINE = FAKE;
+  rt.cfg.uiPort = uiPort; rt.cfg.dataPort = dataPort; rt.cfg.enginePath = engine;
   saveNodeConfig(rt.paths, rt.cfg);
   await rt.start();
   const gpu = rt.caps?.gpus[0];
@@ -207,6 +221,51 @@ describe("mesh e2e (fake engine)", () => {
     await waitState(id, ["stopped"], 30_000);
   });
 
+  // Owner rule: CPU-only compute is allowed only on a machine without a usable GPU.
+  test("a node with a usable GPU refuses a CPU-only offer through its local API", async () => {
+    if (!hasGpu()) return;
+    const before = structuredClone(alpha.cfg.offer);
+    const r = await fetch("http://127.0.0.1:47810/api/offer", { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ ...before, gpu: [] }) });
+    expect(r.status).toBe(400);
+    const body = (await r.json()) as { errors: string[] };
+    expect(body.errors.join("\n")).toMatch(/CPU-only offers are allowed only on machines without a usable GPU/);
+    expect(alpha.cfg.offer).toEqual(before);
+    expect(ctl.reg.getNode(alpha.id.nodeId)?.offer?.gpu).toEqual(before.gpu);
+  });
+
+  test("a node without a GPU serves a CPU-only replica: offer accepted, planned on CPU, engine started with --device none -ngl 0", async () => {
+    // 4784x: the fixtures in e2e/ listen on 47820 and 4783x, so a fixture left running cannot take these ports
+    const gamma = await makeNode("gamma", { worker: false, coordinator: false, replica: true }, true, 47840, 47841, { cpuOnly: true });
+    // capabilities and the offer follow authentication on the wire
+    await waitUntil(() => { const n = ctl.reg.getNode(gamma.id.nodeId); return !!n?.caps && !!n?.offer; });
+    const node = ctl.reg.getNode(gamma.id.nodeId)!;
+    expect(node.caps!.gpus).toEqual([]);
+    expect(node.offer!.enabled).toBe(true);
+    expect(node.offer!.gpu).toEqual([]);
+    const spec = { name: "e2e-cpu-replica", profile: "qwen35-2b-q8", kind: "replica", replicaNodeId: gamma.id.nodeId, ctx: 2048, parallel: 1 };
+    const preview = (await (await api("/api/deployments/plan-preview", { method: "POST", body: JSON.stringify(spec) })).json()) as { coordinatorDevice?: string; error?: string };
+    expect(preview.error).toBeUndefined();
+    expect(preview.coordinatorDevice).toBe("CPU");
+    const { id } = (await (await api("/api/deployments", { method: "POST", body: JSON.stringify(spec) })).json()) as { id: string };
+    expect((await api(`/api/deployments/${id}/start`, { method: "POST" })).status).toBe(200);
+    const dep = await waitState(id, ["ready", "failed"], 60_000);
+    expect(dep.error).toBeUndefined();
+    expect(dep.state).toBe("ready");
+    expect(dep.plan!.coordinatorDevice).toBe("CPU");
+    // The fake engine exits on "--device CPU" like the real one, so reaching ready already proves the recipe;
+    // the recorded argv pins the exact flags.
+    const argv = readFileSync(cpuOnlyArgvFile, "utf8").split("\n");
+    expect(argv[argv.indexOf("--device") + 1]).toBe("none");
+    expect(argv[argv.indexOf("-ngl") + 1]).toBe("0");
+    const r = await api("/v1/chat/completions", { method: "POST", headers: { "x-swarmlet-deployment": id }, body: JSON.stringify({ model: "qwen3.5-2b", messages: [{ role: "user", content: "cpu" }] }) });
+    expect(r.status).toBe(200);
+    expect(r.headers.get("x-swarmlet-node")).toBe(gamma.id.nodeId);
+    expect(((await r.json()) as { choices: Array<{ message: { content: string } }> }).choices[0]?.message.content).toBe("echo:cpu rpc=none");
+    await api(`/api/deployments/${id}/stop`, { method: "POST" });
+    await waitState(id, ["stopped"], 30_000);
+    await waitUntil(() => gamma.runner.snapshot().length === 0);
+  });
+
   test("fleet HTTP apply runs two budgeted replicas through real node agents", async () => {
     const original = structuredClone(alpha.cfg.offer), ids: string[] = [];
     try {
@@ -221,7 +280,7 @@ describe("mesh e2e (fake engine)", () => {
       const response = await api('/api/fleet/preview', { method: 'POST', body: JSON.stringify({ items: ids.map(deploymentId => ({ deploymentId, mode: 'balanced' })), poolNodeIds: [alpha.id.nodeId] }) });
       expect(response.status).toBe(200);
       const run = await response.json() as import('../control/fleet.ts').FleetRun;
-      expect(run.canApply).toBe(true);
+      expect(run.canApply, JSON.stringify({ errors: run.entries.map(e => e.error), warnings: run.warnings })).toBe(true);
       expect((await api('/api/fleet/' + run.id + '/apply', { method: 'POST' })).status).toBe(202);
       await waitUntil(() => ctl.reg.fleetRun(run.id)?.status !== 'applying', 60000);
       expect(ctl.reg.fleetRun(run.id)!.status).toBe('succeeded');

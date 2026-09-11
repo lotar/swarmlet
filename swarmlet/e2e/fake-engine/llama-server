@@ -3,13 +3,22 @@
 // On start it opens every --rpc endpoint and round-trips one line (proves the dial path), then
 // serves /health, /metrics and /v1/chat/completions (echoes the last user message) after a short
 // "loading" delay so the coordinator state machine sees loading -> ready.
+import { writeFileSync } from "node:fs";
 import { connect } from "node:net";
 const args = process.argv.slice(2);
 const get = (flag: string) => { const i = args.indexOf(flag); return i >= 0 ? args[i + 1] : undefined; };
+// FAKE_NO_GPU=1 models a machine without a GPU: only the CPU is listed.
+const noGpu = process.env.FAKE_NO_GPU === "1";
 if (args.includes("--list-devices")) {
-  console.log("Available devices:\n  CUDA0: Fake GPU (8192 MiB, 8000 MiB free)\n  CPU: fake cpu (0 MiB, 0 MiB free)");
+  console.log(["Available devices:", ...(noGpu ? [] : ["  CUDA0: Fake GPU (8192 MiB, 8000 MiB free)"]), "  CPU: fake cpu (0 MiB, 0 MiB free)"].join("\n"));
   process.exit(0);
 }
+// Like the real server: --device takes listed device names, RPC entries or "none". "CPU" is not a device name.
+const devices = (get("--device") ?? "").split(",").filter(Boolean);
+const badDevice = devices.find((d) => !(d === "none" || /^RPC\d+$/.test(d) || (!noGpu && d === "CUDA0")));
+if (badDevice) { console.error(`error: invalid device: ${badDevice}`); process.exit(1); }
+// FAKE_ARGV_FILE records the exact argv so a test can check the recipe the agent used.
+if (process.env.FAKE_ARGV_FILE) writeFileSync(process.env.FAKE_ARGV_FILE, args.join("\n") + "\n");
 const port = Number(get("--port") ?? 8080);
 const alias = get("--alias") ?? "fake";
 const rpc = (get("--rpc") ?? "").split(",").filter(Boolean);

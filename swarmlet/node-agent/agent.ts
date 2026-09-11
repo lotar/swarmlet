@@ -52,6 +52,15 @@ export async function enroll(controlUrl: string, code: string, id: Identity, cap
   return out;
 }
 
+/**
+ * Control pings every node about every 10 s and drops one that stays silent for 30 s. Without the
+ * mirror image on this side, a half-open TCP path (edge or NAT dropped the flow without a FIN) keeps
+ * the socket OPEN and every send buffered until the kernel gives up, often 15 minutes or more. During
+ * that time control shows the node offline, its assignments fail, and the supervisor refuses to switch
+ * releases because the child is "not connected". 45 s is at least four missed pings.
+ */
+export const CONTROL_SILENCE_MS = 45_000;
+
 export class AgentClient {
   private ws: WebSocket | null = null;
   private mux: StreamMux | null = null;
@@ -59,6 +68,9 @@ export class AgentClient {
   private stopped = false;
   private backoffMs = 1000;
   private _connected = false;
+  /** Wall clock of the last frame or message received from control on the current socket. */
+  private lastRx = 0;
+  private readonly staleMs: number;
   /** Server-side only; never included in the local UI status payload. */
   inferenceKey: string | null = null;
   link: { rttMs: number; measuredAt: string } | undefined;
@@ -69,7 +81,8 @@ export class AgentClient {
     private readonly id: Identity,
     private readonly hooks: AgentHooks,
     private readonly log: Logger,
-  ) {}
+    opts: { staleMs?: number } = {},
+  ) { this.staleMs = opts.staleMs ?? CONTROL_SILENCE_MS; }
 
   get connected(): boolean { return this._connected; }
 
@@ -115,10 +128,13 @@ export class AgentClient {
     const ws = new WebSocket(this.agentUrl);
     ws.binaryType = "arraybuffer";
     this.ws = ws;
+    this.lastRx = Date.now();
     ws.onopen = () => { this.backoffMs = 1000; };
-    ws.onmessage = (ev) => { void this.onMessage(ev.data as string | ArrayBuffer); };
+    ws.onmessage = (ev) => { this.lastRx = Date.now(); void this.onMessage(ev.data as string | ArrayBuffer); };
     ws.onerror = () => { /* onclose follows */ };
     ws.onclose = (ev) => {
+      // A socket this client already discarded (stale link, stop) must not schedule a second reconnect.
+      if (this.ws !== ws) return;
       const wasConnected = this._connected;
       this.teardown(`closed ${ev.code} ${ev.reason}`);
       if (this.stopped) return;
@@ -139,6 +155,17 @@ export class AgentClient {
     this.link = undefined;
     const ws = this.ws; this.ws = null;
     if (ws && ws.readyState === WebSocket.OPEN) ws.close(1000, reason);
+  }
+
+  /** Nothing has arrived from control for `staleMs`: drop the socket without waiting for the peer and dial again. */
+  private reconnectStale(): void {
+    const silentMs = Date.now() - this.lastRx;
+    const ws = this.ws;
+    this.log.warn(`control silent for ${Math.round(silentMs / 1000)} s; dropping the link and reconnecting`);
+    this.teardown("control silent");
+    // close() only queues a frame the dead peer never acknowledges; terminate() releases the TCP socket now.
+    try { (ws as WebSocket & { terminate?: () => void } | null)?.terminate?.(); } catch { /* already gone */ }
+    if (!this.stopped) this.connect();
   }
 
   private async onMessage(data: string | ArrayBuffer): Promise<void> {
@@ -164,7 +191,10 @@ export class AgentClient {
           t: "hello", proto: PROTOCOL_VERSION, agentVersion: AGENT_VERSION,
           caps: this.hooks.caps(), offer: this.hooks.offer(), models: this.hooks.models(), assignments: this.hooks.assignments(),
         });
-        this.heartbeat = setInterval(() => this.send({ t: "heartbeat", ts: new Date().toISOString(), metrics: this.hooks.metrics() }), HEARTBEAT_MS);
+        this.heartbeat = setInterval(() => {
+          if (Date.now() - this.lastRx > this.staleMs) { this.reconnectStale(); return; }
+          this.send({ t: "heartbeat", ts: new Date().toISOString(), metrics: this.hooks.metrics() });
+        }, HEARTBEAT_MS);
         this.log.info("authenticated", { nodeId: this.id.nodeId });
         for (const w of this.waiters.splice(0)) w();
         break;
