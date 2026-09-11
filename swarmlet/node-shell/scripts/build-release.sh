@@ -55,6 +55,7 @@ print("signed service and bundled agent hashes match:", digest)
 PY_VERIFY_BUNDLE
   rm -rf "$out/Swarmlet Node.app"
   cp -R "$build_target/release/bundle/$subdir/Swarmlet Node.app" "$out/"
+  bun run "$here/package-macos.ts" "$root/dist/agent/darwin" "$out/Swarmlet Node.app"
 else
   version="$(python3 -c 'import json, sys; print(json.load(open(sys.argv[1]))["version"])' "$here/../src-tauri/tauri.conf.json")"
   product="$(python3 -c 'import json, sys; print(json.load(open(sys.argv[1]))["productName"])' "$here/../src-tauri/tauri.conf.json")"

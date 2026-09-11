@@ -37,5 +37,15 @@ cp "$agent/swarmlet-node" "$out/swarmlet-node-$triple"
 cp "$agent/agent-build.json" "$out/agent-build.json"
 rm -rf "$out/engine"
 cp -R "$agent/engine" "$out/engine"
+# A previous --reuse-agent package may include the flat desktop component carrier.
+# It belongs to the release inventory, not recursively inside the .app's engine resources.
+python3 - "$out/engine" <<'PY_DESKTOP_CARRIER'
+import pathlib, re, sys
+for path in pathlib.Path(sys.argv[1]).iterdir():
+    if path.name == 'desktop-app.json' or re.fullmatch(r'desktop-app-\d{3}\.bin', path.name):
+        if not path.is_file() or path.is_symlink():
+            raise SystemExit('invalid desktop carrier in sidecar staging')
+        path.unlink()
+PY_DESKTOP_CARRIER
 cmp "$agent/swarmlet-node" "$out/swarmlet-node-$triple"
 echo "staged identical service and shell agents for $os"

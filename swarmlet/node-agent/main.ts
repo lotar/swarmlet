@@ -25,6 +25,7 @@ import { FanManager } from "./fans.ts";
 import { NetworkSampler } from "./probe/network.ts";
 import { UpdateDrain } from "./update-drain.ts";
 import { supervise } from "./supervisor.ts";
+import { DesktopAppUpdater } from "./desktop-update.ts";
 import { agentPaths, type AgentPaths } from "./paths.ts";
 import { listModels, measureNet, probeCapabilities, probeMetrics, publicIp } from "./probe/index.ts";
 import { startDataListener } from "./transport/dataListener.ts";
@@ -47,11 +48,13 @@ export class AgentRuntime {
   private fans: FanManager;
   private network = new NetworkSampler();
   private updateDrain = new UpdateDrain();
+  private desktop: DesktopAppUpdater;
 
   constructor(home?: string) {
     this.paths = agentPaths(home);
     this.cfg = loadNodeConfig(this.paths);
     this.fans = new FanManager(this.cfg.enginePath);
+    this.desktop = new DesktopAppUpdater(this.paths, () => this.cfg.controlPubJwk, log);
   }
 
   get hostname(): string { return this.caps?.hostname ?? osHostname(); }
@@ -141,6 +144,7 @@ export class AgentRuntime {
         nodeId: this.id.nodeId, pid: process.pid, releaseSequence: Number(process.env.SWARMLET_RELEASE_SEQUENCE ?? 0), hostname: this.hostname, agentVersion: AGENT_VERSION, certFp: this.id.certFp, connected: this.client?.connected ?? false,
         controlUrl: this.cfg.controlUrl, enabled: this.cfg.offer.enabled, caps: this.caps, offer: this.cfg.offer, offerErrors: this.offerErrors(),
         assignments: this.runner.snapshot(), metrics: this.metrics, net: this.net,
+        desktopUpdate: this.desktop.status,
       }),
       caps: () => this.caps,
       offer: () => this.cfg.offer,
@@ -155,6 +159,8 @@ export class AgentRuntime {
     });
     log.info(`local UI http://127.0.0.1:${this.cfg.uiPort}  node ${this.id.nodeId}  cert ${this.id.certFp.slice(0, 16)}`);
     this.connect();
+    this.timers.push(setTimeout(() => { void this.desktop.tick(); }, 5000));
+    this.timers.push(setInterval(() => { void this.desktop.tick(); }, 30000));
     this.timers.push(setInterval(() => { void this.tick(); }, 2000));
     const stopDiscovery = this.cfg.discovery !== false ? discoverControl({ bound: () => !!this.cfg.controlUrl, join: (url, key) => this.join(url, "", key), log }) : () => {};
     this.timers.push(setInterval(() => { void this.refreshCaps().then(() => this.client?.send({ t: "heartbeat", ts: new Date().toISOString(), metrics: this.metrics ?? { ts: new Date().toISOString() }, caps: this.caps ?? undefined })); }, 5 * 60_000));
