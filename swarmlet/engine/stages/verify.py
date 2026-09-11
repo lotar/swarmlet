@@ -70,6 +70,7 @@ def resign_envelope(raw,previous):
 def close_float(actual,expected,label,stats):
  a=np.asarray(actual,dtype=np.float32);b=np.asarray(expected,dtype=np.float32)
  if a.shape!=b.shape:raise AssertionError(f'{label}: shape {a.shape} != {b.shape}')
+ if not (np.isfinite(a).all() and np.isfinite(b).all()):raise AssertionError(f'{label}: nonfinite float output')
  delta=float(np.max(np.abs(a-b))) if a.size else 0
  stats['max_abs']=max(stats.get('max_abs',0),delta)
  stats.setdefault('comparisons',[]).append({'label':label,'max_abs':delta,'values':int(a.size)})

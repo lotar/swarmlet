@@ -1,6 +1,7 @@
 import importlib.util
 from pathlib import Path
 import unittest
+import tempfile
 from unittest.mock import patch, Mock
 
 spec = importlib.util.spec_from_file_location("idle_window", Path(__file__).with_name("idle-window.py"))
@@ -9,6 +10,58 @@ spec.loader.exec_module(module)
 
 
 class IdleGateTests(unittest.TestCase):
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory(prefix="swarmlet-idle-test-")
+        self.addCleanup(temporary.cleanup)
+        self.home = Path(temporary.name)
+        home = patch.object(module.Path, "home", return_value=self.home)
+        home.start()
+        self.addCleanup(home.stop)
+
+    def test_competing_operator_cannot_sample_stop_or_restore(self):
+        for mode in ([], ["--allow-stopped"]):
+            with module.maintenance_window_lock(), \
+                 patch.object(module.sys, "argv", ["idle-window.py", *mode, "--", "true"]), \
+                 patch.object(module, "sample") as sample, \
+                 patch.object(module, "stopped_sample") as stopped_sample, \
+                 patch.object(module, "run_maintenance") as maintenance, \
+                 patch.object(module.subprocess, "Popen") as spawn:
+                self.assertEqual(module.main(), 5)
+                sample.assert_not_called()
+                stopped_sample.assert_not_called()
+                maintenance.assert_not_called()
+                spawn.assert_not_called()
+
+    def test_lock_is_held_through_restore_and_released_after_error(self):
+        commands = []
+        def maintenance(script, action):
+            commands.append(action)
+            with self.assertRaises(BlockingIOError):
+                with module.maintenance_window_lock():
+                    self.fail("second window acquired during " + action)
+            if action == "stop":
+                raise RuntimeError("partial stop")
+            return 0
+        with patch.object(module.sys, "argv", ["idle-window.py", "--", "true"]), \
+             patch.object(module, "sample", return_value=self.metrics()), \
+             patch.object(module.QuietGate, "observe", return_value=True), \
+             patch.object(module.signal, "signal"), \
+             patch.object(module, "run_maintenance", side_effect=maintenance):
+            with self.assertRaisesRegex(RuntimeError, "partial stop"):
+                module.main()
+        self.assertEqual(commands, ["stop", "start", "check-only"])
+        with module.maintenance_window_lock():
+            pass
+
+    def test_read_only_check_neither_creates_nor_requires_lock(self):
+        with patch.object(module.sys, "argv", ["idle-window.py", "--check"]), \
+             patch.object(module, "sample", return_value=self.metrics()), \
+             patch.object(module.signal, "signal"):
+            self.assertEqual(module.main(), 0)
+            self.assertFalse((self.home / ".swarmlet").exists())
+            with module.maintenance_window_lock():
+                self.assertEqual(module.main(), 0)
+
     def metrics(self, active=0, queued=0, routed=0, tokens=10):
         return dict(requests_processing=active, requests_deferred=queued, router_inflight=routed, tokens_predicted_total=tokens)
 

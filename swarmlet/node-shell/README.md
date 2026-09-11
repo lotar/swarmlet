@@ -80,7 +80,8 @@ Builds default to two Cargo jobs. Reuse a native cache with absolute
 reuse old agent binaries. For the existing rig, the Mac cache is
 `/Users/lotar/projects/ai-mesh/swarmlet/node-shell/src-tauri/target`; Legion 1 has its
 native tree at `/home/lotar/swarmlet-shell`. Keep machine caches local. The scripts
-build `.app` and `.deb` only; DMG/AppImage, signing and auto-update are separate work.
+build `.app` and `.deb`; the PowerShell counterpart builds Windows NSIS installers.
+DMG/AppImage are excluded. Mac releases also package the app for the supervised signed update feed.
 
 Tauri checks that `binaries/swarmlet-node-<host triple>` exists before bundling.
 The release script always stages it first. Regenerate the icon set after changing the mark with
@@ -90,14 +91,25 @@ For a debug run without bundling use `cargo tauri dev` from `src-tauri/` (the si
 must still be in `binaries/`). Do not run it on a machine where something else already listens on
 127.0.0.1:47800 unless you want the shell to simply attach to that agent.
 
-### The build is unsigned
+### Mac signatures and updates
 
-Nothing is code-signed or notarized. A downloaded `.app`/`.dmg` is quarantined, so on first launch
-macOS says the developer cannot be verified. Either **right-click (Control-click) the app → Open →
-Open** once, or clear the flag: `xattr -dr com.apple.quarantine "/Applications/Swarmlet Node.app"`.
-A locally built bundle has no quarantine flag and opens directly. An ad-hoc signature
-(`codesign --force --deep --sign - "Swarmlet Node.app"`) is optional; every binary inside is
-already ad-hoc signed by its linker (Bun and clang do that on Apple silicon).
+`build-release.sh` seals the complete Mac app with an ad-hoc signature by default, honors
+`APPLE_SIGNING_IDENTITY` when configured, and strictly verifies the final bundle. It records the
+post-signing sidecar hash for both service and GUI artifacts. No extra manual signing step is needed.
+Ad-hoc signing does not establish Developer ID trust; the script does not notarize the app. A
+quarantined downloaded build may still require the user's explicit macOS approval to open.
+
+The controller's signed release inventory can update an existing Mac app at
+`~/Applications/Swarmlet Node.app` or `/Applications/Swarmlet Node.app` through the installed service
+supervisor. This does not create GUI installations on headless nodes. Open node UI pages refresh
+when active requests and unsaved settings permit it, retaining saved chat drafts and history.
+Replacing bundle files does not restart an already-running native shell; reopen the app to run
+changed native code. Linux/Windows native shells remain installer updates.
+
+Unattended agent updates require the service: standalone GUI mode starts `swarmlet-node run`
+without the signed-feed supervisor. The OS service's bootstrap `supervise` executable itself
+requires a separate operator refresh, even after child releases activate successfully. See
+[supervisor bootstrap refresh](../../docs/HOW_TO_NODE_APP.md#supervisor-bootstrap-refresh).
 
 ## How it behaves at runtime
 
@@ -152,13 +164,13 @@ serve the mesh with the app closed or before anyone logs in (`loginctl enable-li
 - macOS arm64 `.app` and Linux x64 `.deb` were exercised on the rig on 2026-09-04.
   AppImage packaging failed in linuxdeploy and is excluded from the native release workflow.
   No Intel macOS build (would need a `bun-darwin-x64` sidecar and an x86_64 engine dist).
-- Unsigned and un-notarized (see above). No auto-update.
+- No automatic notarization. Mac app updates require an existing supported app location and the service supervisor; bootstrap and Linux/Windows native shell updates remain operator actions (see above).
 - If the agent UI's "install as service" is used while the *sidecar* is the running agent, the
   service plist points at the sidecar binary inside the `.app` bundle (moving or deleting the app
   breaks the service), and launchd cannot bind the port until the shell is quit once.
   For always-on nodes, install the canonical artifact in a stable directory and set
   `node.json.enginePath` to its stable engine directory before restarting; see the
-  [rig refresh procedure](../../../docs/HOW_TO_NODE_APP.md#7-refreshing-the-three-rig-installations).
+  [rig refresh procedure](../../docs/HOW_TO_NODE_APP.md#7-refreshing-the-three-rig-installations).
 - No single-instance guard: launching the app twice on Linux opens two shells (macOS reuses the
   running instance through Launch Services).
 - Tray tooltips are not displayed by every Linux desktop; the status menu item carries the text.

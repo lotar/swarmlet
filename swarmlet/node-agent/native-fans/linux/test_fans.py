@@ -2,6 +2,9 @@
 import importlib.machinery
 import importlib.util
 import pathlib
+import os
+import io
+import contextlib
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -35,6 +38,28 @@ class RecoveryTests(unittest.TestCase):
     def setting(self, number):
         dev = fans.ROOT / ('hwmon'+str(number))
         return fans.integer(dev/'pwm1'), fans.integer(dev/'pwm1_enable')
+    def test_lease_restores_on_closed_owner_pipe(self):
+        readfd, writefd = os.pipe()
+        os.write(writefd, b'ping\n')
+        os.close(writefd)
+        with os.fdopen(readfd, 'rb') as stream, contextlib.redirect_stdout(io.StringIO()):
+            fans.hold(stream, timeout=.05)
+        self.assertEqual(self.setting(0), (77, 2))
+        self.assertFalse(fans.JOURNAL.exists())
+    def test_lease_restores_on_missing_heartbeat(self):
+        readfd, writefd = os.pipe()
+        try:
+            with os.fdopen(readfd, 'rb') as stream, contextlib.redirect_stdout(io.StringIO()):
+                fans.hold(stream, timeout=.01)
+            self.assertEqual(self.setting(0), (77, 2))
+        finally: os.close(writefd)
+    def test_lease_restores_on_invalid_heartbeat(self):
+        readfd, writefd = os.pipe()
+        os.write(writefd, b'invalid\n')
+        os.close(writefd)
+        with os.fdopen(readfd, 'rb') as stream, contextlib.redirect_stdout(io.StringIO()):
+            with self.assertRaisesRegex(RuntimeError, 'Invalid fan heartbeat'): fans.hold(stream)
+        self.assertEqual(self.setting(0), (77, 2))
     def test_repeat_and_hotplug_preserve_originals(self):
         fans.change('max')
         self.assertEqual(self.setting(0), (255, 1))

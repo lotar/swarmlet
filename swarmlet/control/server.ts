@@ -264,7 +264,10 @@ export function createControlServer(deps: ControlDeps): Server<ConnData> {
       maxPayloadLength: 16 * 1024 * 1024,
       open: (ws) => channel.open(ws),
       drain: (ws) => channel.drain(ws),
-      message: (ws, msg) => { void channel.message(ws, msg as string | Buffer); },
+      message: (ws, msg) => { void channel.message(ws, msg as string | Buffer).catch((e) => {
+        log.warn("agent message failed", { nodeId: ws.data.nodeId, err: String(e) });
+        ws.close(1011, "message processing failed");
+      }); },
       close: (ws) => channel.close(ws),
     },
   });

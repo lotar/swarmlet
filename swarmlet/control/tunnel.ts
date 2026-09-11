@@ -8,30 +8,42 @@ import type { Logger } from "./log.ts";
 import { pipe } from "../node-agent/streams.ts";
 
 export class TunnelPool {
-  private tunnels = new Map<string, { server: Server; port: number }>();
+  private tunnels = new Map<string, { server: Server; ready: Promise<number>; closed: boolean; listening: boolean }>();
 
   constructor(private readonly channel: AgentChannel, private readonly log: Logger) {}
 
   async localPort(nodeId: string, remotePort: number): Promise<number> {
     const key = `${nodeId}:${remotePort}`;
     const existing = this.tunnels.get(key);
-    if (existing) return existing.port;
+    if (existing) return existing.ready;
     const server = createServer((sock) => {
       sock.setNoDelay(true);
       const stream = this.channel.openStream(nodeId, { kind: "http", port: remotePort });
       if (!stream) { this.log.warn("tunnel: node offline", { nodeId }); sock.destroy(); return; }
       pipe(stream, sock);
     });
-    await new Promise<void>((resolve, reject) => { server.once("error", reject); server.listen(0, "127.0.0.1", () => resolve()); });
-    const port = (server.address() as { port: number }).port;
-    this.tunnels.set(key, { server, port });
-    return port;
+    const entry = { server, ready: undefined as unknown as Promise<number>, closed: false, listening: false };
+    this.tunnels.set(key, entry);
+    entry.ready = new Promise<number>((resolve, reject) => {
+      server.once("error", reject);
+      server.listen(0, "127.0.0.1", () => {
+        entry.listening = true;
+        if (entry.closed) { server.close(); reject(new Error("tunnel closed during startup")); return; }
+        resolve((server.address() as { port: number }).port);
+      });
+    }).catch(error => {
+      if (this.tunnels.get(key) === entry) this.tunnels.delete(key);
+      server.close();
+      throw error;
+    });
+    return entry.ready;
   }
 
   close(nodeId?: string): void {
     for (const [key, t] of this.tunnels) {
       if (nodeId && !key.startsWith(`${nodeId}:`)) continue;
-      t.server.close();
+      t.closed = true;
+      if (t.listening) t.server.close();
       this.tunnels.delete(key);
     }
   }

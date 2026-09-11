@@ -22,7 +22,11 @@ export async function supervise(baseCommand: string[], timing: Partial<Record<"i
   const log = (message: string) => console.log(`[updater] ${new Date().toISOString()} ${message}`);
   let stopping = false;
   let child: ReturnType<typeof Bun.spawn> | null = null;
-  let candidate: { manifest: ReleaseManifest; directory: string } | null = null;
+  let candidate: { manifest: ReleaseManifest; directory: string; binding: string } | null = null;
+  const binding = (cfg: ReturnType<typeof loadNodeConfig>) => JSON.stringify([cfg.controlUrl, cfg.controlPubJwk?.kty, cfg.controlPubJwk?.crv, cfg.controlPubJwk?.x]);
+  const assertBinding = (expected: string) => {
+    if (binding(loadNodeConfig(paths)) !== expected) { candidate = null; throw new Error("controller binding changed during update"); }
+  };
   const replies = new Map<string, (ok: boolean) => void>();
   const spawn = (release: InstalledRelease | null) => {
     const env = { ...process.env, SWARMLET_HOME: paths.home, SWARMLET_SUPERVISED: "1", SWARMLET_RELEASE_SEQUENCE: String(release?.sequence ?? 0) };
@@ -80,8 +84,19 @@ export async function supervise(baseCommand: string[], timing: Partial<Record<"i
   let nextCheck = Date.now() + (timing.initialMs ?? 30_000);
   let crashDelay = timing.crashMs ?? 5000;
   let startedAt = Date.now();
-  child = spawn(state.active);
+  const spawnActive = async () => {
+    while (!stopping) {
+      try { child = spawn(state.active); return; }
+      catch (error) {
+        if (!state.active) throw error;
+        log(`agent could not launch; rolling back release ${state.active.sequence}: ${String(error)}`);
+        state = { ...state, active: state.previous, previous: null, pending: null };
+        await writeUpdateState(statePath, state);
+      }
+    }
+  };
   try {
+    await spawnActive();
     while (!stopping) {
       if (!child || child.exitCode !== null) {
         if (child?.exitCode === 0) break;
@@ -94,49 +109,65 @@ export async function supervise(baseCommand: string[], timing: Partial<Record<"i
         await Bun.sleep(crashDelay);
         crashDelay = Math.min(60_000, crashDelay * 2);
         if (stopping) break;
-        child = spawn(state.active); startedAt = Date.now();
+        await spawnActive(); startedAt = Date.now();
       }
       if (Date.now() >= nextCheck) {
         nextCheck = Date.now() + (timing.checkMs ?? 5 * 60_000);
         let switching = false;
         try {
           const cfg = loadNodeConfig(paths);
+          const authority = binding(cfg);
+          if (candidate && candidate.binding !== authority) candidate = null;
           if (cfg.controlUrl && cfg.controlPubJwk) {
             if (!candidate) {
               const manifest = await fetchRelease({ controlUrl: cfg.controlUrl, pinnedKey: cfg.controlPubJwk,
                 platform: process.platform, arch: process.arch, acceptedSequence: state.acceptedSequence, fetcher: download });
               if (manifest) {
                 const directory = await stageRelease({ controlUrl: cfg.controlUrl, manifest, releasesDir, fetcher: download });
-                candidate = { manifest, directory };
+                assertBinding(authority);
+                candidate = { manifest, directory, binding: authority };
                 log(`verified release ${manifest.sequence}`);
               }
             }
             if (candidate && child?.exitCode === null && !stopping) {
+              assertBinding(candidate.binding);
               if (candidate.manifest.expiresAt <= Date.now()) { candidate = null; continue; }
               try { await verifyRelease(JSON.stringify(candidate.manifest), cfg.controlPubJwk, { platform: process.platform, arch: process.arch, acceptedSequence: state.acceptedSequence }); }
               catch (error) { candidate = null; throw error; } // a manual controller rebind invalidates staged trust
               if (!await healthy(child, state.active, Date.now() + 2000)) { nextCheck = Date.now() + (timing.retryMs ?? 30_000); continue; }
+              assertBinding(authority);
               const leaseOpts = { controlUrl: cfg.controlUrl, pinnedKey: cfg.controlPubJwk, identity };
               const lease = await requestUpdateLease(leaseOpts);
               if (lease) {
                 try {
+                  assertBinding(authority);
                   if (await ipc("drain") && Date.now() < lease.expiresAt - 30_000 && !stopping) {
+                    assertBinding(authority);
                     switching = true;
                     const next = { directory: basename(candidate.directory), sequence: candidate.manifest.sequence };
                     state = { ...state, acceptedSequence: next.sequence, pending: next };
                     await writeUpdateState(statePath, state);
+                    try { assertBinding(authority); }
+                    catch (error) { state.pending = null; await writeUpdateState(statePath, state); switching = false; throw error; }
                     candidate = null;
                     if (!await stopChild()) throw new Error("old agent did not stop; retaining previous release");
                     if (stopping) break;
-                    const trial = spawn(next); child = trial;
-                    if (await healthy(trial, next, Math.min(lease.expiresAt - 5000, Date.now() + (timing.healthMs ?? 90_000)))) {
+                    let trial: ReturnType<typeof Bun.spawn> | null = null;
+                    let accepted = false;
+                    try {
+                      assertBinding(authority);
+                      trial = spawn(next); child = trial;
+                      accepted = await healthy(trial, next, Math.min(lease.expiresAt - 5000, Date.now() + (timing.healthMs ?? 90_000)));
+                      assertBinding(authority);
+                    } catch (error) { log(`trial rejected: ${String(error)}`); }
+                    if (accepted && binding(loadNodeConfig(paths)) === authority) {
                       state = { ...state, previous: state.active, active: next, pending: null };
                       await writeUpdateState(statePath, state);
                       log(`activated release ${next.sequence}`);
                     } else {
                       if (!await stopChild()) throw new Error("unhealthy agent did not stop; awaiting service recovery");
                       state.pending = null; await writeUpdateState(statePath, state);
-                      if (!stopping) child = spawn(state.active);
+                      if (!stopping) await spawnActive();
                       log(`release ${next.sequence} failed health check; previous release restored`);
                     }
                     switching = false;

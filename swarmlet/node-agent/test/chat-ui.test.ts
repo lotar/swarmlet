@@ -24,3 +24,15 @@ test("chat exposes upstream SSE errors and does not turn reasoning into answer t
   expect(() => f.consume('data: {"error":{"message":"context full"}}')).toThrow("context full");
   expect(f.done()).toBe(false);
 });
+
+for (const outcome of ['success', 'failure']) test(`late catalog ${outcome} cannot release active chat ownership`, async () => {
+  const load = source.slice(source.indexOf('  async function loadModels()'), source.indexOf('  async function send(ev)'));
+  let complete!: (response: Response) => void, fail!: (error: Error) => void;
+  const pending = new Promise<Response>((resolve, reject) => { complete = resolve; fail = reject; });
+  const elements = { 'tab-chat': { hidden: false }, 'chat-model': { value: 'current', replaceChildren() {}, appendChild() {} }, 'chat-route': { textContent: 'active' } };
+  const run = new Function('fetch', 'els', `var busy=false,loading=false,saved={},catalog=[];var D={hidden:false,createElement:()=>({})};var $=id=>els[id];function error(){}function example(){}function setBusy(v){busy=v;}${load};return {loadModels,start:()=>{busy=true},isBusy:()=>busy};`)(() => pending, elements);
+  const work = run.loadModels(); run.start();
+  if (outcome === 'success') complete(Response.json({ data: [{ id: 'other' }] })); else fail(new Error('network failed'));
+  await work;
+  expect(run.isBusy()).toBe(true); expect(elements['chat-model'].value).toBe('current'); expect(elements['chat-route'].textContent).toBe('active');
+});

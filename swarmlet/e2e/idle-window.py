@@ -7,6 +7,8 @@ maintenance script retains its final connected-client guard. Production is
 restored in finally after the owned command exits, including on TERM/INT.
 """
 import argparse
+from contextlib import contextmanager, nullcontext
+import fcntl
 import socket
 import json
 import os
@@ -100,6 +102,23 @@ def run_maintenance(script, action):
         raise
 
 
+@contextmanager
+def maintenance_window_lock():
+    """Own sampling, stop, child cleanup and restore as one cross-process window.
+
+    Keep the lock file in place: unlinking it can split contenders across inodes.
+    This is separate from child operators' mesh-matrix.lock to avoid deadlock.
+    """
+    path = Path.home() / ".swarmlet/idle-window.lock"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        try:
+            yield
+        finally:
+            fcntl.flock(lock, fcntl.LOCK_UN)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--quiet-seconds", type=float, default=60)
@@ -117,6 +136,15 @@ def main():
     command = args.command[1:] if args.command[:1] == ["--"] else args.command
     if not args.check and not command:
         parser.error("supply an operator command after --")
+    try:
+        with nullcontext() if args.check else maintenance_window_lock():
+            return run_window(args, command)
+    except BlockingIOError:
+        print("MAINTENANCE_WINDOW_BUSY another operator owns the maintenance window", file=sys.stderr)
+        return 5
+
+
+def run_window(args, command):
     def interrupted(signum, frame):
         raise KeyboardInterrupt("signal " + str(signum))
     signal.signal(signal.SIGTERM, interrupted)

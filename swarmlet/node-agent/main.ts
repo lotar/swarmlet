@@ -148,8 +148,8 @@ export class AgentRuntime {
       }),
       caps: () => this.caps,
       offer: () => this.cfg.offer,
-      setOffer: async (offer) => { this.cfg.offer = offer; saveNodeConfig(this.paths, this.cfg); this.models = await listModels(offer.modelsDir, { cacheFile: joinPath(this.paths.stateDir, "model-hashes.json") }); this.client?.sendOffer(); this.client?.sendModels(); },
-      setEnabled: async (enabled) => { this.cfg.offer.enabled = enabled; saveNodeConfig(this.paths, this.cfg); this.client?.sendOffer(); },
+      setOffer: async (offer) => { this.runner.assertOfferChange(offer); this.cfg.offer = offer; saveNodeConfig(this.paths, this.cfg); this.models = await listModels(offer.modelsDir, { cacheFile: joinPath(this.paths.stateDir, "model-hashes.json") }); this.client?.sendOffer(); this.client?.sendModels(); },
+      setEnabled: async (enabled) => { const next = { ...this.cfg.offer, enabled }; if (!this.caps) throw new Error("capabilities not probed yet"); const v = validateOffer(next, this.caps); if (!v.ok) throw new Error(v.errors.join("; ")); this.runner.assertOfferChange(next); this.cfg.offer.enabled = enabled; saveNodeConfig(this.paths, this.cfg); this.client?.sendOffer(); },
       models: () => ({ modelsDir: this.cfg.offer.modelsDir, models: this.models }),
       rescanModels: async () => { this.models = await listModels(this.cfg.offer.modelsDir, { hash: true, cacheFile: joinPath(this.paths.stateDir, "model-hashes.json") }); this.client?.sendModels(); return this.models; },
       join: (url, code) => this.join(url, code),
@@ -259,8 +259,20 @@ async function cli(argv: string[]): Promise<void> {
         else if (["ramMiB", "cpuCores", "diskMiB"].includes(k)) o[k] = Number(v);
         else throw new Error(`unknown offer key ${k}`);
       }
-      saveNodeConfig(paths, cfg);
-      try { await fetch(`http://127.0.0.1:${cfg.uiPort}/api/offer`, { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify(cfg.offer), signal: AbortSignal.timeout(3000) }); } catch { /* daemon not running: file updated */ }
+      let response: Response;
+      try {
+        response = await fetch(`http://127.0.0.1:${cfg.uiPort}/api/offer`, { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify(cfg.offer), signal: AbortSignal.timeout(3000) });
+      } catch (error) {
+        // A timeout may have applied remotely: only a refused connection proves the daemon is absent.
+        if ((error as { code?: string }).code !== "ECONNREFUSED") throw error;
+        const caps = await probeCapabilities({ enginePath: cfg.enginePath, log });
+        const validated = validateOffer(cfg.offer, caps);
+        if (!validated.ok) throw new Error(validated.errors.join("; "));
+        cfg.offer = validated.value;
+        saveNodeConfig(paths, cfg);
+        console.log(JSON.stringify(cfg.offer, null, 2)); return;
+      }
+      if (!response.ok) throw new Error(`offer rejected (${response.status}): ${await response.text()}`);
       console.log(JSON.stringify(cfg.offer, null, 2)); return;
     }
     case "install": {

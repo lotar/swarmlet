@@ -49,6 +49,7 @@
     try {
       var res = await fetch('/v1/models?catalog=1', { signal: AbortSignal.timeout(10000) });
       var body = await res.json();
+      if (busy) return;
       if (!res.ok) throw new Error(body.error && body.error.message || 'Models unavailable');
       var previous = $('chat-model').value || saved.model;
       catalog = body.data || [];
@@ -62,7 +63,7 @@
       var selectable = catalog.filter(function (m) { return m.selectable !== false; });
       $('chat-model').value = selectable.some(function (m) { return m.id === previous; }) ? previous : selectable.length ? selectable[0].id : '';
       error(''); example(); setBusy(false);
-    } catch (e) { error(e.message); $('chat-model').value = ''; setBusy(false); $('chat-route').textContent = 'Mesh unavailable · retry with Refresh'; }
+    } catch (e) { if (busy) return; error(e.message); $('chat-model').value = ''; setBusy(false); $('chat-route').textContent = 'Mesh unavailable · retry with Refresh'; }
     finally { loading = false; }
   }
   async function send(ev) {

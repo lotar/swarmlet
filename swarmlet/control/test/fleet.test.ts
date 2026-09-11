@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test';
 import { loadProfiles, planDeployment } from '../planner.ts';
-import { parseFleetRequest, previewFleet, fleetRevision, type FleetInput, type FleetRequest } from '../fleet.ts';
+import { hostMemoryErrors, parseFleetRequest, previewFleet, fleetRevision, type FleetInput, type FleetRequest } from '../fleet.ts';
 import { addAllocations, availableNodes, planWithResources, reservedResources } from '../resources.ts';
 import type { AssignmentRow, NodeRow } from '../registry.ts';
 import type { Deployment, NodeAllocation } from '../../protocol/types.ts';
@@ -105,4 +105,43 @@ test('fresh GPU pressure steers placement to another eligible GPU', () => {
   const i = input([a,b], [fleetDeployment('d')]); const p = previewFleet(request(i), i);
   expect(p.canApply).toBe(true); expect(p.entries[0]!.plan!.coordinatorNodeId).toBe('b');
   expect(p.entries[0]!.plan!.coordinatorDevice).toBe('CUDA0');
+});
+
+
+test('GPU reservations cannot stand in for attributable reclaimed memory', () => {
+  const n = fleetNode('n'), d = fleetDeployment('d');
+  n.metrics = { ts, gpu: [{ id: 'cuda:0', usedMiB: 8000 }] };
+  const plan = planWithResources({ spec: { ...d.spec, replicaNodeId: n.id, allocations: [budget(n.id)] }, profile, nodes: [n], reserved: new Map(), usedPorts: new Map() });
+  d.state = 'ready'; d.plan = plan;
+  const i = input([n], [d]);
+  const entry = { deploymentId: d.id, name: d.id, before: { kind: 'replica' as const }, reasons: [], plan };
+  expect(hostMemoryErrors(i, [entry], new Set([d.id]))[0]).toContain('only 192 MiB');
+});
+
+test('infeasible early nodes do not consume the replica candidate quota', () => {
+  const nodes = Array.from({ length: 25 }, (_, k) => {
+    const n = fleetNode(`n${k}`);
+    n.offer!.roles = { replica: true, worker: false, coordinator: false };
+    if (k < 24) n.offer!.ramMiB = 500;
+    n.caps!.net!.rttMs = k;
+    return n;
+  });
+  const i = input(nodes, [fleetDeployment('d')]), p = previewFleet(request(i), i);
+  expect(p.canApply).toBe(true);
+  expect(p.entries[0]!.plan!.coordinatorNodeId).toBe('n24');
+});
+
+test('infeasible early coordinators do not consume the split candidate quota', () => {
+  const nodes = Array.from({ length: 13 }, (_, k) => {
+    const n = fleetNode(`c${k}`);
+    n.offer!.roles = { replica: false, worker: false, coordinator: true };
+    if (k < 12) n.offer!.ramMiB = 500;
+    n.caps!.net!.rttMs = k;
+    return n;
+  });
+  const worker = fleetNode('worker'); worker.models = [];
+  worker.offer!.roles = { replica: false, worker: true, coordinator: false };
+  nodes.push(worker);
+  const i = input(nodes, [fleetDeployment('d')]), p = previewFleet(request(i), i);
+  expect(p.canApply).toBe(true); expect(p.entries[0]!.plan!.coordinatorNodeId).toBe('c12');
 });

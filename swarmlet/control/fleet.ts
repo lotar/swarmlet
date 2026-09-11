@@ -112,9 +112,9 @@ export function hostMemoryErrors(input: FleetInput, entries: FleetEntry[], selec
       const device = node.caps?.gpus.find(g => g.id === gpu.id);
       const observed = metrics.gpu?.find(g => g.id === gpu.id);
       if (!device || !observed || !Number.isFinite(observed.usedMiB)) continue;
-      const reclaim = selectedReservations.get(id)?.gpu.find(g => g.id === gpu.id)?.memMiB ?? 0;
-      const available = Math.max(0, device.totalMiB - observed.usedMiB) + reclaim;
-      if (gpu.memMiB > available) errors.push(`${node.hostname}: ${gpu.id} needs ${gpu.memMiB} MiB; current GPU availability including selected reservations is only ${Math.floor(available)} MiB.`);
+      // A reservation is not measured GPU usage attributable to a selected process.
+      const available = Math.max(0, device.totalMiB - observed.usedMiB);
+      if (gpu.memMiB > available) errors.push(`${node.hostname}: ${gpu.id} needs ${gpu.memMiB} MiB; current measured GPU availability is only ${Math.floor(available)} MiB.`);
     }
     if (!Number.isFinite(metrics.freeRamMiB)) continue;
     // Shared Linux file-backed pages / GPU host staging vary by model. OS fit checks
@@ -196,18 +196,23 @@ export function previewFleet(request: FleetRequest, input: FleetInput): FleetPre
             if (pressureErrors.length) throw new Error(pressureErrors.join(' '));
             winner = { spec, plan, score, networkRttMs, reasons };
           }
-        } catch (e) { if (failures.size < 3) failures.add((e as Error).message); }
+          return true;
+        } catch (e) { if (failures.size < 3) failures.add((e as Error).message); return false; }
       };
       if (item.mode !== 'balanced') attempt(item.mode === 'manual' ? item.placement! : entry.before);
       else {
         const rank = (a: NodeRow, b: NodeRow) => (rtt(a, now) ?? 100) - (rtt(b, now) ?? 100) || gpuMemory(b) - gpuMemory(a) || b.offer!.ramMiB - a.offer!.ramMiB || a.id.localeCompare(b.id);
         const holders = free.filter(n => modelOn(n, profile)).sort(rank);
-        if (!(dep.spec.chain ?? 0)) for (const n of holders.filter(n => n.offer!.roles.replica).slice(0, 24)) {
-          attempt({ kind: 'replica', replicaNodeId: n.id });
-          if (gpuMemory(n)) attempt({ kind: 'replica', replicaNodeId: n.id }, true);
+        let feasibleReplicas = 0;
+        if (!(dep.spec.chain ?? 0)) for (const n of holders.filter(n => n.offer!.roles.replica)) {
+          let feasible = attempt({ kind: 'replica', replicaNodeId: n.id });
+          if (gpuMemory(n)) feasible = attempt({ kind: 'replica', replicaNodeId: n.id }, true) || feasible;
+          if (feasible && ++feasibleReplicas >= 24) break;
         }
         const rows = profile.envelope.filter(r => (dep.spec.ctx ?? 1536) <= r.maxCtx && (dep.spec.parallel ?? 1) <= r.maxParallel && (dep.spec.chain ?? 0) <= r.maxChain).map(r => r.workerLayers).filter(n => n > 0).sort((a, b) => b - a);
-        if (rows.length) for (const coord of holders.filter(n => n.offer!.roles.coordinator).slice(0, 12)) {
+        let feasibleCoordinators = 0;
+        if (rows.length) for (const coord of holders.filter(n => n.offer!.roles.coordinator)) {
+          let feasible = false;
           const workers = free.filter(n => n.id !== coord.id && n.offer!.roles.worker && gpuMemory(n) >= rows.at(-1)! * profile.layerMiB + profile.workerMarginMiB).sort(rank);
           const max = Math.min(workers.length, 64, Math.floor((profile.layers - 1) / rows.at(-1)!));
           const counts = [...new Set([1, 2, 3, 4, 8, 12, 16, 32, max])].filter(n => n > 0 && n <= max);
@@ -222,8 +227,9 @@ export function previewFleet(request: FleetRequest, input: FleetInput): FleetPre
               if (layers.length !== count) continue;
               placement.workerLayers = layers;
             }
-            attempt(placement);
+            feasible = attempt(placement) || feasible;
           }
+          if (feasible && ++feasibleCoordinators >= 12) break;
         }
       }
       if (!winner) { entry.error = [...failures].join(' ') || 'No eligible nodes hold this model and have unreserved capacity. Include its current deployments to rebalance their resources, or expand the hardware pool.'; continue; }

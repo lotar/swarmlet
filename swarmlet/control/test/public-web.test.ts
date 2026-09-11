@@ -6,6 +6,7 @@ import { loadControlConfig } from "../config.ts";
 import { bootControl } from "../server.ts";
 import { loadIdentity } from "../../node-agent/identity.ts";
 import { agentPaths } from "../../node-agent/paths.ts";
+import { fleetNode } from "./fleet-fixture.ts";
 import { signObject } from "../../protocol/sign.ts";
 
 test("public web opt-in keeps admin authentication and enrollment trust across a reverse proxy", async () => {
@@ -35,7 +36,7 @@ test("public web opt-in keeps admin authentication and enrollment trust across a
     for (const attr of ["Secure", "HttpOnly", "SameSite=Strict"]) expect(cookie).toContain(attr);
     expect((await request("/api/nodes", { headers: { cookie: cookie.split(";")[0]! } })).status).toBe(200);
     const identity = await loadIdentity(agentPaths(join(dir, "node")));
-    const body = await signObject({ code: "", nodeId: identity.nodeId, pubJwk: identity.pubJwk, certFp: identity.certFp, hostname: "unknown-public-node", caps: { os: "linux", arch: "x64" } }, identity.keys.priv);
+    const body = await signObject({ code: "", nodeId: identity.nodeId, pubJwk: identity.pubJwk, certFp: identity.certFp, hostname: "unknown-public-node", caps: fleetNode("unknown-public-node").caps }, identity.keys.priv);
     expect((await request("/enroll", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) })).status).toBe(403);
     expect(ctl.reg.getNode(identity.nodeId)).toBeNull();
     expect((await request("/logout")).headers.get("set-cookie")).toContain("Secure");

@@ -145,8 +145,21 @@ The command uses the controller's existing signing key and refuses to overwrite 
 Keep that private key on the controller. Existing installations without `controlPubJwk` need their
 existing controller identity pinned through trusted enrollment before updates are enabled.
 The supervisor's update messages appear in the normal service log; `/api/status` reports the active
-release sequence and process ID. Native shell/bootstrap replacement and privileged fan-provider
-installation remain installer operations; the automatic feed updates the agent, web UI, and engines.
+release sequence and process ID. The automatic feed updates the supervised agent, web UI and engines.
+On macOS, a packaged signed release also replaces an existing app at
+`~/Applications/Swarmlet Node.app` or `/Applications/Swarmlet Node.app`; it does not install a GUI
+on headless nodes. Open web UI pages refresh when their activity and saved drafts allow it;
+already-running native shell code takes effect after the app is reopened.
+
+Unattended updates require the installed service supervisor. Opening the desktop app alone starts
+an unsupervised `run` sidecar. The bootstrap executable pinned by the OS service is intentionally
+separate from the signed child releases: publishing a child does **not** update supervisor code.
+Supervisor fixes require an operator to replace the stable service executable and restart it in an
+owned maintenance window, then verify its hash separately from the active child's release/hash.
+See the [bootstrap refresh procedure](../docs/HOW_TO_NODE_APP.md#supervisor-bootstrap-refresh).
+Linux/Windows native shell replacement and privileged fan-provider installation remain installer
+operations. Mac build scripts seal apps with ad-hoc signing by default, honor a configured signing
+identity, and do not perform notarization. Release-manifest signing is a separate trust mechanism.
 
 Fan telemetry detects exposed OS/driver capabilities. The bundled macOS SMC and Linux hwmon
 providers request maximum cooling through an administrator-installed helper; the one-time installer

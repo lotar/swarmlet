@@ -35,11 +35,7 @@ secure_dir "$directory"
 install -o root -m 755 "$source" "$helper"
 rule=$(mktemp)
 trap 'rm -f "$rule"' EXIT
-if [ "$(uname -s)" = Darwin ]; then
-  printf '%s ALL=(root) NOPASSWD: %s max, %s auto, %s hold\n' "$user" "$helper" "$helper" "$helper" > "$rule"
-else
-  printf '%s ALL=(root) NOPASSWD: %s max, %s auto\n' "$user" "$helper" "$helper" > "$rule"
-fi
+printf '%s ALL=(root) NOPASSWD: %s max, %s auto, %s hold\n' "$user" "$helper" "$helper" "$helper" > "$rule"
 visudo -cf "$rule"
 [ -d /etc/sudoers.d ] || install -d -o root -m 755 /etc/sudoers.d
 sudoers_dir=$(CDPATH='' cd -P -- /etc/sudoers.d && pwd)

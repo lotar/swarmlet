@@ -5,7 +5,7 @@
 
 import { existsSync, readFileSync, writeFileSync, renameSync, mkdirSync, chmodSync, rmSync } from "node:fs";
 import { join } from "node:path";
-import type { Assignment, AssignmentState, CoordinatorAssignment, Endpoint, NodeMetrics, ReplicaAssignment, StageAssignment, WorkerAssignment } from "../protocol/types.ts";
+import type { Assignment, AssignmentState, CoordinatorAssignment, Endpoint, NodeMetrics, Offer, ReplicaAssignment, StageAssignment, WorkerAssignment } from "../protocol/types.ts";
 import type { MuxStream } from "../protocol/frame.ts";
 import type { Logger } from "../control/log.ts";
 import type { ExternalService, NodeConfig } from "./config.ts";
@@ -250,6 +250,25 @@ export class AssignmentRunner {
 
   private assertStarting(x: Active): void {
     if (x.stopping || this.active.get(x.a.id) !== x) throw new Error("assignment cancelled");
+    this.assertOwnerAllows(x.a, this.deps.cfg().offer);
+  }
+
+  private assertOwnerAllows(a: Assignment, offer: Offer): void {
+    if (a.kind === "stop" || a.kind === "replica" && a.external) return;
+    const role = a.kind === "stage" ? "worker" : a.kind;
+    if (!offer.enabled || !offer.roles?.[role]) throw new Error(`owner offer does not allow ${role}; stop assignments before changing resources`);
+  }
+
+  /** Reject reductions before changing durable owner state; running limits cannot be silently resized. */
+  assertOfferChange(next: Offer): void {
+    const managed = [...this.active.values()].filter(x => x.a.kind !== "stop" && !(x.a.kind === "replica" && x.a.external));
+    if (!managed.length) return;
+    for (const x of managed) this.assertOwnerAllows(x.a, next);
+    const previous = this.deps.cfg().offer;
+    if (next.ramMiB < previous.ramMiB || next.cpuCores < previous.cpuCores || next.diskMiB < previous.diskMiB ||
+        previous.gpu.some(g => (next.gpu.find(n => n.id === g.id)?.memMiB ?? 0) < g.memMiB) || next.modelsDir !== previous.modelsDir) {
+      throw new Error("stop managed assignments before reducing resources or changing the models directory");
+    }
   }
 
   async stopAll(): Promise<void> {
@@ -345,6 +364,7 @@ export class AssignmentRunner {
 
   private async spawn(x: Active, unit: string, argv: string[], env: Record<string, string>, limits?: { ramMiB?: number; cpuCores?: number }): Promise<void> {
     const offer = this.deps.cfg().offer;
+    limits = { ramMiB: limits?.ramMiB ?? offer.ramMiB, cpuCores: limits?.cpuCores ?? offer.cpuCores };
     if (limits?.ramMiB !== undefined && (!Number.isSafeInteger(limits.ramMiB) || limits.ramMiB < 1 || limits.ramMiB > offer.ramMiB) ||
         limits?.cpuCores !== undefined && (!Number.isSafeInteger(limits.cpuCores) || limits.cpuCores < 1 || limits.cpuCores > offer.cpuCores)) throw new Error("assignment allocation exceeds this node's current offer");
     const enf = await enforce(`swarmlet-${unit}`, argv, limits ?? {}, this.deps.log);

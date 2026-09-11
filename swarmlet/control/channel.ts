@@ -149,10 +149,18 @@ export class AgentChannel {
         break;
       }
       case "log": {
+        const owned = this.reg.getAssignment(m.assignmentId);
+        if (!owned || owned.nodeId !== nodeId) break;
+        const line = m.line.slice(0, 8192);
         const buf = this.logs.get(m.assignmentId) ?? [];
-        buf.push(m.line); if (buf.length > 400) buf.splice(0, buf.length - 400);
+        buf.push(line); if (buf.length > 400) buf.splice(0, buf.length - 400);
+        // Bound both per-assignment content and the number of retained assignments.
+        let chars = buf.reduce((n, line) => n + line.length, 0);
+        while (chars > 64 * 1024) chars -= buf.shift()!.length;
+        this.logs.delete(m.assignmentId);
         this.logs.set(m.assignmentId, buf);
-        this.hooks.onLog?.(nodeId, m.assignmentId, m.line);
+        while (this.logs.size > 256) this.logs.delete(this.logs.keys().next().value!);
+        this.hooks.onLog?.(nodeId, m.assignmentId, line);
         break;
       }
       case "pong": {
@@ -223,14 +231,29 @@ export class AgentChannel {
     if (h.from !== fromNodeId) return false;
     const target = this.conns.get(h.target);
     if (!target?.data.mux) { this.log.debug("relay target offline", { fromNodeId, target: h.target }); return false; }
+    const source = this.reg.getNode(fromNodeId);
+    const allowed = source && this.reg.listAssignments().some(row => {
+      const a = row.body;
+      return row.nodeId === h.target && !row.retired && row.state !== "stopped" && row.state !== "failed" &&
+        a.kind !== "stop" && (a.port === h.port || a.kind === "worker" && a.peerPort === h.port) && a.allow.includes(source.certFp);
+    });
+    if (!allowed) return false;
     const right = target.data.mux.open({ kind: "data", port: h.port, from: fromNodeId });
     this.log.info("relay open", { from: fromNodeId, target: h.target, port: h.port, stream: stream.id });
     // bridge with byte accounting: bytes leaving `from` towards `target` and back, per second, per node
     stream.onData((c) => { this.countRelay(fromNodeId, "out", c.byteLength); this.countRelay(h.target, "in", c.byteLength); right.write(c); });
     right.onData((c) => { this.countRelay(h.target, "out", c.byteLength); this.countRelay(fromNodeId, "in", c.byteLength); stream.write(c); });
     this.relayStreams++;
-    stream.onEnd((r) => { this.relayStreams--; this.log.info("relay closed by source", { from: fromNodeId, target: h.target, reason: r }); right.close(r ?? "peer closed"); });
-    right.onEnd((r) => { this.log.info("relay closed by target", { from: fromNodeId, target: h.target, reason: r }); stream.close(r ?? "peer closed"); });
+    let finished = false;
+    const finish = (reason?: string) => {
+      if (finished) return;
+      finished = true;
+      this.relayStreams--;
+      this.log.info("relay closed", { from: fromNodeId, target: h.target, reason });
+      try { stream.close(reason ?? "peer closed"); } finally { right.close(reason ?? "peer closed"); }
+    };
+    stream.onEnd(finish);
+    right.onEnd(finish);
     return true;
   }
 

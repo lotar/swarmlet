@@ -55,3 +55,15 @@ test('catalog refresh keeps the completed reply pinned to its actual deployment'
   expect(r.root.text()).toContain('Response complete');expect(r.root.text()).toContain('actual');
   const count=r.pending.length;r.panel.refresh();expect(r.pending).toHaveLength(count);
 });
+
+test('reply completion freezes freshness and rejects late telemetry', async () => {
+  const r = rig(); r.panel.begin('qwen'); r.panel.served(new Headers({'x-swarmlet-deployment':'actual'}));
+  const stale = {...r.snapshot('actual'), sampledAt: new Date(Date.now()-60000).toISOString()};
+  r.pending[1]!.resolve(Response.json(stale)); await drain();
+  expect(r.root.text()).toContain('Telemetry unavailable');
+  r.panel.refresh(); const latest = r.pending.at(-1)!;
+  r.panel.finish('complete');
+  expect(r.root.text()).toContain('Telemetry unavailable'); expect(r.root.text()).not.toContain('At reply end');
+  latest.resolve(Response.json(r.snapshot('late'))); await drain();
+  expect(r.root.text()).not.toContain('late'); expect(r.root.text()).toContain('Telemetry unavailable');
+});

@@ -167,6 +167,10 @@
     loading = api('GET', '/api/fleet').then(function (data) {
       snapshot = data;
       if (!initialized) restoreDraft();
+      var pruned = false;
+      selected.forEach(function (_, id) { if (!snapshot.deployments.some(function (d) { return d.id === id && managed(d); })) { selected.delete(id); pruned = true; } });
+      pool.forEach(function (id) { if (!snapshot.nodes.some(function (n) { return n.id === id; })) { pool.delete(id); pruned = true; } });
+      if (pruned) changed();
       if (!preview && !dirty && snapshot.runs.length) preview = snapshot.runs[0];
       if (preview && preview.status === 'applying') return api('GET', '/api/fleet/' + encodeURIComponent(preview.id)).then(function (run) { preview = run; });
     }).then(function () {
@@ -178,8 +182,8 @@
   function openManual(d) {
     if (busy()) return;
     var item = itemFor(d), placement = item.placement || { kind: d.spec.kind, replicaNodeId: d.plan ? d.plan.coordinatorNodeId : d.spec.replicaNodeId, coordinatorNodeId: d.plan ? d.plan.coordinatorNodeId : d.spec.coordinatorNodeId, workerNodeIds: d.plan ? d.plan.workers.map(function (w) { return w.nodeId; }) : d.spec.workerNodeIds || [], workerLayers: d.spec.workerLayers || (d.plan ? d.plan.workers.map(function (w) { return w.layers; }) : []) };
-    manual = { deployment: d, counts: new Map(), order: (placement.workerNodeIds || []).slice(), mtp: (d.spec.chain || 0) > 0 };
-    (placement.workerNodeIds || []).forEach(function (id, i) { manual.counts.set(id, (placement.workerLayers || [])[i] || 1); });
+    manual = { deployment: d, counts: new Map(), order: (placement.workerNodeIds || []).filter(function (id) { return pool.has(id) && snapshot.nodes.some(function (n) { return n.id === id; }); }), mtp: (d.spec.chain || 0) > 0 };
+    (placement.workerNodeIds || []).forEach(function (id, i) { if (manual.order.indexOf(id) >= 0) manual.counts.set(id, (placement.workerLayers || [])[i] || 1); });
     $('fleet-manual-title').textContent = 'Assign nodes · ' + d.spec.name;
     $('fleet-manual-hint').textContent = 'Assignments use only nodes in your selected hardware pool.';
     $('fleet-manual-error').textContent = ''; $('fleet-worker-search').value = ''; pages.worker = 0;
@@ -209,8 +213,8 @@
   $('fleet-manual-form').addEventListener('submit', function (event) {
     event.preventDefault(); if (!manual || busy()) return;
     var coord = $('fleet-manual-coordinator').value, kind = $('fleet-manual-kind').value;
-    if (!coord) { $('fleet-manual-error').textContent = 'Choose a model node.'; return; }
-    var placement = kind === 'replica' ? { kind: kind, replicaNodeId: coord } : { kind: kind, coordinatorNodeId: coord, workerNodeIds: manual.order.filter(function (id) { return id !== coord && manual.counts.has(id); }) };
+    if (!coord || !pool.has(coord) || !snapshot.nodes.some(function (n) { return n.id === coord; })) { $('fleet-manual-error').textContent = 'Choose a model node.'; return; }
+    var placement = kind === 'replica' ? { kind: kind, replicaNodeId: coord } : { kind: kind, coordinatorNodeId: coord, workerNodeIds: manual.order.filter(function (id) { return id !== coord && pool.has(id) && snapshot.nodes.some(function (n) { return n.id === id; }) && manual.counts.has(id); }) };
     if (kind === 'split') {
       if (!placement.workerNodeIds.length) { $('fleet-manual-error').textContent = 'Select at least one worker.'; return; }
       if (!manual.mtp) placement.workerLayers = placement.workerNodeIds.map(function (id) { return manual.counts.get(id); });

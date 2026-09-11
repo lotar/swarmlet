@@ -206,6 +206,7 @@ describe("control core", () => {
     await new Promise<void>((r) => echo.listen(0, "127.0.0.1", r));
     const port = (echo.address() as { port: number }).port;
     b.allowed.add(port);
+    ctl.reg.putAssignment({ kind: "worker", id: "relay-echo", deploymentId: "relay-test", port, device: "CUDA0", threads: 1, allow: [a.id.certFp] }, b.id.nodeId, "listening");
     // alpha opens a relay towards beta's port and pumps data through a local socket pair for realism
     const payload = new Uint8Array(10 * 1024 * 1024);
     for (let i = 0; i < payload.length; i++) payload[i] = (i * 31 + (i >> 10)) & 0xff;

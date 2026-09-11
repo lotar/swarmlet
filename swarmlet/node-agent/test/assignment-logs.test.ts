@@ -9,7 +9,7 @@ const log = { info() {}, warn() {}, error() {}, debug() {} };
 
 test("engine failure evidence survives cleanup and agent recreation", async () => {
   const dir = mkdtempSync(join(tmpdir(), "swarmlet-log-retention-"));
-  const deps = { stateDir: dir, cfg: () => ({ externals: [] }), log, report() {}, logLine() {}, openRelay: () => null,
+  const deps = { stateDir: dir, cfg: () => ({ externals: [], offer: { enabled: true, roles: { worker: true }, ramMiB: 1024, cpuCores: 1 } }), log, report() {}, logLine() {}, openRelay: () => null,
     freeRamMiB: async () => 100, certPem: "", keyPem: "" };
   const runner = new AssignmentRunner(deps as never);
   // Exercise the canonical spawn callbacks with a tiny real process, without a model or network.

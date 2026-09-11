@@ -7,4 +7,10 @@ class Bounds(unittest.TestCase):
   verify.validate_args(types.SimpleNamespace(tokens=8,ctx=256))
  def test_context_bound(self):
   with self.assertRaises(ValueError):verify.validate_args(types.SimpleNamespace(tokens=8,ctx=0))
+ def test_float_proof_requires_finite_outputs(self):
+  stats={};verify.close_float([1.,2.],[1.,2.],'finite',stats)
+  self.assertEqual(stats['max_abs'],0)
+  for bad in [float('nan'),float('inf'),-float('inf')]:
+   for actual,expected in [([bad],[bad]),([bad],[1.]),([1.],[bad])]:
+    with self.assertRaisesRegex(AssertionError,'nonfinite'):verify.close_float(actual,expected,'bad',{})
 if __name__=='__main__':unittest.main()

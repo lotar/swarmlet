@@ -12,6 +12,18 @@ import type { StreamHeader } from "./types.ts";
 export const OP_OPEN = 1;
 export const OP_DATA = 2;
 export const OP_CLOSE = 3;
+export const MAX_OPEN_STREAMS = 1024;
+export const MAX_PENDING_STREAM_BYTES = 16 * 1024 * 1024;
+export const MAX_PENDING_MUX_BYTES = 64 * 1024 * 1024;
+const MAX_HEADER_BYTES = 16 * 1024;
+
+function headerShape(v: unknown): v is StreamHeader {
+  if (!v || typeof v !== "object" || Array.isArray(v)) return false;
+  const h = v as Record<string, unknown>;
+  const name = (v: unknown) => typeof v === "string" && v.length > 0 && v.length <= 256;
+  return Number.isInteger(h.port) && Number(h.port) > 0 && Number(h.port) < 65536 &&
+    (h.kind === "http" || h.kind === "data" && name(h.from) || h.kind === "relay" && name(h.from) && name(h.target));
+}
 
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
@@ -40,6 +52,7 @@ export class MuxStream {
   private dataCb: ((chunk: Uint8Array) => void) | null = null;
   private endCb: ((reason?: string) => void) | null = null;
   private pending: Uint8Array[] = [];
+  private pendingBytes = 0;
   private ended = false;
   private endedReason: string | undefined;
   private closedLocally = false;
@@ -49,8 +62,9 @@ export class MuxStream {
   /** Register the data handler; buffered chunks are flushed synchronously. */
   onData(cb: (chunk: Uint8Array) => void): this {
     this.dataCb = cb;
-    for (const c of this.pending) cb(c);
-    this.pending = [];
+    const pending = this.pending;
+    this.clearPending();
+    for (const c of pending) { if (this.isClosed) break; cb(c); }
     return this;
   }
 
@@ -61,7 +75,7 @@ export class MuxStream {
   }
 
   write(chunk: Uint8Array): void {
-    if (this.closedLocally) return;
+    if (this.isClosed) return;
     this.mux.send(encodeFrame(this.id, OP_DATA, chunk));
   }
 
@@ -70,8 +84,9 @@ export class MuxStream {
     if (this.closedLocally) return;
     this.closedLocally = true;
     const payload = reason ? encoder.encode(JSON.stringify({ reason })) : new Uint8Array(0);
-    this.mux.send(encodeFrame(this.id, OP_CLOSE, payload));
+    this.clearPending();
     this.mux.forget(this.id);
+    this.mux.send(encodeFrame(this.id, OP_CLOSE, payload));
   }
 
   get isClosed(): boolean {
@@ -80,8 +95,16 @@ export class MuxStream {
 
   /** @internal */
   _deliver(chunk: Uint8Array): void {
+    if (this.isClosed) return;
     if (this.dataCb) this.dataCb(chunk);
-    else this.pending.push(chunk);
+    else if (chunk.byteLength) {
+      if (this.pendingBytes + chunk.byteLength > MAX_PENDING_STREAM_BYTES || !this.mux.reservePending(chunk.byteLength)) {
+        try { this.close("pending data limit exceeded"); } finally { this._end("pending data limit exceeded"); }
+        return;
+      }
+      this.pendingBytes += chunk.byteLength;
+      this.pending.push(chunk.slice());
+    }
   }
 
   /** @internal */
@@ -89,7 +112,14 @@ export class MuxStream {
     if (this.ended) return;
     this.ended = true;
     this.endedReason = reason;
+    this.clearPending();
     if (this.endCb) this.endCb(reason);
+  }
+
+  private clearPending(): void {
+    this.mux.releasePending(this.pendingBytes);
+    this.pendingBytes = 0;
+    this.pending = [];
   }
 }
 
@@ -98,6 +128,7 @@ export class StreamMux {
   private nextId: number;
   private bytesIn = 0;
   private bytesOut = 0;
+  private pendingBytes = 0;
 
   /**
    * @param send   writes one frame to the transport
@@ -123,12 +154,24 @@ export class StreamMux {
     this.streams.delete(id);
   }
 
+  /** @internal */
+  reservePending(bytes: number): boolean {
+    if (this.pendingBytes + bytes > MAX_PENDING_MUX_BYTES) return false;
+    this.pendingBytes += bytes;
+    return true;
+  }
+  /** @internal */
+  releasePending(bytes: number): void { this.pendingBytes -= bytes; }
+
   open(header: StreamHeader): MuxStream {
+    if (!headerShape(header)) throw new Error("invalid stream header");
+    if (this.streams.size >= MAX_OPEN_STREAMS) throw new Error("open stream limit exceeded");
     const id = this.nextId;
     this.nextId += 2;
     const stream = new MuxStream(id, header, this);
     this.streams.set(id, stream);
-    this.send(encodeFrame(id, OP_OPEN, encoder.encode(JSON.stringify(header))));
+    try { this.send(encodeFrame(id, OP_OPEN, encoder.encode(JSON.stringify(header)))); }
+    catch (e) { this.forget(id); stream._end("open failed"); throw e; }
     return stream;
   }
 
@@ -138,11 +181,22 @@ export class StreamMux {
     const { streamId, op, payload } = decodeFrame(buf);
     if (op === OP_OPEN) {
       if (this.streams.has(streamId)) throw new Error(`stream ${streamId} already open`);
-      const header = JSON.parse(decoder.decode(payload)) as StreamHeader;
+      if (payload.byteLength > MAX_HEADER_BYTES) throw new Error("stream header too large");
+      const header: unknown = JSON.parse(decoder.decode(payload));
+      if (!headerShape(header)) throw new Error("invalid stream header");
+      if (this.streams.size >= MAX_OPEN_STREAMS) {
+        this.send(encodeFrame(streamId, OP_CLOSE, encoder.encode(JSON.stringify({ reason: "open stream limit exceeded" }))));
+        return;
+      }
       const stream = new MuxStream(streamId, header, this);
       this.streams.set(streamId, stream);
-      const accepted = this.onOpen(stream);
-      if (accepted === false) stream.close("rejected");
+      try {
+        const accepted = this.onOpen(stream);
+        if (accepted === false) stream.close("rejected");
+      } catch (e) {
+        try { stream.close("open failed"); } finally { stream._end("open failed"); }
+        throw e;
+      }
       return;
     }
     const stream = this.streams.get(streamId);
@@ -161,8 +215,11 @@ export class StreamMux {
 
   /** Transport went away: end every stream. */
   closeAll(reason = "transport closed"): void {
-    for (const s of [...this.streams.values()]) s._end(reason);
+    const streams = [...this.streams.values()];
     this.streams.clear();
+    let firstError: unknown;
+    for (const s of streams) { try { s._end(reason); } catch (e) { firstError ??= e; } }
+    if (firstError) throw firstError;
   }
 
   get openStreams(): number {

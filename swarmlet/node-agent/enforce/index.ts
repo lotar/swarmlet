@@ -28,7 +28,7 @@ async function haveSystemdRun(): Promise<boolean> {
 
 export async function enforce(unit: string, argv: string[], limits: Limits, log: Logger): Promise<Enforcement> {
   if (process.platform === "linux") {
-    if (!(await haveSystemdRun())) { log.warn("systemd-run not available: no cgroup enforcement"); return { argv, summary: "enforcement: none (systemd-run missing)" }; }
+    if (!(await haveSystemdRun())) throw new Error("systemd-run is required for Linux resource enforcement; install systemd before starting managed assignments");
     const props: string[] = [];
     if (limits.ramMiB && limits.ramMiB > 0) { props.push("-p", `MemoryMax=${limits.ramMiB}M`, "-p", "MemorySwapMax=0"); }
     if (limits.cpuCores && limits.cpuCores > 0) { props.push("-p", `CPUQuota=${Math.round(limits.cpuCores * 100)}%`); }

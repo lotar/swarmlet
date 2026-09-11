@@ -1,6 +1,6 @@
 #!/usr/bin/python3 -I
 """Standard hwmon fan control. No model tables or embedded-controller register writes."""
-import contextlib, fcntl, json, os, pathlib, stat, sys, tempfile
+import contextlib, fcntl, json, os, pathlib, stat, sys, tempfile, select, signal, time
 ROOT = pathlib.Path('/sys/class/hwmon')
 JOURNAL = pathlib.Path('/var/lib/swarmlet/fan-state.json')
 BOOT = pathlib.Path('/proc/sys/kernel/random/boot_id')
@@ -86,11 +86,39 @@ def restore():
     if failed: save(failed);raise RuntimeError('Some original fan settings could not be restored')
     JOURNAL.unlink(missing_ok=True)
 def main():
-    if len(sys.argv)!=2 or sys.argv[1] not in ('status','max','auto'): raise RuntimeError('Usage: swarmlet-fans status|max|auto')
+    if len(sys.argv)!=2 or sys.argv[1] not in ('status','max','auto','hold'): raise RuntimeError('Usage: swarmlet-fans status|max|auto|hold')
     command=sys.argv[1]
     if command=='status': return status()
     if os.geteuid()!=0: raise PermissionError('Administrator access is required for fan control')
-    with locked(): return change(command)
+    with locked(): return hold() if command == 'hold' else change(command)
+def hold(stream=None, timeout=8):
+    stream = sys.stdin.buffer if stream is None else stream
+    # Keep the journal lock for the lease, preventing two owners from restoring each other's state.
+    previous = signal.getsignal(signal.SIGTERM)
+    def terminated(*_): raise InterruptedError('Fan owner terminated')
+    signal.signal(signal.SIGTERM, terminated)
+    try:
+        change('max')
+        print('ready', flush=True)
+        pending = b''
+        deadline = time.monotonic() + timeout
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0 or not select.select([stream], [], [], remaining)[0]: break
+            data = os.read(stream.fileno(), 256)
+            if not data: break
+            pending += data
+            while b'\n' in pending:
+                line, pending = pending.split(b'\n', 1)
+                if line != b'ping': raise RuntimeError('Invalid fan heartbeat')
+                deadline = time.monotonic() + timeout
+            if len(pending) > 16: raise RuntimeError('Invalid fan heartbeat')
+    except InterruptedError:
+        pass
+    finally:
+        try: restore()
+        finally: signal.signal(signal.SIGTERM, previous)
+    return status()
 def change(command):
     if command=='auto': restore();return status()
     rows=controls()

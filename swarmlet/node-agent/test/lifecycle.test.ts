@@ -10,7 +10,7 @@ function fixture(freeRamMiB: () => Promise<number | undefined>, externals: unkno
   const dir = mkdtempSync(join(tmpdir(), "swarmlet-lifecycle-unit-"));
   const reports: Array<{ id: string; state: string }> = [];
   const runner = new AssignmentRunner({
-    cfg: () => ({ enginePath: "/no-engine", externals, offer }) as never,
+    cfg: () => ({ enginePath: "/no-engine", externals, offer: { enabled: true, roles: { worker: true, coordinator: true, replica: true }, gpu: [], diskMiB: 0, modelsDir: dir, ...offer } }) as never,
     stateDir: dir, certPem: "", keyPem: "", freeRamMiB,
     log: { info() {}, warn() {}, error() {}, debug() {} },
     report: (id, state) => reports.push({ id, state }), logLine() {}, openRelay: () => null,

@@ -630,7 +630,7 @@ export class DeploymentManager {
     this.deps.reg.updateDeployment(dep.id, { state: "loading" });
     const coordLayers = plan.tensorSplit[plan.tensorSplit.length - 1] ?? 0;
     const externals = dep.spec.stopExternal ? this.deps.reg.listDeployments().filter((d) => d.spec.kind === "external" && d.spec.external?.nodeId === coord.id) : [];
-    const port = this.freePort(coord.id, serverPortBase(), used);
+    const port = this.freePort(coord.id, serverPortBase(), this.usedPorts());
     const c: CoordinatorAssignment = {
       kind: "coordinator", id: newId("as"), deploymentId: dep.id, model: { path: plan.modelPath },
       rpc: workers.map(({ w, node }) => endpointFor(node, w.port)), devices: [...workers.map((_, i) => `RPC${i}`), plan.coordinatorDevice],
@@ -821,7 +821,12 @@ export class DeploymentManager {
       };
       const list = this.waiters.get(assignmentId) ?? [];
       list.push(cb); this.waiters.set(assignmentId, list);
-      const remove = () => { const l = this.waiters.get(assignmentId) ?? []; const i = l.indexOf(cb); if (i >= 0) l.splice(i, 1); };
+      const remove = () => {
+        const l = this.waiters.get(assignmentId);
+        if (!l) return;
+        const i = l.indexOf(cb); if (i >= 0) l.splice(i, 1);
+        if (!l.length) this.waiters.delete(assignmentId);
+      };
     });
   }
 }

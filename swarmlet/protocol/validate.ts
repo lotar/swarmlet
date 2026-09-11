@@ -64,6 +64,58 @@ export function validateOffer(input: unknown, caps: Capabilities): Result<Offer>
   return errors.length ? { ok: false, errors } : { ok: true, value: offer, warnings };
 }
 
+// Wire shape checks deliberately do not compare offers with current free resources: telemetry
+// and owner edits can race hardware changes. Admission performs that separate policy check.
+const nonnegative = (v: unknown) => isNum(v) && v >= 0;
+const optional = (o: Record<string, unknown>, key: string, check: (v: unknown) => boolean) => o[key] === undefined || check(o[key]);
+const strings = (v: unknown) => Array.isArray(v) && v.every(isStr);
+const numbers = (o: Record<string, unknown>, keys: string[]) => keys.every(k => optional(o, k, nonnegative));
+const netShape = (v: unknown) => isObj(v) && nonnegative(v.rttMs) && isStr(v.measuredAt) && numbers(v, ["upMbit", "downMbit"]);
+
+export function capabilitiesShape(v: unknown, partial = false): v is Capabilities {
+  if (!isObj(v)) return false;
+  const checks: Record<string, (v: unknown) => boolean> = {
+    os: v => ["darwin", "linux", "win32"].includes(v as string), arch: v => ["arm64", "x64"].includes(v as string),
+    hostname: isStr, ramMiB: nonnegative, ramReserveMiB: nonnegative, cpuCores: nonnegative,
+    diskFreeMiB: nonnegative, privateIps: strings, measuredAt: isStr,
+    gpus: v => Array.isArray(v) && v.every(g => isObj(g) && isStr(g.id) && isStr(g.name) &&
+      ["cuda", "metal", "cpu", "other"].includes(g.backend as string) && isStr(g.engineName) && nonnegative(g.totalMiB) && optional(g, "freeMiB", nonnegative)),
+  };
+  if (!Object.entries(checks).every(([k, check]) => partial && v[k] === undefined || check(v[k]))) return false;
+  return optional(v, "allocationVersion", v => v === 1) && optional(v, "publicIp", isStr) &&
+    optional(v, "dataPort", PORT_OK) && optional(v, "net", netShape) &&
+    optional(v, "cgroup", v => isObj(v) && typeof v.memory === "boolean" && typeof v.cpu === "boolean") &&
+    optional(v, "engine", v => isObj(v) && isStr(v.proto) && isObj(v.sha256) && Object.values(v.sha256).every(isStr) &&
+      optional(v, "stages", v => isObj(v) && isStr(v.engine)));
+}
+
+function offerShape(v: unknown): boolean {
+  return isObj(v) && typeof v.enabled === "boolean" && isObj(v.roles) &&
+    ["worker", "coordinator", "replica"].every(k => typeof (v.roles as Record<string, unknown>)[k] === "boolean") &&
+    [v.ramMiB, v.cpuCores, v.diskMiB].every(nonnegative) && isStr(v.modelsDir) &&
+    Array.isArray(v.gpu) && v.gpu.every(g => isObj(g) && isStr(g.id) && nonnegative(g.memMiB));
+}
+function modelsShape(v: unknown): boolean {
+  return Array.isArray(v) && v.every(m => isObj(m) && isStr(m.name) && isStr(m.path) && nonnegative(m.sizeBytes) &&
+    ["gguf", "mtp", "mmproj"].includes(m.kind as string) && optional(m, "sha256", isStr));
+}
+function assignmentReportShape(v: unknown): boolean {
+  return isObj(v) && isStr(v.id) && ["starting", "listening", "loading", "ready", "stopped", "failed"].includes(v.state as string) &&
+    optional(v, "detail", isStr) && optional(v, "ports", v => isObj(v) && Object.values(v).every(PORT_OK));
+}
+function metricsShape(v: unknown): boolean {
+  if (!isObj(v)) return false;
+  return optional(v, "ts", isStr) && numbers(v, ["cpuPct", "rssMiB", "freeRamMiB", "tokPerSec", "tokPerSecAvg", "tokensTotal", "inflight"]) &&
+    optional(v, "serving", isStr) && optional(v, "serverMetricsTs", isStr) && optional(v, "serverMetricsState", v => ["ok", "partial", "unavailable"].includes(v as string)) &&
+    optional(v, "link", netShape) && optional(v, "gpu", v => Array.isArray(v) && v.every(g => isObj(g) && isStr(g.id) && nonnegative(g.usedMiB) &&
+      numbers(g, ["utilizationPct", "powerW", "fanPct"]) && optional(g, "temperatureC", isNum))) &&
+    optional(v, "network", v => Array.isArray(v) && v.every(n => isObj(n) && isStr(n.name) && numbers(n, ["rxBps", "txBps"]))) &&
+    optional(v, "hardware", v => isObj(v) && isStr(v.measuredAt) &&
+      Array.isArray(v.fans) && v.fans.every(f => isObj(f) && isStr(f.id) && isStr(f.name) && numbers(f, ["rpm", "targetRpm", "maxRpm"]) && optional(f, "mode", isStr)) &&
+      Array.isArray(v.temperatures) && v.temperatures.every(t => isObj(t) && isStr(t.name) && isNum(t.celsius)) &&
+      isObj(v.fanControl) && isStr(v.fanControl.detail) && ["max", "requested", "automatic", "unsupported", "permission-required", "error"].includes(v.fanControl.state as string));
+}
+
 /** Message shape guards. Strict on `t`; field checks are the minimum each handler relies on. */
 export function parseAgentMessage(raw: string): Result<AgentToControl> {
   let m: unknown;
@@ -73,11 +125,11 @@ export function parseAgentMessage(raw: string): Result<AgentToControl> {
   let bad: Result<AgentToControl> | null = null;
   switch (m.t) {
     case "auth": bad = need(isStr(m.nodeId) && isStr(m.nonce) && isStr(m.certFp) && isStr(m.signature), "needs nodeId, nonce, certFp, signature"); break;
-    case "hello": bad = need(isNum(m.proto) && isObj(m.caps) && isObj(m.offer) && Array.isArray(m.models) && Array.isArray(m.assignments), "needs proto, caps, offer, models, assignments"); break;
-    case "heartbeat": bad = need(isStr(m.ts) && isObj(m.metrics), "needs ts, metrics"); break;
-    case "offer": bad = need(isObj(m.offer), "needs offer"); break;
-    case "models": bad = need(Array.isArray(m.models), "needs models"); break;
-    case "assignment": bad = need(isStr(m.id) && isStr(m.state), "needs id, state"); break;
+    case "hello": bad = need(isNum(m.proto) && isStr(m.agentVersion) && capabilitiesShape(m.caps) && offerShape(m.offer) && modelsShape(m.models) && Array.isArray(m.assignments) && m.assignments.every(assignmentReportShape), "needs proto, caps, offer, models, assignments"); break;
+    case "heartbeat": bad = need(isStr(m.ts) && metricsShape(m.metrics) && optional(m, "caps", v => capabilitiesShape(v, true)), "needs ts, metrics"); break;
+    case "offer": bad = need(offerShape(m.offer), "needs offer"); break;
+    case "models": bad = need(modelsShape(m.models), "needs models"); break;
+    case "assignment": bad = need(assignmentReportShape(m), "needs id, state"); break;
     case "log": bad = need(isStr(m.assignmentId) && isStr(m.line), "needs assignmentId, line"); break;
     case "pong": bad = need(isStr(m.ts), "needs ts"); break;
     default: return { ok: false, errors: [`unknown agent message ${m.t}`] };
@@ -100,7 +152,7 @@ export function parseControlMessage(raw: string): Result<ControlToAgent> {
   return { ok: true, value: m as unknown as ControlToAgent, warnings: [] };
 }
 
-const PORT_OK = (p: unknown): p is number => isNum(p) && p > 0 && p < 65536;
+const PORT_OK = (p: unknown): p is number => isNum(p) && Number.isInteger(p) && p > 0 && p < 65536;
 const FP_OK = (s: unknown): s is string => isStr(s) && /^[0-9a-f]{64}$/.test(s);
 
 export function validateAssignment(input: unknown): Result<Assignment> {

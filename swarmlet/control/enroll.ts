@@ -4,6 +4,7 @@
 
 import { importPublicJwk, nodeIdFromJwk, normalizeFingerprint, verifyObject } from "../protocol/sign.ts";
 import type { Capabilities, EnrollRequest } from "../protocol/types.ts";
+import { capabilitiesShape } from "../protocol/validate.ts";
 import type { Registry } from "./registry.ts";
 
 export type EnrollOutcome = { ok: true; nodeId: string } | { ok: false; status: number; error: string };
@@ -11,7 +12,7 @@ export type EnrollOutcome = { ok: true; nodeId: string } | { ok: false; status: 
 export async function handleEnroll(reg: Registry, body: unknown, allowLanAutoEnroll = false): Promise<EnrollOutcome> {
   if (!body || typeof body !== "object") return { ok: false, status: 400, error: "body must be an object" };
   const req = body as Partial<EnrollRequest>;
-  if (typeof req.code !== "string" || typeof req.nodeId !== "string" || !req.pubJwk || typeof req.certFp !== "string" || typeof req.hostname !== "string" || !req.caps) {
+  if (typeof req.code !== "string" || typeof req.nodeId !== "string" || !req.pubJwk || typeof req.certFp !== "string" || typeof req.hostname !== "string" || !capabilitiesShape(req.caps)) {
     return { ok: false, status: 400, error: "needs code, nodeId, pubJwk, certFp, hostname, caps" };
   }
   let certFp: string;

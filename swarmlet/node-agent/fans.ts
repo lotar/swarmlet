@@ -28,27 +28,17 @@ export class FanManager {
       this.control = {state:'permission-required',detail:'Administrator setup is required to enable automatic maximum fan speed'};
       return;
     }
-    if (process.platform === 'darwin') {
-      try {
-        this.lease = await startFanLease(['sudo','-n',PRIVILEGED_HELPER,'hold']);
-        this.owned = true;
-        this.control = {state:'requested',detail:'Maximum cooling held while the node is running; checking fan feedback'};
-        this.cache = null;
-      } catch (error) {
-        this.control = {state:'error',detail:'Maximum fan request failed: '+String(error).slice(0,300)};
-        this.retryAt = Date.now()+30_000;
-      }
-      return;
+    try {
+      this.lease = await startFanLease(['sudo','-n',PRIVILEGED_HELPER,'hold']);
+      this.owned = true;
+      this.control = {state:'requested',detail:'Maximum cooling held while the node is running; checking fan feedback'};
+      this.cache = null;
+    } catch (error) {
+      this.control = {state:'error',detail:'Maximum fan request failed: '+String(error).slice(0,300)};
+      this.retryAt = Date.now()+30_000;
     }
-    const result = await exec(['sudo','-n',PRIVILEGED_HELPER,'max'],{timeoutMs:10000});
-    if (result.code !== 0) {
-      this.control = {state:'error',detail:'Maximum fan request failed: '+(result.stdout || result.stderr).trim().slice(0,300)};
-      return;
-    }
-    this.owned = true;
-    this.control = {state:'requested',detail:'Maximum cooling requested; checking fan feedback'};
-    this.cache = null;
   }
+
   async stop(): Promise<void> {
     this.stopping = true;
     await this.starting?.catch(() => undefined);

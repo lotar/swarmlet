@@ -177,6 +177,13 @@ production. A quiet token counter alone does not establish idle: verify processi
 requests and foreign clients too. Do not run real inference or deliberately restart
 control while other clients use the local AI.
 
+`idle-window.py` takes a process lock before sampling and holds it until its command has cleaned
+up and production restoration finishes. A competing operator exits with code 5, including in
+`--allow-stopped` mode; do not bypass this with a manually set `SWARMLET_IDLE_WINDOW` marker.
+`--check` remains read-only and may run while a window is owned. The historical paths below are
+examples from the original three-node setup; discover the actual installed service command before
+replacing files on a current node.
+
 1. From the intended final source revision, build the Mac release with
    `SWARMLET_ENGINE_DIST=/Users/lotar/projects/ai-mesh/swarmlet/engine/dist/darwin CARGO_TARGET_DIR=/Users/lotar/projects/ai-mesh/swarmlet/node-shell/src-tauri/target swarmlet/node-shell/scripts/build-release.sh`.
    The native Cargo cache is reused; only two build jobs run by default.
@@ -224,6 +231,37 @@ These are an operator-controlled refresh and rollback procedure, not auto-update
 The source manifest labels uncommitted builds `-dirty`; the binary SHA-256 is the
 exact artifact identity. Record final source status and all three installed hashes
 with the acceptance evidence.
+
+### Supervisor bootstrap refresh
+
+The signed feed activates agent/engine releases as children of the stable `supervise` executable.
+Its active release sequence and child executable hash do not identify the running supervisor.
+Supervisor code changes therefore need a separate operator refresh. A standalone desktop app
+starts an unsupervised `run` sidecar; install the service for unattended signed updates.
+
+1. Discover the installed bootstrap command from launchd `ProgramArguments`, systemd `ExecStart`,
+   or the Windows Task Scheduler launcher's command. Use that stable path, not a path copied from
+   the historical rig table. Build the intended final revision and record its canonical binary hash.
+2. Stage and verify the replacement beside the stable executable and back up the existing binary,
+   build manifest and service definition. Preserve executable permissions. Keep enrollment,
+   identity, offers, node configuration and signed release state intact; an already-active child
+   does not need to be downgraded to refresh its parent.
+3. Acquire the authorized idle maintenance window and stop the owning service gracefully. Replace
+   the bootstrap atomically and restart that service. On Windows, the stopped supervisor must
+   release its executable before replacement. Do not stop unrelated processes or reinstall/re-enroll
+   the node as an update shortcut. If the service definition changes, reload it through the native
+   service manager rather than merely restarting an old loaded definition.
+4. Verify the actual running supervisor command and bootstrap binary hash separately from the
+   running child's executable, release sequence and signed inventory. Confirm the node reconnects
+   and the maintenance operator restores production before releasing the window. If refresh fails,
+   restore the saved bootstrap/service definition and verify recovery inside the same window.
+
+Mac native bundles now update through the signed feed when an app already exists at
+`~/Applications/Swarmlet Node.app` or `/Applications/Swarmlet Node.app`. Reopen an already-running
+app to load changed native shell code; its web UI can refresh independently when idle. Linux and
+Windows native shells and privileged helpers continue to require their installers. The Mac release
+script applies ad-hoc signing by default (or the configured identity) and verifies the bundle; it
+does not perform notarization. These mechanisms do not refresh the service bootstrap automatically.
 
 ### Response processing in chat
 

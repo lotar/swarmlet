@@ -31,7 +31,8 @@
       var children = [head, meter, source];
       if (problem) { var warning = el('p', 'processing-warning', problem); warning.setAttribute('role', 'status'); children.push(warning); }
       if (snapshot && snapshot.nodes.length) {
-        var staleSnapshot = Date.now() - Date.parse(snapshot.sampledAt) > 10000;
+        var sampleTime = Date.parse(snapshot.sampledAt);
+        var staleSnapshot = !isFinite(sampleTime) || (s.finishedAt || Date.now()) - sampleTime > 10000;
         var frozen = ['complete', 'stopped', 'error'].indexOf(s.state) >= 0;
         var share = el('div', 'processing-share'); share.setAttribute('aria-hidden', 'true');
         snapshot.nodes.forEach(function (n) { if (finite(n.sharePct)) { var part = el('span', 'share-segment'); part.style.flexGrow = String(n.sharePct); part.title = n.name + ': ' + n.sharePct + '%'; share.append(part); } });
@@ -39,7 +40,7 @@
         var list = el('div', 'processing-nodes');
         snapshot.nodes.forEach(function (n) {
           var row = el('article', 'processing-node');
-          var live = !problem && (!staleSnapshot || frozen) && n.metricsState === 'live';
+          var live = !problem && !staleSnapshot && n.metricsState === 'live';
           var participating = confirmed && current && live && snapshot.deployment.state === 'ready';
           row.dataset.state = participating ? 'active' : !n.online ? 'offline' : 'ready';
           var top = el('div', 'processing-node-head'), identity = el('div');
@@ -101,7 +102,7 @@
       if (delta && (delta.content || delta.reasoning_content)) { var now = performance.now(); if (s.first == null) s.first = now; s.last = now; s.chunks++; }
       if (performance.now() - lastPaint >= 200) { lastPaint = performance.now(); render(); }
     }
-    function finish(state) { s.state = state; render(); return stats(s, performance.now()); }
+    function finish(state) { invalidate(); s.finishedAt = Date.now(); s.state = state; render(); return stats(s, performance.now()); }
     var timer = setInterval(function () { if (visible()) refresh(); }, 2000);
     D.addEventListener('visibilitychange', function () { if (visible()) refresh(); });
     global.addEventListener('pagehide', function () { invalidate(); });
