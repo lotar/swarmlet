@@ -4,9 +4,24 @@ Request: "update mesh to serve full model from m5, remeasure." Then, after the f
 attempt was refused: "gracefully stop docker containers, then quit docker desktop / stop
 the engine and retry."
 
+## Status (14:31): replica stopped again, production 8099 back
+
+The replica served from 13:54 to 14:22. At 14:22:05 the controller lost the Mac agent's
+WebSocket for 7 seconds (agent log: `disconnected: 1006`, reconnected and authenticated
+14:22:12). The controller logged "went offline; route withdrawn, waiting up to 30000ms for
+reconnect", yet at 14:23:36 it retired the healthy assignment ("stopped by control") and
+started automatic recovery with a fresh placement. Each recovery attempt stops production
+through the maintenance script, runs the fit gate, and restores production when the gate
+refuses. Attempt 1 refused at 72069 MiB free, attempt 2 at 73481 MiB free (need 79232); the
+gate had passed at 11:53 UTC with the same tenants except a new `ollama` engine and the
+webwright lane's Python jobs. I stopped the deployment at 14:30:20 to end the bouncing
+(three more attempts were pending). Production restored 14:30:36 and answers (`READY` in
+0.33 s), `flashnext-prod` is `ready`, the router uses it. Docker Desktop is still down.
+`dep-5a6b848b63d0` is `stopped` and can be started again once about 6 GiB more is free.
+
 ## Outcome after the retry (14:10)
 
-DELIVERED. `qwen3.8-flash-next` is served by the mesh as a whole-model replica on the Mac
+DELIVERED, then lost at 14:22 (see Status above). `qwen3.8-flash-next` was served by the mesh as a whole-model replica on the Mac
 node, deployment `flashnext-m5-64k` (`dep-5a6b848b63d0`, ctx 65536, 4 slots), ready since
 13:54:02. The standalone production server on `127.0.0.1:8099` is stopped by the agent's
 maintenance script while the replica runs and comes back when the deployment is stopped.
@@ -52,6 +67,11 @@ Two things the owner should know:
 | 14:07:33 | MLX job exited. System free 25%, swap 17 GB. |
 | 14:08:14 | Clean 64k measurement (table below). Wired 98.5 GB, swap 16.3 GB, free plus reclaimable 22687 MiB. |
 | 14:09:16 | Windows laptop probe through its agent and the hosted router: 200, 1.84 s, `dep-5a6b848b63d0`, node `30f05a2670c368d0`. |
+| 14:22:05 | Controller: Mac node "went offline; route withdrawn, waiting up to 30000ms for reconnect". Agent saw `disconnected: 1006` at 14:22:11, reconnected 14:22:12. Swap was 23.5 of 25.6 GB at 14:20 with a webwright MLX benchmark (35 GB) running; the replica engine had 2.8 GB resident of 73 GB mapped. |
+| 14:23:36 | Controller retired the still-running assignment ("stopped by control") and began "automatic recovery attempt 1/5". Engine exited, production restored 14:23:36, then stopped again by the new assignment's gate. |
+| 14:26:38 | Attempt 1 refused: 72069 MiB free, need 79232. Production restored 14:26:53. Attempt 2 started 14:26:54. |
+| 14:29:55 | Attempt 2 refused: 73481 MiB free. Production restore started. |
+| 14:30:20 | `POST .../dep-5a6b848b63d0/stop` to end the loop. Production restored 14:30:36, `READY` in 0.33 s at 14:30:57. Bus notice #7 (`m_0b9c2036`). |
 
 ## Remeasure
 
@@ -208,9 +228,13 @@ The retry above is the result.
 
 ## Operating notes and reversal
 
-- Serving now: `flashnext-m5-64k` (`dep-5a6b848b63d0`) on the Mac, port 8100, reached through
-  `https://app.swarmlet.ai/v1` (needs an API key) or `http://127.0.0.1:47800/v1` on the Mac
-  (no key). `flashnext-prod` shows `loading` (its 8099 target is down) and gets no traffic.
+- Serving now (14:31): production `flashnext-prod` on 8099 again. While the replica ran
+  (13:54 to 14:22), `flashnext-m5-64k` (`dep-5a6b848b63d0`) served on the Mac, port 8100,
+  reached through `https://app.swarmlet.ai/v1` (needs an API key) or
+  `http://127.0.0.1:47800/v1` on the Mac (no key), and `flashnext-prod` showed `loading`
+  with no traffic. To try again: `POST /api/deployments/dep-5a6b848b63d0/start` once the
+  fit gate can see 79232 MiB free after production stops (it saw 72069 and 73481 at 14:26
+  and 14:29).
 - `flashnext-m5` (`dep-19fb57bca9a0`, ctx 262144) is kept in state `stopped` for the record.
   Do not start it while Docker or any other 20 GB tenant is up; at that context it wired
   108 GB and filled swap.
@@ -240,7 +264,14 @@ The retry above is the result.
 - Controller recovery retries a deterministic fit refusal up to 5 times (backoff capped at
   60 s). With `stopExternal` each retry stops and restores production (3 to 5 min outage per
   attempt). A "does not fit" failure should end the running intent or back off for much
-  longer. Stopped manually here after attempt 2.
+  longer. Stopped manually here after attempt 2, twice today (13:00 and 14:30).
+- Reconnect grace does not keep a healthy replica. The controller announced a 30 s reconnect
+  window at 14:22:05, the agent was back at 14:22:12, and the assignment was still retired
+  and re-placed at 14:23:36 (`control/deployments.ts`, `reconnectGraceMs` path around line
+  132). A node that reconnects inside the window with its engine still up should keep the
+  assignment; with `stopExternal` the re-placement costs two production bounces before the
+  gate even runs. The agent-side 45 s watchdog (release 2026091109) does not cover this;
+  the drop came from the controller side first (control 14:22:05, agent 14:22:11).
 - Planner message "Requested replica node ... has its offer disabled" appears when the
   node's RAM is fully reserved by another deployment (hit again in the new unit test); the
   wording is misleading (also noted in `docs/reports/FLASHNEXT_SPLIT_LIVE_20260911.md`).
@@ -255,4 +286,6 @@ Claim to `codex:01a070be` (`m_b70f055a`), outage notices to `pi:01a09067` (`m_05
 
 Retry: host notice to all (`m_018923f8`, 60 s lead, three acks, no objection), Flash-Next
 notices #4 to #6 (`m_06fb6ada`, #5 at 13:25, `m_c2b7bdb0`), final state notice after this
-report.
+report (`m_b5640bfb`). Notice #7 (`m_0b9c2036`, 14:31): production back, replica stopped
+after the re-placement refusals, Docker still down. The takeover message from
+`claude-code:fedb10c8` was acked with the Docker status (`m_a4178744`).

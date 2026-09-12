@@ -9,6 +9,10 @@ Status 2026-09-12 14:10: with Docker Desktop stopped, the whole-model replica on
 (`flashnext-m5-64k`, `dep-5a6b848b63d0`, ctx 65536) serves Flash-Next; 8099 is down while
 it runs. Decode 30 to 36 tok/s against the split's 5.5. The split stays stopped.
 
+Status 2026-09-12 14:31: the replica was lost at 14:22 (controller re-placed it after a 7 s
+WebSocket blip, then the fit gate refused twice) and is `stopped`; production on 8099
+serves Flash-Next again. The split stays stopped. Details in the M5 replica report.
+
 Request: "update flash next to serve partially, have legions serve 2 layers each."
 
 Result: Flash-Next (`qwen3.8-flash-next`) is now served by the split deployment
