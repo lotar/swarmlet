@@ -5,6 +5,10 @@ drop on any node breaks the relay ring) and bounced production 8099 each time. A
 whole-model replica on the Mac was attempted and refused by the memory fit gate; production
 on 8099 serves Flash-Next again. See `docs/reports/FLASHNEXT_M5_REPLICA_20260912.md`.
 
+Status 2026-09-12 14:10: with Docker Desktop stopped, the whole-model replica on the Mac
+(`flashnext-m5-64k`, `dep-5a6b848b63d0`, ctx 65536) serves Flash-Next; 8099 is down while
+it runs. Decode 30 to 36 tok/s against the split's 5.5. The split stays stopped.
+
 Request: "update flash next to serve partially, have legions serve 2 layers each."
 
 Result: Flash-Next (`qwen3.8-flash-next`) is now served by the split deployment
