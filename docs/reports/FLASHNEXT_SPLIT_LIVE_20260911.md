@@ -1,5 +1,10 @@
 # Flash-Next served by the mesh split: Mac plus both Legions (2026-09-11, 18:48 to 18:58)
 
+Status 2026-09-12 12:44: the split is stopped. It crashed 11 times overnight (a WebSocket
+drop on any node breaks the relay ring) and bounced production 8099 each time. A
+whole-model replica on the Mac was attempted and refused by the memory fit gate; production
+on 8099 serves Flash-Next again. See `docs/reports/FLASHNEXT_M5_REPLICA_20260912.md`.
+
 Request: "update flash next to serve partially, have legions serve 2 layers each."
 
 Result: Flash-Next (`qwen3.8-flash-next`) is now served by the split deployment
