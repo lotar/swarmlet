@@ -76,6 +76,27 @@ test("replica assignment honors planned device and speculation", async () => {
   expect(f.manager.routing()[0]?.deployments[0]?.id).toBe(id);
 });
 
+test("darwin replica carries the whole-model fit gate and, on request, the production server it may stop", async () => {
+  const f = rig();
+  const profile = loadProfiles().get(split.profile)!;
+  const wholeModelMiB = profile.layers * profile.layerMiB + profile.coordinatorHostMiB;
+  await f.manager.create({ name: "prod-2b", profile: "external", kind: "external", external: { nodeId: "mac", url: "http://127.0.0.1:8099", healthPath: "/health", modelName: profile.modelName } });
+  await f.manager.create({ name: "prod-other", profile: "external", kind: "external", external: { nodeId: "l1", url: "http://127.0.0.1:8098", healthPath: "/health", modelName: "other" } });
+  const plain = await f.manager.create({ name: "plain", kind: "replica", profile: split.profile, replicaNodeId: "mac", ctx: 1024, parallel: 1 });
+  await f.manager.start(plain.id);
+  const p = f.sent.find((x) => x.a.kind === "replica" && x.a.deploymentId === plain.id)!.a;
+  if (p.kind !== "replica") throw new Error("replica assignment missing");
+  expect(p.fitMiB).toBe(wholeModelMiB);
+  expect(p.stopExternal).toBeUndefined();
+  await f.manager.stop(plain.id); // a running replica reserves the node's whole offer
+  const takeover = await f.manager.create({ name: "takeover", kind: "replica", profile: split.profile, replicaNodeId: "mac", ctx: 1024, parallel: 1, stopExternal: true });
+  await f.manager.start(takeover.id);
+  const t = f.sent.find((x) => x.a.kind === "replica" && x.a.deploymentId === takeover.id)!.a;
+  if (t.kind !== "replica") throw new Error("replica assignment missing");
+  expect(t.fitMiB).toBe(wholeModelMiB);
+  expect(t.stopExternal).toBe("prod-2b"); // only the external on the replica's own node
+});
+
 test("external deployments reject execution options before persisting or starting", async () => {
   const f = rig();
   const external: DeploymentSpec = { name: "external", profile: "external", kind: "external", external: { nodeId: "mac", url: "http://127.0.0.1:8099", healthPath: "/health", modelName: "external" } };

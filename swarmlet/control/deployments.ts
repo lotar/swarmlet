@@ -562,6 +562,9 @@ export class DeploymentManager {
     this.deps.reg.updateDeployment(dep.id, { plan, state: "loading" });
     const node = this.node(plan.coordinatorNodeId);
     const port = this.freePort(node.id, serverPortBase(), this.usedPorts());
+    // Same darwin fit gate as a split coordinator: the whole model plus the host part must be free before
+    // llama-server launches, and stopExternal names the production server on that node the agent may stop for it.
+    const externals = dep.spec.stopExternal ? this.deps.reg.listDeployments().filter((d) => d.spec.kind === "external" && d.spec.external?.nodeId === node.id) : [];
     const a: ReplicaAssignment = {
       kind: "replica", id: newId("as"), deploymentId: dep.id, port,
       model: { path: plan.modelPath }, modelName: profile.modelName,
@@ -569,7 +572,8 @@ export class DeploymentManager {
       mtp: plan.chain > 0 && plan.mtpPath ? { path: plan.mtpPath, chain: plan.chain } : undefined,
       speculation: plan.speculation, extraArgs: profile.extraArgs, allow: [],
       enforce: plan.allocations?.find(a => a.nodeId === node.id),
-      fitMiB: dep.spec.allocations && node.os === 'darwin' ? plan.allocations?.find(a => a.nodeId === node.id)?.ramMiB : undefined,
+      fitMiB: node.os === "darwin" ? (dep.spec.allocations ? plan.allocations?.find(a => a.nodeId === node.id)?.ramMiB : profile.layers * profile.layerMiB + profile.coordinatorHostMiB) : undefined,
+      stopExternal: externals[0]?.spec.name,
     };
     await this.dispatch(node.id, a, ["ready"], COORDINATOR_TIMEOUT_MS);
     this.assertRunning(dep.id, generation);

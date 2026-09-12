@@ -175,7 +175,10 @@ export interface ReplicaAssignment {
   speculation?: NgramSpeculation;
   extraArgs?: string[];
   enforce?: { ramMiB?: number; cpuCores?: number };
+  /** Free+reclaimable RAM the agent must see before launching (darwin fit gate). */
   fitMiB?: number;
+  /** Id of an external service registered in the agent's config that must be stopped (via its maintenance script) to fit. */
+  stopExternal?: string;
   allow: string[];
 }
 
