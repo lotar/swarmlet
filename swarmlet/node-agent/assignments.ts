@@ -13,6 +13,9 @@ import { enforce } from "./enforce/index.ts";
 import { SupervisedProcess, waitForHealth, waitForPort } from "./roles/process.ts";
 import { coordinatorArgv, replicaArgv, workerArgv } from "./roles/recipes.ts";
 import { Dialer } from "./transport/dial.ts";
+import { ServeDialer } from "./transport/servedial.ts";
+import type { TLSSocket } from "node:tls";
+import type { EarlyBuffer } from "./streams.ts";
 import { stopRecordedProcess, type ProcessIdentity } from "./roles/identity.ts";
 import { AssignmentLogs } from "./assignment-logs.ts";
 import { sha256File } from "./probe/models.ts";
@@ -39,6 +42,8 @@ interface Active {
   detail?: string;
   proc?: SupervisedProcess;
   dialer?: Dialer;
+  /** Reverse-direction streams this node offers when it cannot be dialled (transport/servedial.ts). */
+  serveDialer?: ServeDialer;
   ports: Record<string, number>;
   unwatch?: () => void;
   stoppedExternal?: ExternalService;
@@ -49,7 +54,65 @@ interface Active {
   stopTask?: Promise<void>;
 }
 
-export interface AssignmentSnapshot { id: string; kind: Assignment["kind"]; deploymentId: string; state: AssignmentState; detail?: string; ports?: Record<string, number>; pid?: number; processIdentity?: ProcessIdentity; stoppedExternalId?: string }
+/**
+ * What this machine is actually doing for a deployment, in the owner's terms.
+ *
+ * A worker's layer count is not something the agent can measure: it follows from the coordinator's
+ * tensor split, which is why control now sends it. These fields are informational only — nothing
+ * here changes how the engine runs.
+ */
+export interface AssignmentPlanView {
+  role: Assignment["kind"];
+  modelName?: string;
+  modelPath?: string;
+  /** Worker: blocks this machine holds, out of the model's total. */
+  layers?: number;
+  modelLayers?: number;
+  /** Coordinator: the whole ring's split, this machine's own share last. */
+  tensorSplit?: number[];
+  ctx?: number;
+  parallel?: number;
+  chain?: number;
+  device?: string;
+  /** Nodes this machine exchanges boundary tensors with. */
+  peers?: string[];
+  /** Engine environment for this assignment (documented settings, never credentials). */
+  env?: Record<string, string>;
+  /** Free+reclaimable MiB the agent required before loading (darwin fit gate). */
+  fitMiB?: number;
+}
+
+/**
+ * Never throws: this runs inside the snapshot the UI polls, and an assignment arrives over the wire,
+ * so every field is treated as absent-until-proven. A missing field renders as "unknown" rather
+ * than taking the whole Status view down with it.
+ */
+export function planView(a: Assignment): AssignmentPlanView {
+  switch (a.kind) {
+    case "worker":
+      return {
+        role: "worker", layers: a.layers, modelLayers: a.modelLayers, device: a.device,
+        peers: (a.peers ?? []).map((p) => p?.endpoint?.nodeId).filter((id): id is string => typeof id === "string"),
+      };
+    case "coordinator":
+      return {
+        role: "coordinator", modelName: a.modelName, modelPath: a.model?.path, tensorSplit: a.tensorSplit,
+        ctx: a.ctx, parallel: a.parallel, chain: a.mtp?.chain ?? 0,
+        device: (a.devices ?? []).join(","),
+        peers: (a.rpc ?? []).map((r) => r?.nodeId).filter((id): id is string => typeof id === "string"),
+        env: a.env, fitMiB: a.fitMiB,
+      };
+    case "replica":
+      return {
+        role: "replica", modelName: a.modelName, modelPath: a.model?.path, ctx: a.ctx, parallel: a.parallel,
+        chain: a.mtp?.chain ?? 0, device: a.device, fitMiB: a.fitMiB,
+      };
+    default:
+      return { role: a.kind };
+  }
+}
+
+export interface AssignmentSnapshot { id: string; kind: Assignment["kind"]; deploymentId: string; state: AssignmentState; detail?: string; ports?: Record<string, number>; pid?: number; processIdentity?: ProcessIdentity; stoppedExternalId?: string; plan?: AssignmentPlanView }
 
 const LOAD_TIMEOUT_MS = 60 * 60 * 1000; // Flash-Next loads for minutes over a relay
 const PORT_TIMEOUT_MS = 3 * 60 * 1000;
@@ -91,7 +154,7 @@ export class AssignmentRunner {
   }
 
   snapshot(): AssignmentSnapshot[] {
-    return [...this.active.values()].map((x) => ({ id: x.a.id, kind: x.a.kind, deploymentId: x.a.deploymentId, state: x.state, detail: x.detail, ports: x.ports, pid: x.proc?.pid ?? undefined, processIdentity: x.proc?.identity, stoppedExternalId: x.stoppedExternal?.id }));
+    return [...this.active.values()].map((x) => ({ id: x.a.id, kind: x.a.kind, deploymentId: x.a.deploymentId, state: x.state, detail: x.detail, ports: x.ports, pid: x.proc?.pid ?? undefined, processIdentity: x.proc?.identity, stoppedExternalId: x.stoppedExternal?.id, plan: planView(x.a) }));
   }
 
   /** Only ready HTTP model servers can answer inference; RPC workers cannot decode alone. */
@@ -117,6 +180,28 @@ export class AssignmentRunner {
       }
     }
     return s;
+  }
+
+  /**
+   * Ports this node expects a peer to serve TO it: the rpc ports of its coordinator assignments.
+   * Distinct from allowedPorts, which is what peers may reach on this node.
+   */
+  allowedServePorts(): Set<number> {
+    const s = new Set<number>();
+    for (const x of this.active.values()) if (x.a.kind === "coordinator") for (const e of x.a.rpc) s.add(e.port);
+    return s;
+  }
+
+  /**
+   * Take a reverse stream from a peer. It goes to the assignment that expects that peer and port, so
+   * a node running several splits never pairs a stream with the wrong engine.
+   */
+  acceptServed(fp: string, port: number, sock: TLSSocket, early: EarlyBuffer): boolean {
+    for (const x of this.active.values()) {
+      if (!x.dialer) continue;
+      if (x.a.kind === "coordinator" && x.a.rpc.some((e) => e.certFp === fp && e.port === port)) return x.dialer.acceptServed(fp, port, sock, early);
+    }
+    return false;
   }
 
   allowedFingerprints(): Set<string> {
@@ -234,13 +319,13 @@ export class AssignmentRunner {
     x.cleanupTask = (async () => {
       if (x.healthTimer) clearInterval(x.healthTimer);
       x.unwatch?.();
-      x.dialer?.closeAll();
+      x.dialer?.closeAll(); x.serveDialer?.stop();
       await x.proc?.stop();
       // No stopped acknowledgement until all asynchronous startup work settles.
       // Every spawn/dial/timer continuation checks stopping before creating work.
       await x.startTask;
       if (x.a.kind === "stage") rmSync(stageStateDirectory(this.deps.stateDir, x.a.id), { recursive: true, force: true });
-      x.dialer?.closeAll();
+      x.dialer?.closeAll(); x.serveDialer?.stop();
       if (x.healthTimer) clearInterval(x.healthTimer);
       await this.restoreExternal(x);
     })();
@@ -311,6 +396,15 @@ export class AssignmentRunner {
     await this.spawn(x, `worker-${a.id}`, recipe.argv, recipe.env, a.enforce);
     const up = await waitForPort(a.port, x.proc!, PORT_TIMEOUT_MS);
     if (!up) throw new Error(`rpc-server did not listen on ${a.port}: ${this.tail(x)}`);
+    // A worker cannot assume it is diallable. When control names a peer to serve to, keep reverse
+    // streams offered: the ring then carries the rpc traffic even when this node's own address is
+    // unreachable from outside, which is the case for every router we do not administer
+    // (transport/servedial.ts). Best effort: without it the coordinator still has the relay.
+    if (a.serve) {
+      x.serveDialer = new ServeDialer({ certPem: this.deps.certPem, keyPem: this.deps.keyPem, log: this.deps.log, max: 6 });
+      x.serveDialer.start(a.serve, a.port);
+      this.deps.log.info("worker serving rpc in reverse", { assignment: a.id, peer: a.serve.nodeId, port: a.port });
+    }
     this.set(x, "listening", `${x.detail ?? ""}`.trim() || undefined);
   }
 

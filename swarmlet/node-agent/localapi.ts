@@ -18,6 +18,13 @@ export interface LocalApiDeps {
   setEnabled: (enabled: boolean) => Promise<void>;
   models: () => { modelsDir: string; models: import("../protocol/types.ts").ModelFile[] };
   rescanModels: () => Promise<import("../protocol/types.ts").ModelFile[]>;
+  /** Latest catalog from control: what the fleet can serve and whether this node has the weights. */
+  catalog?: () => Array<{ id: string; download?: import("../protocol/types.ts").ModelDownload }>;
+  /** Progress of the single in-flight (or last) weights download. */
+  fetchStatus?: () => import("./download.ts").FetchStatus;
+  /** Begin fetching a catalog model's declared files. Returns immediately; poll fetchStatus. */
+  startFetch?: (id: string) => import("./download.ts").FetchStatus;
+  cancelFetch?: () => import("./download.ts").FetchStatus;
   join: (controlUrl: string, code: string) => Promise<{ nodeId: string }>;
   measureNet: () => Promise<NetMeasurement>;
   logs: (assignment?: string, lines?: number) => string[];
@@ -42,6 +49,9 @@ export function startLocalApi(port: number, deps: LocalApiDeps): Server<undefine
         const origin = req.headers.get("origin");
         if (!["127.0.0.1", "localhost"].includes(url.hostname) || (origin && origin !== url.origin)) return json({ error: "local origin required" }, 403);
         if (path.startsWith("/v1/")) return deps.inference ? deps.inference(req, path) : json({ error: { message: "inference unavailable", type: "server_error" } }, 503);
+        // Root observability, forwarded to the engine this node is running (see inference.ts): an
+        // operator's health check reads /health and /metrics on the node it talks to.
+        if (["/health", "/metrics", "/props", "/slots"].includes(path)) return deps.inference ? deps.inference(req, path) : json({ error: { message: "inference unavailable", type: "server_error" } }, 503);
         if (path === "/api/status") return json(deps.status());
         if (path === "/api/offer" && req.method === "GET") {
           const caps = deps.caps();
@@ -59,6 +69,18 @@ export function startLocalApi(port: number, deps: LocalApiDeps): Server<undefine
         if (path === "/api/enabled" && req.method === "POST") { const b = (await req.json()) as { enabled?: boolean }; await deps.setEnabled(b.enabled === true); return json({ ok: true }); }
         if (path === "/api/models" && req.method === "GET") return json(deps.models());
         if (path === "/api/models/rescan" && req.method === "POST") return json({ models: await deps.rescanModels() });
+        // NOTE: there is deliberately no /api/catalog. The model list the UI renders comes from
+        // /v1/models?catalog=1, which already carries local_eligible, local_reasons and `download`;
+        // a second endpoint would be a competing source of truth for the same data.
+        if (path === "/api/models/fetch" && req.method === "GET") return json(deps.fetchStatus?.() ?? { state: "unavailable" });
+        if (path === "/api/models/fetch" && req.method === "POST") {
+          if (!deps.startFetch) return json({ error: "downloading is unavailable" }, 503);
+          const body = (await req.json().catch(() => ({}))) as { id?: unknown };
+          if (typeof body.id !== "string" || !body.id) return json({ error: "id is required" }, 400);
+          try { return json(deps.startFetch(body.id)); }
+          catch (e) { return json({ error: (e as Error).message }, 400); }
+        }
+        if (path === "/api/models/fetch/cancel" && req.method === "POST") return json(deps.cancelFetch?.() ?? { state: "unavailable" });
         if (path === "/api/join" && req.method === "POST") {
           const b = (await req.json()) as { controlUrl?: string; code?: string };
           if (!b.controlUrl || !b.code) return json({ error: "controlUrl and code required" }, 400);

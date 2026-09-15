@@ -74,11 +74,14 @@ test("model list merges local and mesh with local preference and survives contro
   const handler = createNodeInference({ local: () => targets, remote: () => ({ url: remote, key: "participant-key" }), nodeId: () => "node1" });
   const req = new Request("http://127.0.0.1/v1/models");
   const first = await (await handler(req, "/v1/models")).json() as { data: Array<{ id: string; route: string; created: number }> };
-  expect(first.data.map((m) => [m.id, m.route])).toEqual([["shared", "local"], ["remote", "mesh"]]);
-  expect(first.data.map((m) => m.created)).toEqual([1700000000, 1600000010]);
+  // Real models first, then the stable aliases for the single local deployment (an alias is what a local
+  // caller should pin: the mesh may replace the model underneath without changing what to call it).
+  expect(first.data.slice(0, 2).map((m) => [m.id, m.route])).toEqual([["shared", "local"], ["remote", "mesh"]]);
+  expect(first.data.slice(0, 2).map((m) => m.created)).toEqual([1700000000, 1600000010]);
+  expect(first.data.slice(2).map((m) => [m.id, m.route])).toEqual([["local", "local"], ["swarmlet", "local"]]);
   online = false;
   const offline = await (await handler(req, "/v1/models")).json() as { mesh_available: boolean; data: unknown[] };
-  expect(offline.mesh_available).toBe(false); expect(offline.data).toHaveLength(1);
+  expect(offline.mesh_available).toBe(false); expect(offline.data).toHaveLength(3); // local + its two aliases
   targets = []; expect((await handler(req, "/v1/models")).status).toBe(503);
 });
 
@@ -147,4 +150,41 @@ test('full catalog keeps unavailable models disabled and fails closed when cache
   online=false;
   const cached=await (await handler(req,'/v1/models')).json() as any;
   expect(cached.data).toHaveLength(2);expect(cached.data.every((m:any)=>!m.selectable)).toBe(true);expect(cached.mesh_available).toBe(false);
+});
+
+test("a caller may name the alias, and the engine still sees the real model", async () => {
+  // The point of the alias: a client that does not care which model the mesh placed stops breaking when
+  // the placement changes. The engine still has to be told the name it was launched with.
+  let seen: string | undefined;
+  const local = serve(async (req) => { seen = (await req.json() as { model: string }).model; return Response.json({ ok: true }); });
+  const handler = createNodeInference({ local: () => [{ model: "shared", deploymentId: "d1", created: 1, url: local }], remote: () => ({ url: "http://127.0.0.1:1", key: "k" }), nodeId: () => "n" });
+  const res = await handler(request("local"), "/v1/chat/completions");
+  expect(res.status).toBe(200);
+  expect(seen).toBe("shared");                       // rewritten on the way out
+  expect(res.headers.get("x-swarmlet-route")).toBe("local");
+});
+
+test("an alias with two local models is refused rather than guessed", async () => {
+  const handler = createNodeInference({
+    local: () => [{ model: "a", deploymentId: "d1", created: 1, url: "http://127.0.0.1:8100" }, { model: "b", deploymentId: "d2", created: 2, url: "http://127.0.0.1:8101" }],
+    remote: () => ({ url: "http://127.0.0.1:1", key: "k" }), nodeId: () => "n",
+  });
+  const res = await handler(request("local"), "/v1/chat/completions");
+  expect(res.status).toBe(400);
+  expect((await res.json() as { error: { message: string } }).error.message).toContain("ambiguous");
+});
+
+test("the node reports its engine's own health and metrics", async () => {
+  // An operator's health check reads /health and /metrics against the endpoint it was given; on a node
+  // whose engine is placed by the mesh, those must come from here or the check goes blind.
+  const local = serve((req) => new Response(JSON.stringify({ ok: true, path: new URL(req.url).pathname }), { headers: { "content-type": "application/json" } }));
+  const handler = createNodeInference({ local: () => [{ model: "shared", deploymentId: "d1", created: 1, url: local }], remote: () => null, nodeId: () => "n" });
+  for (const path of ["/health", "/metrics"]) {
+    const res = await handler(new Request(`http://127.0.0.1${path}`), path);
+    expect(res.status).toBe(200);
+    expect((await res.json() as { path: string }).path).toBe(path);
+    expect(res.headers.get("x-swarmlet-route")).toBe("local");
+  }
+  const none = createNodeInference({ local: () => [], remote: () => null, nodeId: () => "n" });
+  expect((await none(new Request("http://127.0.0.1/health"), "/health")).status).toBe(503);
 });

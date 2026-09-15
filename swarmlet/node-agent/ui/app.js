@@ -146,7 +146,7 @@
     });
     if (history.replaceState) history.replaceState(null, '', '#' + name);
     if (name === 'resources' && !offer.loaded) loadOffer();
-    if (name === 'models' && !models.loaded) loadModels();
+    if (name === 'models' && !models.loaded) { loadModels(); loadAvailable(); }
     if (name === 'logs') loadLogs();
   }
 
@@ -238,9 +238,31 @@
         td(shortId(a.deploymentId), 'mono', a.deploymentId),
         td(badge(a.state)),
         td(a.detail || '', 'small'),
+        td(planSummary(a.plan), 'small'),
         td(ports, 'mono small'),
       ]);
     }), 'No assignments. This node is idle.');
+  }
+
+  /**
+   * The exact shape of what this machine is doing, in the owner's terms. A worker only knows its
+   * own share because control sends it (the number lives in the coordinator's tensor split); a
+   * coordinator can state the whole ring. Empty means the assignment carries no plan detail — an
+   * older control, or a kind that has none.
+   */
+  function planSummary(plan) {
+    if (!plan) return el('span', { class: 'dim' }, NA);
+    var bits = [];
+    if (plan.layers !== undefined) bits.push(plan.layers + (plan.modelLayers ? ' of ' + plan.modelLayers : '') + ' layers');
+    if (plan.tensorSplit && plan.tensorSplit.length) bits.push('split ' + plan.tensorSplit.join('/'));
+    if (plan.modelName) bits.push(plan.modelName);
+    if (plan.ctx !== undefined) bits.push('ctx ' + plan.ctx);
+    if (plan.parallel !== undefined && plan.parallel > 1) bits.push('parallel ' + plan.parallel);
+    if (plan.chain) bits.push('chain ' + plan.chain);
+    if (plan.device) bits.push(plan.device);
+    if (plan.peers && plan.peers.length) bits.push('peers ' + plan.peers.map(shortId).join(', '));
+    if (plan.fitMiB) bits.push('fit ' + fmtGiB(plan.fitMiB, 0) + ' GiB');
+    return bits.length ? el('span', { title: plan.modelPath || '' }, bits.join(' · ')) : el('span', { class: 'dim' }, NA);
   }
 
   /* ---------- resources tab ---------- */
@@ -414,6 +436,100 @@
     note('models-status', 'Scanning…');
     api('POST', '/api/models/rescan').then(renderModels).catch(function (e) { note('models-status', e.message, 'error'); }).then(function () { btn.disabled = false; });
   });
+
+  /* ---------- models the node could serve (catalog) ----------
+     The catalog already tells us, per model, whether this node could serve it and why not. What it
+     adds now is where the weights live. Downloading is the owner's decision, so it is always an
+     explicit click that states the size first. */
+  var available = { loaded: false, fetching: false, timer: null };
+
+  function weightsGiB(model) {
+    var files = (model.download && model.download.files) || [];
+    var bytes = files.reduce(function (n, f) { return n + (isNum(f.bytes) ? f.bytes : 0); }, 0);
+    return bytes ? bytesGiB(bytes) : null;
+  }
+
+  function downloadButton(model) {
+    var files = (model.download && model.download.files) || [];
+    if (files.length === 0) return el('span', { class: 'dim' }, 'No source declared');
+    if (model.local_eligible) return el('span', { class: 'dim' }, 'Already here');
+    var btn = el('button', { class: 'button', type: 'button' }, 'Download');
+    btn.addEventListener('click', function () {
+      var size = weightsGiB(model) || 'unknown';
+      var what = files.map(function (f) { return f.name; }).join('\n  ');
+      if (!window.confirm('Download ' + size + ' GiB for ' + model.id + '?\n\n  ' + what + '\n\nFiles are verified against a published sha256 before they are used.')) return;
+      btn.disabled = true;
+      note('available-status', 'Starting download…');
+      api('POST', '/api/models/fetch', { id: model.id })
+        .then(pollFetch)
+        .catch(function (e) { btn.disabled = false; note('available-status', e.message, 'error'); });
+    });
+    return btn;
+  }
+
+  function renderAvailable(data) {
+    available.loaded = true;
+    var list = (data.data || []).filter(function (m) { return m && m.id; });
+    setRows($('available-table'), list.map(function (m) {
+      var files = (m.download && m.download.files) || [];
+      var state = m.local_eligible
+        ? badge('ready')
+        : el('span', { class: 'dim', title: (m.local_reasons || []).join('; ') }, files.length ? 'Weights not on this machine' : 'Not available locally');
+      return el('tr', null, [
+        td(m.id, 'mono'),
+        td(state),
+        td(weightsGiB(m) || '—', 'num'),
+        td(downloadButton(m)),
+      ]);
+    }), 'No models in the catalog.');
+    note('available-status', list.length + (list.length === 1 ? ' model' : ' models') + ' in the catalog');
+  }
+
+  function loadAvailable() {
+    return fetch('/v1/models?catalog=1', { signal: AbortSignal.timeout(10000) })
+      .then(function (r) { return r.json(); })
+      .then(function (d) { renderAvailable(d); loadFetchStatus(); })
+      .catch(function (e) { note('available-status', 'Catalog unavailable: ' + e.message, 'error'); });
+  }
+
+  function showFetch(st) {
+    if (!st || st.state === 'idle' || st.state === 'unavailable') return;
+    var pct = Math.round((st.progress || 0) * 100);
+    var text = st.state === 'running'
+      ? st.file + ' — ' + pct + '% (' + bytesGiB(st.receivedBytes || 0) + ' of ' + bytesGiB(st.totalBytes || 0) + ' GiB)'
+      : st.state === 'verifying' ? st.file + ' — verifying sha256…'
+      : st.state === 'done' ? 'Downloaded and verified ' + (st.model || '') + '. Rescanning…'
+      : st.state === 'cancelled' ? 'Download cancelled. Partial file kept; clicking Download resumes it.'
+      : 'Download failed: ' + (st.error || 'unknown error');
+    note('fetch-progress', text, st.state === 'failed' ? 'error' : null);
+    note('fetch-error', st.state === 'failed' ? (st.error || '') : '', 'error');
+  }
+
+  function loadFetchStatus() {
+    if (available.fetching) return;
+    return api('GET', '/api/models/fetch').then(function (st) {
+      if (st && (st.state === 'running' || st.state === 'verifying')) pollFetch(st);
+      else if (st && st.state && st.state !== 'idle') showFetch(st);
+    }).catch(function () {});
+  }
+
+  function pollFetch(st) {
+    available.fetching = true;
+    if (st) showFetch(st);
+    if (available.timer) clearTimeout(available.timer);
+    available.timer = setTimeout(function () {
+      api('GET', '/api/models/fetch').then(function (next) {
+        if (next.state === 'running' || next.state === 'verifying') return pollFetch(next);
+        available.fetching = false;
+        showFetch(next);
+        // A finished fetch changed the models directory: show it without a manual rescan.
+        if (next.state === 'done') { loadModels(); loadAvailable(); }
+      }).catch(function (e) {
+        available.fetching = false;
+        note('fetch-error', e.message, 'error');
+      });
+    }, 1500);
+  }
 
   /* ---------- connection tab ---------- */
   function renderConnection(s) {

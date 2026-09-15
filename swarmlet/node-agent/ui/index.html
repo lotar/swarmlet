@@ -41,7 +41,7 @@
       <h2 class="label">Assignments</h2>
       <div class="table-wrap">
         <table class="data" id="status-assignments">
-          <thead><tr><th>Assignment</th><th>Kind</th><th>Deployment</th><th>State</th><th>Detail</th><th>Ports</th></tr></thead>
+          <thead><tr><th>Assignment</th><th>Kind</th><th>Deployment</th><th>State</th><th>Detail</th><th>Serving</th><th>Ports</th></tr></thead>
           <tbody></tbody>
         </table>
       </div>
@@ -112,6 +112,17 @@
           <tbody></tbody>
         </table>
       </div>
+
+      <div class="page-heading"><div><span class="eyebrow">From the mesh</span><h2>Models you could serve</h2><p>Models the fleet serves. If the weights are not on this machine, fetch them to help host one.</p></div></div>
+      <div class="toolbar"><span class="form-status" id="available-status"></span></div>
+      <div class="table-wrap">
+        <table class="data" id="available-table">
+          <thead><tr><th>Model</th><th>State</th><th class="num">Weights (GiB)</th><th></th></tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+      <div class="banner" id="fetch-progress" role="status" hidden></div>
+      <div class="banner banner--error" id="fetch-error" role="alert" hidden></div>
     </section>
 
     <section class="tab" id="tab-connection" data-tab="connection" hidden>

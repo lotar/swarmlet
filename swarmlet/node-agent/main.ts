@@ -15,10 +15,11 @@ import { validateOffer } from "../protocol/validate.ts";
 import type { Capabilities, ModelFile, NetMeasurement, NodeMetrics, Offer } from "../protocol/types.ts";
 import { AGENT_VERSION, AgentClient, enroll } from "./agent.ts";
 import { AssignmentRunner } from "./assignments.ts";
-import { loadNodeConfig, saveNodeConfig, type NodeConfig } from "./config.ts";
+import { loadNodeConfig, saveNodeConfig, contributionOffer, OFFER_POLICY_VERSION, type NodeConfig } from "./config.ts";
 import { loadIdentity, type Identity } from "./identity.ts";
 import { installService, uninstallService } from "./install.ts";
 import { startLocalApi } from "./localapi.ts";
+import { ModelFetcher } from "./download.ts";
 import { createNodeInference } from "./inference.ts";
 import { discoverControl } from "./discovery.ts";
 import { FanManager } from "./fans.ts";
@@ -29,6 +30,7 @@ import { DesktopAppUpdater } from "./desktop-update.ts";
 import { agentPaths, type AgentPaths } from "./paths.ts";
 import { listModels, measureNet, probeCapabilities, probeMetrics, publicIp } from "./probe/index.ts";
 import { startDataListener } from "./transport/dataListener.ts";
+import { NatMapper } from "./nat.ts";
 
 const log = makeLogger("agent", (process.env.SWARMLET_LOG as "debug" | "info" | "warn" | undefined) ?? "info");
 
@@ -49,6 +51,10 @@ export class AgentRuntime {
   private network = new NetworkSampler();
   private updateDrain = new UpdateDrain();
   private desktop: DesktopAppUpdater;
+  /** Latest catalog from control: what the fleet can serve and whether this node has the weights.
+   *  Typed as the fetcher's minimal view rather than the wire type, because inference.ts parses the
+   *  catalog into a partial shape of its own. */
+  private catalog: Array<{ id: string; download?: import("../protocol/types.ts").ModelDownload }> = [];
 
   constructor(home?: string) {
     this.paths = agentPaths(home);
@@ -70,7 +76,45 @@ export class AgentRuntime {
     });
     await this.runner.recover();
     await this.refreshCaps();
+    this.applyOfferPolicy();
     this.models = await listModels(this.cfg.offer.modelsDir, { cacheFile: joinPath(this.paths.stateDir, "model-hashes.json") });
+  }
+
+  /**
+   * Adopt the contribution offer once, from measured capabilities, then never again: the marker is
+   * written even when the derived offer is refused, so a machine this policy cannot describe does
+   * not retry on every start. An owner's later edit survives because the marker is already set.
+   */
+  private applyOfferPolicy(): void {
+    if ((this.cfg.offerPolicy ?? 0) >= OFFER_POLICY_VERSION) return;
+    const caps = this.caps;
+    if (!caps) return;
+    this.cfg.offerPolicy = OFFER_POLICY_VERSION;
+    const derived = contributionOffer(caps, this.cfg.offer);
+    const v = validateOffer(derived, caps);
+    if (!v.ok) {
+      saveNodeConfig(this.paths, this.cfg);
+      log.warn("contribution offer refused; keeping the stored offer", { errors: v.errors });
+      return;
+    }
+    const before = this.cfg.offer;
+    this.cfg.offer = v.value;
+    saveNodeConfig(this.paths, this.cfg);
+    this.client?.sendOffer();
+    log.info("contribution offer applied", {
+      wasEnabled: before.enabled, enabled: v.value.enabled, roles: v.value.roles,
+      gpu: v.value.gpu, ramMiB: v.value.ramMiB, cpuCores: v.value.cpuCores, warnings: v.warnings,
+    });
+  }
+
+  /**
+   * Publish a gateway-mapped endpoint only when it is the address the control plane observed, so a
+   * double-NAT setup cannot advertise a host nobody can reach. Applied on every caps build: refreshCaps()
+   * rebuilds caps from a fresh probe, so setting this in measure() alone would drop it within minutes.
+   */
+  private applyNatEndpoints(caps: Capabilities): void {
+    const mapped = this.nat?.endpoints() ?? [];
+    caps.publicEndpoints = caps.publicIp ? mapped.filter((e) => e.host === caps.publicIp) : mapped;
   }
 
   async refreshCaps(): Promise<Capabilities> {
@@ -78,6 +122,7 @@ export class AgentRuntime {
     caps.dataPort = this.cfg.dataPort;
     if (this.net) caps.net = this.net;
     this.caps = caps;
+    this.applyNatEndpoints(this.caps);
     return caps;
   }
 
@@ -125,7 +170,29 @@ export class AgentRuntime {
     await this.init();
     startDataListener({
       host: "0.0.0.0", port: this.cfg.dataPort, certPem: this.id.certPem, keyPem: this.id.keyPem, log,
-      policy: { allowedFingerprints: () => this.runner.allowedFingerprints(), allowedPorts: () => this.runner.allowedPorts() },
+      policy: {
+        allowedFingerprints: () => this.runner.allowedFingerprints(),
+        allowedPorts: () => this.runner.allowedPorts(),
+        // Reverse direction: a peer that cannot be dialled serves its own rpc port to us over an
+        // inbound stream, and the runner hands it to the dialer that is waiting for it.
+        allowedServePorts: () => this.runner.allowedServePorts(),
+        onServe: (fp, port, sock, early) => this.runner.acceptServed(fp, port, sock, early),
+      },
+    });
+    // Ask our own gateway to expose the data listener so peers can dial us directly rather than
+    // relaying through the control plane. Best effort by design: with no mapping this reports
+    // nothing and peers keep using the relay.
+    this.nat = new NatMapper({ nodeId: this.id.nodeId, dataPort: this.cfg.dataPort, log: (event, detail) => log.info(event, detail) });
+    void this.nat.start();
+    // Model weights this node is missing can be fetched on the owner's confirmation. The fetcher
+    // re-hashes on completion, so control only ever sees files that verified.
+    const fetcher = new ModelFetcher({
+      modelsDir: () => this.cfg.offer.modelsDir,
+      log: (line) => { log.info(`models: ${line}`); this.agentLog.push(`models: ${line}`); },
+      onModelsChanged: async () => {
+        this.models = await listModels(this.cfg.offer.modelsDir, { hash: true, cacheFile: joinPath(this.paths.stateDir, "model-hashes.json") });
+        this.client?.sendModels();
+      },
     });
     startLocalApi(this.cfg.uiPort, {
       inference: createNodeInference({
@@ -139,6 +206,7 @@ export class AgentRuntime {
         },
         nodeId: () => this.id.nodeId,
         admit: () => this.updateDrain.admit(),
+        onCatalog: (models) => { this.catalog = models; },
       }),
       status: () => ({
         nodeId: this.id.nodeId, pid: process.pid, releaseSequence: Number(process.env.SWARMLET_RELEASE_SEQUENCE ?? 0), hostname: this.hostname, agentVersion: AGENT_VERSION, certFp: this.id.certFp, connected: this.client?.connected ?? false,
@@ -152,6 +220,17 @@ export class AgentRuntime {
       setEnabled: async (enabled) => { const next = { ...this.cfg.offer, enabled }; if (!this.caps) throw new Error("capabilities not probed yet"); const v = validateOffer(next, this.caps); if (!v.ok) throw new Error(v.errors.join("; ")); this.runner.assertOfferChange(next); this.cfg.offer.enabled = enabled; saveNodeConfig(this.paths, this.cfg); this.client?.sendOffer(); },
       models: () => ({ modelsDir: this.cfg.offer.modelsDir, models: this.models }),
       rescanModels: async () => { this.models = await listModels(this.cfg.offer.modelsDir, { hash: true, cacheFile: joinPath(this.paths.stateDir, "model-hashes.json") }); this.client?.sendModels(); return this.models; },
+      catalog: () => this.catalog,
+      fetchStatus: () => fetcher.get(),
+      startFetch: (id) => {
+        const model = this.catalog.find((m) => m.id === id);
+        if (!model) throw new Error(`unknown model ${id} (not in the catalog control sent)`);
+        const missing = fetcher.missingFiles(model);
+        if (missing.length === 0) return fetcher.get();
+        void fetcher.fetch(model);
+        return fetcher.get();
+      },
+      cancelFetch: () => { fetcher.cancel(); return fetcher.get(); },
       join: (url, code) => this.join(url, code),
       measureNet: () => this.measure(),
       logs: (assignment, lines = 200) => (assignment ? this.runner.recentLog(assignment, lines) : this.agentLog.slice(-lines)),
@@ -170,6 +249,10 @@ export class AgentRuntime {
     const shutdown = async (why: string) => {
       if (stopping) return; stopping = true;
       log.info("shutting down", { why }); stopDiscovery(); for (const t of this.timers) clearInterval(t);
+      // Drop the gateway port mapping before the process leaves. The lease would expire it anyway,
+      // but a clean stop should not leave a hole open for up to an hour.
+      try { await this.nat?.stop(); }
+      catch (error) { log.error("nat teardown failed", { error: String(error) }); }
       try { await this.runner.stopAll(); }
       catch (error) { log.error("runner shutdown failed", { error: String(error) }); }
       finally {
@@ -213,6 +296,8 @@ export class AgentRuntime {
     finally { this.ticking = false; }
   }
 
+  private nat?: NatMapper;
+
   private async measure(): Promise<NetMeasurement> {
     if (!this.cfg.controlUrl) throw new Error("not joined to a control plane");
     const net = await measureNet(this.cfg.controlUrl);
@@ -220,7 +305,10 @@ export class AgentRuntime {
     if (this.caps) {
       this.caps.net = net;
       try { this.caps.publicIp = await publicIp(this.cfg.controlUrl); } catch { /* optional */ }
-      this.client?.send({ t: "heartbeat", ts: new Date().toISOString(), metrics: this.metrics ?? { ts: new Date().toISOString() }, caps: { net, publicIp: this.caps.publicIp } });
+      // Publish a mapped endpoint only when it agrees with the address the control plane observed,
+      // so double NAT or CGNAT cannot advertise a host that nobody can reach.
+      this.applyNatEndpoints(this.caps);
+      this.client?.send({ t: "heartbeat", ts: new Date().toISOString(), metrics: this.metrics ?? { ts: new Date().toISOString() }, caps: { net, publicIp: this.caps.publicIp, publicEndpoints: this.caps.publicEndpoints } });
     }
     return net;
   }
