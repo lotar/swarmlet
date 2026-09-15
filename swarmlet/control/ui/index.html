@@ -41,6 +41,7 @@
       <button type="button" role="tab" data-tab="chat" aria-selected="false"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 4h14a1 1 0 0 1 1 1v11a1 1 0 0 1-1 1H9l-5 4V5a1 1 0 0 1 1-1zM8 8h8M8 12h5"/></svg><span>Chat</span></button>
       <button type="button" role="tab" data-tab="deployments" aria-selected="false"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m12 3 9 5-9 5-9-5 9-5zM3 12l9 5 9-5M3 16l9 5 9-5"/></svg><span>Deployments</span></button>
       <button type="button" role="tab" data-tab="fleet" aria-selected="false"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 4h6v6H3zM15 4h6v6h-6zM9 16h6v5H9zM6 10v3h12v-3M12 13v3"/></svg><span>Allocation</span></button>
+      <button type="button" role="tab" data-tab="throughput" aria-selected="false"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 18V9M10 18V5M15 18v-6M20 18v-9"/></svg><span>Throughput</span></button>
       <button type="button" role="tab" data-tab="routing" aria-selected="false"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h11M12 4l3 3-3 3M20 17H9M12 14l-3 3 3 3"/></svg><span>Routing</span></button>
       <button type="button" role="tab" data-tab="telemetry" aria-selected="false"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 3v18h18M6 15l4-5 4 3 6-8"/></svg><span>Telemetry</span></button>
       <button type="button" role="tab" data-tab="events" aria-selected="false"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5h3M11 5h9M4 12h3M11 12h9M4 19h3M11 19h9"/></svg><span>Events</span></button>
@@ -204,6 +205,32 @@
         <div class="table-wrap">
           <table class="data" id="dep-table">
             <thead><tr><th>Deployment</th><th>State</th><th>Endpoint</th><th>Error</th><th>Updated</th><th>Actions</th></tr></thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </section>
+
+      <section class="tab" id="tab-throughput" data-tab="throughput" hidden>
+        <div class="toolbar wrap">
+          <label class="field"><span class="label">Model</span><select id="tp-model" aria-label="Filter by model"><option value="">All models</option></select></label>
+          <label class="field"><span class="label">Node</span><select id="tp-node" aria-label="Filter by node"><option value="">All nodes</option></select></label>
+          <label class="field"><span class="label">Kind</span><select id="tp-kind" aria-label="Filter by deployment kind"><option value="">All kinds</option><option value="split">split</option><option value="replica">replica</option><option value="external">external</option></select></label>
+          <span class="grow"></span>
+          <span class="form-status" id="tp-status" role="status" aria-live="polite"></span>
+        </div>
+        <p class="hint" id="tp-note">Live decode rate per model and node, over a rolling five-second window. Updated every second while this page is open. Rates cover routed requests only; a direct connection to an engine port is not counted.</p>
+        <div class="tiles" id="tp-tiles"></div>
+        <h2 class="label">Per model and node</h2>
+        <div class="table-wrap">
+          <table class="data" id="tp-table">
+            <thead><tr><th>Model</th><th>Deployment</th><th>Kind</th><th>Node</th><th class="num">tok/s</th><th class="num">Inflight</th><th class="num">RTT (ms)</th><th>Relay</th></tr></thead>
+            <tbody></tbody>
+          </table>
+        </div>
+        <h2 class="label">Per node</h2>
+        <div class="table-wrap">
+          <table class="data" id="tp-nodes">
+            <thead><tr><th>Node</th><th>Status</th><th class="num">tok/s (all models)</th><th class="num">Models served</th><th>Relay</th></tr></thead>
             <tbody></tbody>
           </table>
         </div>

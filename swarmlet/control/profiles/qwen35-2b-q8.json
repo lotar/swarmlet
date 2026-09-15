@@ -1,6 +1,7 @@
 {
   "id": "qwen35-2b-q8",
   "name": "Qwen3.5-2B Q8_0 (rig/test model)",
+  "rank": 10,
   "modelName": "qwen3.5-2b",
   "ggufPattern": "^Qwen3\\.5-2B-Q8_0\\.gguf$",
   "layers": 24,
@@ -9,8 +10,21 @@
   "boundaryBytes": 8192,
   "workerMarginMiB": 512,
   "envelope": [
-    { "workerLayers": 3, "maxCtx": 4096, "maxParallel": 8, "maxChain": 0 },
-    { "workerLayers": 2, "maxCtx": 4096, "maxParallel": 8, "maxChain": 0 }
+    {
+      "workerLayers": 3,
+      "maxCtx": 4096,
+      "maxParallel": 8,
+      "maxChain": 0
+    },
+    {
+      "workerLayers": 2,
+      "maxCtx": 4096,
+      "maxParallel": 8,
+      "maxChain": 0
+    }
   ],
-  "extraArgs": ["-fa", "on"]
+  "extraArgs": [
+    "-fa",
+    "on"
+  ]
 }

@@ -305,7 +305,7 @@ export async function bootControl(cfg: ControlConfig, opts: { profilesDir?: stri
   deployments.restore();
   hooks.onAssignmentState = (nodeId, id, state, detail) => deployments.onAssignmentState(nodeId, id, state, detail);
   hooks.onMetrics = (nodeId, metrics) => { const node = reg.getNode(nodeId); if (node) telemetry?.sample(node, metrics, channel.relayRate(nodeId)); };
-  hooks.onHello = (nodeId, hello) => { telemetry?.connection(nodeId, true); deployments.onHello(nodeId, hello.assignments); };
+  hooks.onHello = (nodeId, hello) => { telemetry?.connection(nodeId, true); deployments.onHello(nodeId, hello.assignments); deployments.onNodeOnline(nodeId); };
   hooks.onOffline = (nodeId) => { telemetry?.connection(nodeId, false); tunnels.close(nodeId); deployments.onOffline(nodeId); };
   const tunnels = new TunnelPool(channel, log);
   const router = createRouter({ deployments, tunnels, log });

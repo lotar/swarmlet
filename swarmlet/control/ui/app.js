@@ -7,7 +7,7 @@
   var POLL_MS = 3000;
   var GIB = 1024;          /* MiB per GiB: the API speaks MiB, people read GiB */
   var NA = '—';
-  var TABS = ['nodes', 'chat', 'fleet', 'deployments', 'routing', 'telemetry', 'events', 'keys'];
+  var TABS = ['nodes', 'chat', 'fleet', 'deployments', 'routing', 'throughput', 'telemetry', 'events', 'keys'];
   var STARTABLE = ['planned', 'stopped', 'failed'];
   var STOPPABLE = ['placing', 'loading', 'ready'];
 
@@ -221,6 +221,7 @@
       deployments: ['Deployments', 'Manage the models and workloads across your machines.'],
       fleet: ['Fleet allocation', 'Match hardware to your deployments. Balance response speed, throughput and capacity.'],
       routing: ['Routing', 'One endpoint for every model. See where requests are served.'],
+      throughput: ['Throughput', 'Live decode rate across every node and model. Filter to one machine or one model.'],
       telemetry: ['Telemetry', 'Explore operational history, response performance and resource use.'],
       events: ['Events', 'A live record of connections, deployments, and system activity.'],
       keys: ['API keys', 'Connect your applications to the mesh with a dedicated API key.']
@@ -236,6 +237,7 @@
     if (name === 'deployments') ensureProfiles();
     if (name === 'keys') loadKeys().catch(showError);
     if (name === 'chat') loadChatModels().catch(showError);
+    if (name === 'throughput') renderThroughput();
     tick();
   }
 
@@ -388,6 +390,14 @@
     return api('GET', '/api/deployments').then(function (r) { state.deployments = r.deployments || []; renderDeployments(); });
   }
 
+  /* Events that describe a change of placement rather than routine state. */
+  var PLACEMENT_EVENT = /re-plac|fits better|went offline|offline|placement is pinned|cannot re-place/;
+
+  function lastPlacement(id) {
+    var hits = state.events.filter(function (e) { return e.deploymentId === id && PLACEMENT_EVENT.test(e.message); });
+    return hits.length ? hits[0] : null;
+  }
+
   function renderDeployments() {
     var list = state.deployments.slice().sort(function (a, b) { return (b.state === 'ready') - (a.state === 'ready'); });
     renderMeshSummary();
@@ -397,7 +407,9 @@
       var s = d.spec || {};
       var what = s.kind === 'external' ? (s.external && s.external.modelName) : s.profile;
       return el('tr', null, [
-        td([el('div', { class: 'strong', text: s.name || d.id }), el('div', { class: 'dim small mono', text: shortId(d.id) + ', ' + (s.kind || NA) + ', ' + (what || NA) })]),
+        td([el('div', { class: 'strong', text: s.name || d.id }),
+            el('div', { class: 'dim small mono', text: shortId(d.id) + ', ' + (s.kind || NA) + ', ' + (what || NA) + (s.autoModel ? ' \u00b7 auto' : '') }),
+            (function () { var m = lastPlacement(d.id); return m ? el('div', { class: 'dim small', title: m.message, text: (d.state === 'ready' ? 're-placed: ' : 'placement: ') + m.message.slice(0, 88) + (m.message.length > 88 ? '…' : '') }) : null; })()]),
         td(badge(d.state)),
         td(d.endpoint ? [d.endpoint.modelName, el('br'), nodeName(d.endpoint.nodeId) + ':' + d.endpoint.port] : el('span', { class: 'dim', text: NA }), 'mono small'),
         td(d.error ? el('span', { class: 'err', title: d.error, text: d.error.length > 90 ? d.error.slice(0, 90) + '…' : d.error }) : '', 'small'),
@@ -551,7 +563,11 @@
   function loadDrawer() {
     var id = state.drawer.id;
     if (!id) return Promise.resolve();
-    return api('GET', '/api/deployments/' + encodeURIComponent(id)).then(function (d) {
+    return Promise.all([
+      api('GET', '/api/deployments/' + encodeURIComponent(id)),
+      loadEvents().catch(function () { /* placement history is a nicety; never block the drawer */ }),
+    ]).then(function (r) {
+      var d = r[0];
       if (state.drawer.id !== id) return;
       renderDrawer(d);
       note('drawer-status', 'updated ' + clock(new Date()));
@@ -566,7 +582,7 @@
       ['State', badge(d.state)],
       ['Id', d.id],
       ['Kind', spec.kind],
-      spec.kind !== 'external' ? ['Profile', spec.profile] : null,
+      spec.kind !== 'external' ? ['Profile', spec.profile + (spec.autoModel ? '  (chosen automatically from the hardware online)' : '')] : null,
       spec.kind === 'split' ? ['Coordinator', nodeName(spec.coordinatorNodeId)] : null,
       spec.kind === 'split' ? ['Workers', (spec.workerNodeIds || []).map(nodeName).join(', ')] : null,
       spec.kind === 'replica' ? ['Replica node', nodeName(spec.replicaNodeId)] : null,
@@ -582,6 +598,14 @@
     ];
     var body = [el('dl', { class: 'kv' }, kv(pairs))];
     if (d.plan) body = body.concat([el('h2', { class: 'label', text: 'Plan' })], renderPlan(d.plan));
+    var moves = state.events.filter(function (e) { return e.deploymentId === d.id && PLACEMENT_EVENT.test(e.message); });
+    if (moves.length) {
+      body.push(el('h2', { class: 'label', text: 'Placement history' }));
+      body.push(buildTable(['When', 'Event', 'What'], moves.slice(0, 10).map(function (e) {
+        return el('tr', null, [td(when(e.ts), 'mono small', e.ts), td(e.kind, 'mono small'), td(e.message, 'small')]);
+      }), ''));
+      body.push(el('p', { class: 'hint', text: 'Re-placements are automatic: a node joining or leaving is enough to move a deployment whose layers were chosen for it.' }));
+    }
     body.push(el('h2', { class: 'label', text: 'Assignments' }));
     body.push(buildTable(['Assignment', 'Kind', 'Node', 'State', 'Detail', 'Logs'], (d.assignments || []).map(function (a) {
       return el('tr', null, [
@@ -874,6 +898,120 @@
     setRows($('routing-table'), rows, 'No model is served yet. Start a deployment.');
     $('routing-totals').textContent = 'In flight now: ' + (r.totals && isNum(r.totals.inflight) ? r.totals.inflight : 0);
   }
+
+  /* ---------- throughput: live rates across every node and model, filterable ----------
+     Fed by the same one-second snapshot that drives the Nodes tab, so nothing here polls and nothing
+     is estimated client-side: per-deployment rate is the controller's rolling five-second window over
+     routed completions, and per-node totals are that same measurement grouped by node.
+
+     Sum semantics matter: a request is served by exactly one deployment, so an aggregate across rows
+     is capacity in use, not the speed of one stream. The note says so rather than letting a large
+     number read as a single conversation's rate. */
+  var tp = { model: '', node: '', kind: '' };
+
+  function tpFillSelect(node, values, allLabel, selected, label) {
+    // This runs once a second from the live stream. Rebuilding the option list that often would close
+    // an open dropdown and fight the user mid-click, so rebuild only when the set of choices changes.
+    var key = values.join('\u0000');
+    if (node.getAttribute('data-tp-key') !== key) {
+      replace(node, [el('option', { value: '', text: allLabel })].concat(values.map(function (v) {
+        return el('option', { value: v, text: label ? label(v) : v });
+      })));
+      node.setAttribute('data-tp-key', key);
+      node.value = values.indexOf(selected) >= 0 ? selected : '';
+    }
+    return node.value;
+  }
+
+  function tpRows() {
+    var rows = [];
+    (chat.routing || []).forEach(function (group) {
+      (group.deployments || []).forEach(function (d) {
+        var ns = (d.nodes && d.nodes.length ? d.nodes : [d.nodeId]).filter(Boolean);
+        rows.push({ model: group.modelName, deployment: d.id, name: d.name, kind: d.kind, nodes: ns,
+                    tokPerSec: d.tokPerSec, inflight: d.inflight || 0, rttMs: d.rttMs });
+      });
+    });
+    return rows;
+  }
+
+  function tpVisible(row) {
+    if (tp.kind && row.kind !== tp.kind) return false;
+    if (tp.model && row.model !== tp.model) return false;
+    if (tp.node && row.nodes.indexOf(tp.node) < 0) return false;
+    return true;
+  }
+
+  function filterSummary() {
+    var bits = [];
+    if (tp.model) bits.push('model ' + tp.model);
+    if (tp.node) bits.push('node ' + nodeName(tp.node));
+    if (tp.kind) bits.push('kind ' + tp.kind);
+    return bits.length ? bits.join(' · ') : 'no filter';
+  }
+
+  function relayCell(nodeIds) {
+    var inB = 0, outB = 0;
+    nodeIds.forEach(function (id) {
+      var n = nodeById(id);
+      if (n) { inB += n.relayInBps || 0; outB += n.relayOutBps || 0; }
+    });
+    if (!inB && !outB) return el('span', { class: 'dim' }, NA);
+    return el('span', { class: 'tps-live', text: '\u2193 ' + fmtRate(inB) + '  \u2191 ' + fmtRate(outB) });
+  }
+
+  function renderThroughput() {
+    var all = tpRows();
+    tp.model = tpFillSelect($('tp-model'), Array.from(new Set(all.map(function (r) { return r.model; }))).sort(), 'All models', tp.model);
+    tp.node = tpFillSelect($('tp-node'), state.nodes.map(function (n) { return n.id; }), 'All nodes', tp.node, nodeName);
+
+    var rows = all.filter(tpVisible).sort(function (a, b) { return (b.tokPerSec || 0) - (a.tokPerSec || 0); });
+    var live = rows.filter(function (r) { return (r.tokPerSec || 0) > 0; });
+    var total = rows.reduce(function (n, r) { return n + (r.tokPerSec || 0); }, 0);
+    var inflight = rows.reduce(function (n, r) { return n + r.inflight; }, 0);
+    var nodeIds = Array.from(new Set(rows.reduce(function (acc, r) { return acc.concat(r.nodes); }, [])));
+
+    replace($('tp-tiles'), [
+      tile('Aggregate decode', total.toFixed(1), ' tok/s', live.length + ' of ' + rows.length + ' rows active'),
+      tile('Active requests', String(inflight), '', inflight ? 'streaming now' : 'idle'),
+      tile('Machines involved', String(nodeIds.length), '', nodeIds.map(nodeName).join(', ').slice(0, 60) || NA),
+      tile('Filter', filterSummary(), '', 'rolls up only matching rows')
+    ]);
+
+    setRows($('tp-table'), rows.map(function (r) {
+      return el('tr', null, [
+        td(r.model, 'mono'),
+        td([el('div', { class: 'strong', text: r.name || r.deployment }), el('div', { class: 'dim small mono', text: shortId(r.deployment) })]),
+        td(badge(r.kind)),
+        td(r.nodes.map(nodeName).join(' \u2192 '), 'small'),
+        td(el('span', { class: (r.tokPerSec || 0) > 0 ? 'strong tps-live' : 'dim', text: isNum(r.tokPerSec) ? r.tokPerSec.toFixed(1) : '0.0' }), 'num mono'),
+        td(r.inflight ? String(r.inflight) : '', 'num mono'),
+        td(isNum(r.rttMs) ? Math.round(r.rttMs) : NA, 'num mono'),
+        td(relayCell(r.nodes), 'small')
+      ]);
+    }), all.length ? 'No deployment matches these filters.' : 'No model is being served yet. Start a deployment.');
+
+    var shownNodes = state.nodes.filter(function (n) { return !tp.node || n.id === tp.node; });
+    setRows($('tp-nodes'), shownNodes.map(function (n) {
+      var models = servedModels(n.id) || [];
+      return el('tr', null, [
+        td([el('div', { class: 'strong', text: n.hostname }), el('div', { class: 'dim small mono', text: shortId(n.id) })]),
+        td(badge(n.online ? 'online' : 'offline')),
+        td(el('span', { class: (n.routedTokPerSec || 0) > 0 ? 'strong tps-live' : 'dim', text: (n.routedTokPerSec || 0).toFixed(1) }), 'num mono'),
+        td(models.length ? models.map(function (m) { return (m && m.name) || m; }).join(', ').slice(0, 70) : NA, 'small'),
+        td(relayCell([n.id]), 'small')
+      ]);
+    }), 'No node matches this filter.');
+
+    note('tp-status', 'live \u00b7 ' + state.nodes.filter(function (n) { return n.online; }).length + ' nodes online');
+  }
+
+  ['tp-model', 'tp-node', 'tp-kind'].forEach(function (id) {
+    $(id).addEventListener('change', function () {
+      tp.model = $('tp-model').value; tp.node = $('tp-node').value; tp.kind = $('tp-kind').value;
+      renderThroughput();
+    });
+  });
 
   /* ---------- events ---------- */
   function loadEvents() {
@@ -1381,6 +1519,7 @@
         state.nodes = snap.nodes || [];
         chat.routing = snap.routing || chat.routing;
         renderNodes();
+        if (state.active === 'throughput') renderThroughput();
         if (state.active === 'chat') { fillChatDeployments(); if (topo.lastDep) refreshTopologyLive(); }
         $('head-text').textContent = state.nodes.filter(function (n) { return n.online; }).length + ' of ' + state.nodes.length + ' nodes online \u00b7 live';
       };

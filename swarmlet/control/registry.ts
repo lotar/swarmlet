@@ -190,12 +190,15 @@ export class Registry {
     this.db.run("UPDATE deployments SET spec = ?, state = 'planned', plan = NULL, endpoint = NULL, error = NULL, updated_at = ? WHERE id = ?", [j(spec), now(), id]);
   }
 
-  updateDeployment(id: string, patch: { state?: DeploymentState; plan?: Plan | null; endpoint?: Deployment["endpoint"] | null; error?: string | null }): void {
+  updateDeployment(id: string, patch: { state?: DeploymentState; plan?: Plan | null; endpoint?: Deployment["endpoint"] | null; error?: string | null; spec?: DeploymentSpec }): void {
     const sets: string[] = ["updated_at = ?"]; const vals: unknown[] = [now()];
     if (patch.state !== undefined) { sets.push("state = ?"); vals.push(patch.state); }
     if (patch.plan !== undefined) { sets.push("plan = ?"); vals.push(patch.plan ? j(patch.plan) : null); }
     if (patch.endpoint !== undefined) { sets.push("endpoint = ?"); vals.push(patch.endpoint ? j(patch.endpoint) : null); }
     if (patch.error !== undefined) { sets.push("error = ?"); vals.push(patch.error); }
+    // An automatic deployment switches models as nodes come and go; it keeps its identity while its spec
+    // changes, so the history of what was served stays on one record.
+    if (patch.spec !== undefined) { sets.push("spec = ?"); vals.push(j(patch.spec)); }
     vals.push(id);
     this.db.run(`UPDATE deployments SET ${sets.join(", ")} WHERE id = ?`, vals as never[]);
   }

@@ -56,3 +56,35 @@ planner refuses a row whose `workerLayers × workers` reaches `layers`).
 | `workerMarginMiB` | 1024 | 4 × 512 + 1024 = 3072 MiB per worker; the split doc §3a-bis measured 12 layers at 3.2–3.4 GiB on a 4 GB card, so four layers leave ample room for KV and compute buffers |
 | envelope | 4 layers per worker, ctx ≤ 2048, parallel ≤ 4, chain ≤ 7 | "4/4/32" validated row in the control-plane doc §6 table; chain up to 7 from the Qwen3.6 MTP windows in the speculative doc |
 | `mtpPattern` | none yet | the Qwen3.6 draft head file name is not pinned in the docs; chain > 0 is refused until it is added |
+
+## The optional `download` block (how a node gets weights it lacks)
+
+A node owner who wants to help serve a model should not have to know where its GGUF lives. The
+catalog already tells a node what it *cannot* serve (`local_reasons`: "does not have this model
+downloaded"); `download` adds the missing half — where the bytes are — so the node UI can offer a
+confirmed, verified fetch instead of a dead end.
+
+| field | rule | why |
+|---|---|---|
+| `files[].name` | must match the profile's `ggufPattern` (kind `gguf`) or `mtpPattern` (kind `mtp`) | The load-bearing invariant: it guarantees a fetched file is the file the planner will later match on that node. Without it a node could fetch 28 GB the planner then ignores because the name does not match. `loadProfiles` refuses a profile whose download names do not line up. |
+| `files[].kind` | `gguf` or `mtp`, exactly one `gguf` | `mmproj` and other sidecars are not part of a text split and are not fetched by this path. |
+| `files[].url` | `https://`, with explicit loopback `http://127.0.0.1`/`localhost` allowed | Remote origins must be encrypted; loopback is permitted so a node can pull from a mirror on its own machine. |
+| `files[].sha256` | 64 lowercase hex characters | This is the entire trust boundary. The URL may redirect to a third-party CDN, so nothing about the transport is trusted: bytes land in a `.part` file and are hashed before being renamed into the models directory. A mismatch deletes the download and fails the fetch. |
+| `files[].bytes` | integer > 0 | Checked before the hash (a short read fails fast) and used to refuse a fetch that cannot fit on disk before any bandwidth is spent. |
+
+A profile without a `download` block still works; its node owners just have no in-UI way to fetch the
+weights.
+
+## qwen38-27b-q8 (Qwen3.8-27B Q8_0, dense VL, hybrid gated-deltanet/attention)
+
+| field | value | where it comes from |
+|---|---|---|
+| `ggufPattern` / `mtpPattern` | `Qwen3.8-27B-Q8_0.gguf` / `mtp-Qwen3.8-27B-Q8_0.gguf` | the two files this rig actually serves, fetched and hash-verified on 2026-09-12 |
+| `layers` | 64 | read from the GGUF header (`qwen35.block_count = 64`, `embedding_length = 5120`, 851 tensors) |
+| `layerMiB` | 389 | computed from the tensor table of that file: 64 blocks sum to 25.88 GB, 385.6 MiB average with a 388.5 MiB maximum (the maximum is used, so per-worker budgets are not optimistic) |
+| `coordinatorHostMiB` | 6144 | host-side output layer + token embeddings (2577 MiB measured from the tensor table) plus q8_0 KV. Only 16 of 64 layers carry KV (`full_attention_interval = 4`, 4 kv heads, head_dim 256) at ~32 KiB/token, so 128K is ~4 GiB. |
+| `boundaryBytes` | 20480 | the residual stream crossing one boundary: 5120 hidden × 4 bytes (f32). Per-layer SSM state stays on the node holding that layer, so it does not cross per token. **Unmeasured** — this is an estimate from the architecture, not a measured wire number like the flash-next profile's. |
+| `workerMarginMiB` | 1536 | same compute-buffer allowance the flash-next profile uses; not measured for this model at this ctx. |
+| envelope | 42 layers per worker, ctx ≤ 32768, parallel 1, chain 0 | 42 × 389 + 1536 = 17874 MiB, sized to the largest non-coordinator GPU in this fleet (an M5 Pro offering 18186 MiB). The second row (5 layers, 3481 MiB) exists for small CUDA workers. **This envelope is not the product of a ring measurement** the way the entries above are; treat it as a planning budget until a measured sweep replaces it. `chain 0` because MTP across an RPC boundary is untested for this architecture. |
+| `extraArgs` | `-fa on --cache-ram 0 --ctx-checkpoints 0` | checkpoints are disabled deliberately: this is a recurrent hybrid, and pulling recurrent state across a boundary per prompt is the failure mode `docs/QWEN36_INTERNET_SPECULATIVE_20260903.md` §2 item 3 measured. |
+| `download` | both files, HF `ggml-org/Qwen3.8-27B-GGUF`, sha256 `f5c702d8…e4c8` (28,595,763,552 B) and `cbf60a0c…cc9a` (3,164,006,688 B) | verified by re-downloading through the published URL and comparing to the HuggingFace LFS metadata on 2026-09-12 |

@@ -35,7 +35,9 @@ test('real UDP announcement auto-enrolls a fresh identity and reconnects without
     client=new AgentClient(result!.agentUrl,id,{caps:()=>caps,offer:()=>offer,models:()=>[],metrics:()=>({ts:new Date().toISOString()}),assignments:()=>[],onAssign:()=>{},allowedPorts:()=>new Set()},log);
     client.start();await Promise.race([client.whenConnected(),Bun.sleep(2000).then(()=>{throw Error('connect timeout')})]);
     for(let i=0;i<50&&!ctl.reg.getNode(id.nodeId)?.offer;i++) await Bun.sleep(10);
-    expect(ctl.reg.getNode(id.nodeId)?.offer?.enabled).toBe(false);
+    // The shipped default is contributing (enabled), not idle: the resources behind it are filled in
+    // from measured capabilities, so `enabled` here is the owner's intent, not a resource claim.
+    expect(ctl.reg.getNode(id.nodeId)?.offer?.enabled).toBe(true);
     expect((await enroll(url,'',id,caps,pubJwk)).nodeId).toBe(id.nodeId);
     cfg.lanAutoEnroll=false;const foreign=await loadIdentity(agentPaths(join(dir,'foreign')));
     await expect(enroll(url,'',foreign,caps,pubJwk)).rejects.toThrow('403');
