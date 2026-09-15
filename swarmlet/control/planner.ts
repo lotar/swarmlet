@@ -11,7 +11,8 @@
 
 import { readdirSync, readFileSync } from "node:fs";
 import { basename, join } from "node:path";
-import type { DeploymentSpec, EnvelopeRow, ModelFile, ModelProfile, NativeStageWorkerPlan, Plan, PlanWorker } from "../protocol/types.ts";
+import type { DeploymentSpec, EnvelopeRow, ModelDownload, ModelFile, ModelProfile, NativeStageWorkerPlan, Plan, PlanWorker } from "../protocol/types.ts";
+import { DOWNLOAD_URL_RE } from "../protocol/types.ts";
 import { usableGpus } from "../protocol/validate.ts";
 import type { NodeRow } from "./registry.ts";
 import { QWEN35_NATIVE_QUALIFICATIONS, type Qwen35NativeQualification } from "./profiles/qwen35-native.ts";
@@ -44,8 +45,9 @@ const WIRE_MODES: ReadonlySet<string> = new Set(["off", "f16", "q8"]);
 
 // ---------- profiles ----------
 
-const PROFILE_KEYS: readonly string[] = ["id", "name", "modelName", "ggufPattern", "mtpPattern", "layers", "layerMiB", "coordinatorHostMiB", "boundaryBytes", "envelope", "extraArgs", "workerMarginMiB"];
+const PROFILE_KEYS: readonly string[] = ["id", "name", "modelName", "ggufPattern", "mtpPattern", "layers", "layerMiB", "coordinatorHostMiB", "boundaryBytes", "envelope", "extraArgs", "workerMarginMiB", "download", "rank"];
 const ROW_KEYS: readonly string[] = ["workerLayers", "maxCtx", "maxParallel", "maxChain"];
+const DOWNLOAD_FILE_KEYS: readonly string[] = ["name", "kind", "url", "sha256", "bytes"];
 
 type Raw = Record<string, unknown>;
 
@@ -70,6 +72,43 @@ function pattern(obj: Raw, key: string, where: string): string {
   return v;
 }
 
+/**
+ * Strict shape check for the optional `download` block. The load-bearing rule is that every file's
+ * `name` matches the pattern the planner will later use to find that model ON THIS NODE: a node that
+ * fetches via this block is guaranteed to end up with a file the planner accepts, instead of a
+ * correctly-hashed file the planner ignores because its name does not match.
+ */
+function downloadBlock(raw: Raw, where: string, gguf: RegExp, mtp: string | undefined): ModelDownload | undefined {
+  const value = raw.download;
+  if (value === undefined) return undefined;
+  if (!isRecord(value)) throw new Error(`${where}: "download" must be an object`);
+  checkKeys(value, ["files"], `${where}: download`);
+  if (!Array.isArray(value.files) || value.files.length === 0) throw new Error(`${where}: download "files" must be a non-empty array`);
+  if (value.files.length > 8) throw new Error(`${where}: download declares more than 8 files`);
+  const names = new Set<string>();
+  const files = value.files.map((f: unknown, i: number) => {
+    const fw = `${where}: download.files[${i}]`;
+    if (!isRecord(f)) throw new Error(`${fw} must be an object`);
+    checkKeys(f, DOWNLOAD_FILE_KEYS, fw);
+    const name = str(f, "name", fw);
+    if (name.includes("/") || name.includes("\\") || name === "." || name === "..") throw new Error(`${fw}: "name" must be a plain file name`);
+    if (names.has(name)) throw new Error(`${fw}: duplicate download name "${name}"`);
+    names.add(name);
+    const kind = str(f, "kind", fw);
+    if (kind !== "gguf" && kind !== "mtp") throw new Error(`${fw}: "kind" must be "gguf" or "mtp"`);
+    if (kind === "gguf" && !gguf.test(name)) throw new Error(`${fw}: name "${name}" does not match ggufPattern ${gguf.source}`);
+    if (kind === "mtp" && (mtp === undefined || !new RegExp(mtp).test(name))) throw new Error(`${fw}: mtp "${name}" does not match the profile's mtpPattern`);
+    const url = str(f, "url", fw);
+    if (!DOWNLOAD_URL_RE.test(url) || url.length > 2048) throw new Error(`${fw}: "url" must be https (loopback http is allowed for a local mirror)`);
+    const sha256 = str(f, "sha256", fw);
+    if (!/^[0-9a-f]{64}$/.test(sha256)) throw new Error(`${fw}: "sha256" must be 64 lowercase hex characters`);
+    return { name, kind: kind as "gguf" | "mtp", url, sha256, bytes: int(f, "bytes", fw, 1) };
+  });
+  const ggufFiles = files.filter((f) => f.kind === "gguf").length;
+  if (ggufFiles !== 1) throw new Error(`${where}: download must declare exactly one "gguf" file, found ${ggufFiles}`);
+  return { files };
+}
+
 /** Strict shape check for one profile: exactly the ModelProfile keys, integers in range, patterns that compile. */
 export function validateProfile(raw: unknown, where = "profile"): ModelProfile {
   if (!isRecord(raw)) throw new Error(`${where}: must be a JSON object`);
@@ -82,6 +121,9 @@ export function validateProfile(raw: unknown, where = "profile"): ModelProfile {
     checkKeys(r, ROW_KEYS, rw);
     return { workerLayers: int(r, "workerLayers", rw, 1), maxCtx: int(r, "maxCtx", rw, 1), maxParallel: int(r, "maxParallel", rw, 1), maxChain: int(r, "maxChain", rw, 0) };
   });
+  // Optional preference order for automatic model choice; higher is better. Editorial on purpose -
+  // file size is not quality - and read only by the auto policy.
+  const rank = raw.rank === undefined ? undefined : int(raw, "rank", where, 0);
   const extraRaw = raw.extraArgs;
   if (!Array.isArray(extraRaw) || !extraRaw.every((a: unknown) => typeof a === "string")) throw new Error(`${where}: "extraArgs" must be an array of strings`);
   const profile: ModelProfile = {
@@ -98,6 +140,9 @@ export function validateProfile(raw: unknown, where = "profile"): ModelProfile {
     workerMarginMiB: int(raw, "workerMarginMiB", where, 0),
   };
   if (raw.mtpPattern !== undefined) profile.mtpPattern = pattern(raw, "mtpPattern", where);
+  if (rank !== undefined) profile.rank = rank;
+  const download = downloadBlock(raw, where, new RegExp(profile.ggufPattern), profile.mtpPattern);
+  if (download) profile.download = download;
   for (const row of envelope) {
     if (row.workerLayers >= profile.layers) throw new Error(`${where}: envelope workerLayers ${row.workerLayers} must be below layers ${profile.layers}`);
   }
@@ -253,9 +298,26 @@ function placeResident(c: Ctx, n: NodeRow, layers: number, role: string): string
 }
 
 /**
+ * The RAM half of a worker's fit, checked next to the GPU offer because on darwin the two are the same
+ * unified memory. Control does not invent a worker's RAM budget: the assignment's `enforce.ramMiB` is the
+ * plan allocation for that node, which defaults to its available offer (control/deployments.ts, startSplit),
+ * and the agent kills the engine above exactly that number (node-agent/enforce/index.ts soft RSS cap, wired
+ * at node-agent/assignments.ts). A worker admitted against a larger GPU offer alone is therefore stopped
+ * while it loads — 30 layers of qwen38-27b-q8 on a node offering 18186 MiB GPU but 12288 MiB RAM. Linux and
+ * Windows are deliberately not checked: there the layers are device memory, and `placeResident` charges
+ * only the host part to ramMiB.
+ */
+function ramShortfall(node: NodeRow, needMiB: number): string | null {
+  const offer = node.offer;
+  if (node.os !== "darwin" || !offer || needMiB <= offer.ramMiB) return null;
+  return `${node.hostname} needs ${needMiB} MiB resident but the node offers only ${offer.ramMiB} MiB RAM (darwin unified memory: the agent's watchdog stops a worker above its own RAM offer)`;
+}
+
+/**
  * The envelope row with the most layers per worker that the request (ctx, parallel, chain) and every worker's
- * GPU offer allow, leaving the coordinator at least one layer. Ties keep profile order. No fit: every blocker
- * lands in c.errors (per worker, the most layers its memory allows; per row, which limit refused it).
+ * GPU offer - and, on darwin, the RAM offer its watchdog enforces, which is the same memory - allow, leaving
+ * the coordinator at least one layer. Ties keep profile order. No fit: every blocker lands in c.errors (per
+ * worker, the most layers its memory allows; per row, which limit refused it).
  */
 function chooseRow(c: Ctx, slots: WorkerSlot[]): EnvelopeRow | null {
   const p = c.profile;
@@ -270,6 +332,8 @@ function chooseRow(c: Ctx, slots: WorkerSlot[]): EnvelopeRow | null {
     const need = row.workerLayers * p.layerMiB + p.workerMarginMiB;
     for (const s of slots) {
       if (need > s.gpu.memMiB) blocked.push(`${s.node.hostname} needs ${need} MiB for ${row.workerLayers} layers but offers ${s.gpu.memMiB} MiB on ${s.gpu.engineName}`);
+      const ram = ramShortfall(s.node, need);
+      if (ram) blocked.push(ram);
     }
     const label = `row workerLayers ${row.workerLayers} (maxCtx ${row.maxCtx}, maxParallel ${row.maxParallel}, maxChain ${row.maxChain})`;
     if (blocked.length === 0) {
@@ -312,7 +376,7 @@ function planReplica(c: Ctx): Plan {
   return plan;
 }
 
-/** Explicit placement keeps each count inside one complete envelope row and its own GPU offer. */
+/** Explicit placement keeps each count inside one complete envelope row and inside its own node's GPU offer (and, on darwin, the RAM offer the agent enforces). */
 function requestedLayers(c: Ctx, slots: WorkerSlot[]): number[] {
   const layers = c.spec.workerLayers!;
   for (const [i, s] of slots.entries()) {
@@ -320,8 +384,11 @@ function requestedLayers(c: Ctx, slots: WorkerSlot[]): number[] {
     const row = c.profile.envelope.find((r) => r.workerLayers === count && c.ctx <= r.maxCtx && c.parallel <= r.maxParallel && c.chain <= r.maxChain);
     if (!row) c.errors.push(`Worker ${s.node.hostname}: no envelope row for requested ${count} layers fits ctx ${c.ctx}, parallel ${c.parallel}, chain ${c.chain}.`);
     const need = count * c.profile.layerMiB + c.profile.workerMarginMiB;
-    if (need > s.gpu.memMiB) c.errors.push(`Worker ${s.node.hostname} needs ${need} MiB for requested ${count} layers but offers ${s.gpu.memMiB} MiB on ${s.gpu.engineName}.`);
-    if (row && need <= s.gpu.memMiB) c.reasons.push(`Worker ${s.node.hostname}: requested ${count} layers fit envelope (maxCtx ${row.maxCtx}, maxParallel ${row.maxParallel}, maxChain ${row.maxChain}) and ${need} MiB fits its ${s.gpu.memMiB} MiB GPU offer.`);
+    const overGpu = need > s.gpu.memMiB;
+    if (overGpu) c.errors.push(`Worker ${s.node.hostname} needs ${need} MiB for requested ${count} layers but offers ${s.gpu.memMiB} MiB on ${s.gpu.engineName}.`);
+    const ram = ramShortfall(s.node, need);
+    if (ram) c.errors.push(`Worker ${ram}.`);
+    if (row && !overGpu && !ram) c.reasons.push(`Worker ${s.node.hostname}: requested ${count} layers fit envelope (maxCtx ${row.maxCtx}, maxParallel ${row.maxParallel}, maxChain ${row.maxChain}) and ${need} MiB fits its ${s.gpu.memMiB} MiB GPU offer${s.node.os === "darwin" ? ` and its ${s.node.offer!.ramMiB} MiB RAM offer` : ""}.`);
   }
   const total = layers.reduce((sum, count) => sum + count, 0);
   if (total >= c.profile.layers) c.errors.push(`Requested worker layers total ${total} must leave the coordinator at least one of the ${c.profile.layers} layers.`);

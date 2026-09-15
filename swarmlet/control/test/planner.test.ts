@@ -60,7 +60,7 @@ const text = (e: PlanError): string => e.reasons.join("\n");
 
 describe("profiles", () => {
   test("the shipped profiles load with the measured envelope", () => {
-    expect([...profiles.keys()].sort()).toEqual(["flash-next-ud-q4kxl", "qwen35-2b-q8", "qwen36-35b-a3b-q4km"]);
+    expect([...profiles.keys()].sort()).toEqual(["flash-next-ud-q4kxl", "qwen35-2b-q8", "qwen36-35b-a3b-q4km", "qwen38-27b-q8"]);
     expect(flash).toMatchObject({ modelName: "qwen3.8-flash-next", layers: 48, layerMiB: 1608, coordinatorHostMiB: 2048, boundaryBytes: 81920, workerMarginMiB: 1536 });
     expect(flash.envelope).toEqual([{ workerLayers: 1, maxCtx: 1536, maxParallel: 3, maxChain: 8 }, { workerLayers: 1, maxCtx: 1536, maxParallel: 1, maxChain: 12 }]);
     expect(flash.extraArgs).toEqual(["-ot", "ple_ngram_embd=CPU", "-fa", "on", "--cache-ram", "0", "--ctx-checkpoints", "0"]);
@@ -73,6 +73,47 @@ describe("profiles", () => {
     expect(new RegExp(big.ggufPattern).test("Qwen3.6-35B-A3B-Q4_K_M.gguf")).toBe(true);
     expect(new RegExp(big.ggufPattern).test("Qwen3.6-35B-A3B-UD-IQ2_XXS.gguf")).toBe(false);
     expect(big).toMatchObject({ layers: 40, layerMiB: 512, envelope: [{ workerLayers: 4, maxCtx: 2048, maxParallel: 4, maxChain: 7 }] });
+  });
+
+  test("the 27B profile declares where its weights come from, and the names match what the planner matches on", () => {
+    const q = profiles.get("qwen38-27b-q8")!;
+    expect(q).toMatchObject({ modelName: "qwen3.8-27b", layers: 64, layerMiB: 389 });
+    // A sweep ladder, not a set of measured configurations: these rows exist so a size can be
+    // requested and measured (see the 27B sweep in the profile README). Rows measured to FAIL on a
+    // 32 GB worker (35, 42) are expected to be pruned once the ladder has served its purpose.
+    expect(q.envelope.map((r) => r.workerLayers)).toEqual([5, 10, 12, 15, 20, 25, 30, 35, 42]);
+    for (const row of q.envelope) expect(row.maxCtx).toBe(32768);
+    // The load-bearing invariant: a downloaded file satisfies exactly the pattern the planner uses
+    // to find that model on a node. If this drifts, a node fetches 28 GB the planner then ignores.
+    const dl = q.download!.files;
+    expect(dl.map(f => f.kind).sort()).toEqual(["gguf", "mtp"]);
+    for (const f of dl) {
+      const re = new RegExp(f.kind === "gguf" ? q.ggufPattern : q.mtpPattern!);
+      expect(re.test(f.name)).toBe(true);
+      expect(f.sha256).toMatch(/^[0-9a-f]{64}$/);
+      expect(f.bytes).toBeGreaterThan(0);
+    }
+    // A profile that declares no source simply has no download block (never an empty one).
+    expect(profiles.get("qwen35-2b-q8")!.download).toBeUndefined();
+  });
+
+  test("a download block that does not line up with the profile patterns is refused", () => {
+    const dir = mkdtempSync(join(tmpdir(), "swarmlet-dl-"));
+    const file = join(dir, "flash-next-ud-q4kxl.json");
+    const good = { name: "Qwen3.8-Flash-Next-UD-Q4_K_XL-00001-of-00005.gguf", kind: "gguf", url: "https://example.invalid/a.gguf", sha256: "a".repeat(64), bytes: 1 };
+    writeFileSync(file, JSON.stringify({ ...flash, download: { files: [good] } }));
+    expect(loadProfiles(dir).get("flash-next-ud-q4kxl")!.download!.files).toHaveLength(1);
+    // A name the planner would never match on that node: refused, not silently accepted.
+    writeFileSync(file, JSON.stringify({ ...flash, download: { files: [{ ...good, name: "something-else.gguf" }] } }));
+    expect(() => loadProfiles(dir)).toThrow(/does not match ggufPattern/);
+    writeFileSync(file, JSON.stringify({ ...flash, download: { files: [{ ...good, url: "http://example.invalid/a.gguf" }] } }));
+    expect(() => loadProfiles(dir)).toThrow(/must be https/);
+    writeFileSync(file, JSON.stringify({ ...flash, download: { files: [{ ...good, sha256: "XYZ" }] } }));
+    expect(() => loadProfiles(dir)).toThrow(/64 lowercase hex/);
+    writeFileSync(file, JSON.stringify({ ...flash, download: { files: [{ ...good, kind: "mmproj" }] } }));
+    expect(() => loadProfiles(dir)).toThrow(/"kind" must be "gguf" or "mtp"/);
+    writeFileSync(file, JSON.stringify({ ...flash, download: { files: [] } }));
+    expect(() => loadProfiles(dir)).toThrow(/non-empty array/);
   });
 
   test("a profile with an unknown key, a bad number, a bad pattern or a mismatched id is refused", () => {
@@ -342,6 +383,69 @@ describe("windows node placement (all shipped profiles)", () => {
     const p = plan({ spec: { name: "r", profile: tiny.id, kind: "replica" }, profile: tiny, nodes: [igpuOnly] });
     expect(p).toMatchObject({ coordinatorNodeId: W, coordinatorDevice: "CPU" });
     expect(p.reasons.join("\n")).toMatch(/keeps 24 of 24 layers on CPU \(no GPU offered\): 24 × 80 \+ 1024 MiB host = 2944 MiB of 3072 MiB RAM offered/);
+  });
+});
+
+// The 2026-09-15 reap on node 26bc380240373930: a darwin worker admitted against a 18186 MiB GPU offer while
+// the node offered 12288 MiB RAM - which is the number its own agent watchdog enforces, because a worker
+// assignment's `enforce.ramMiB` defaults to that node's offer. These fixtures carry that node's numbers.
+describe("a darwin worker must fit the RAM offer its agent enforces, not only the GPU offer", () => {
+  const q = profiles.get("qwen38-27b-q8")!;
+  const W = "a1b2c3d4e5f60041", WIDE = "a1b2c3d4e5f60042", LW = "a1b2c3d4e5f60043";
+  const Q38: ModelFile = { name: "Qwen3.8-27B-Q8_0.gguf", path: "/Volumes/models/Qwen3.8-27B-Q8_0.gguf", sizeBytes: 28_595_763_552, kind: "gguf" };
+  const Q38MTP: ModelFile = { name: "mtp-Qwen3.8-27B-Q8_0.gguf", path: "/Volumes/models/mtp-Qwen3.8-27B-Q8_0.gguf", sizeBytes: 3_164_006_688, kind: "mtp" };
+  const m5pro: GpuDevice = { id: "metal:0", name: "Apple M5 Pro", backend: "metal", engineName: "MTL0", totalMiB: 18186 };
+  const cuda: GpuDevice = { id: "cuda:0", name: "RTX 4090", backend: "cuda", engineName: "CUDA0", totalMiB: 18186 };
+  const workerNode = (id: string, hostname: string, os: "darwin" | "linux", gpu: GpuDevice, ramMiB: number, memMiB: number): NodeRow =>
+    node({ id, hostname, os, ramMiB: 24576, cpuCores: 15, gpus: [gpu], rttMs: 5,
+      offer: { enabled: true, roles: { worker: true, coordinator: false, replica: false }, gpu: [{ id: gpu.id, memMiB }], ramMiB, cpuCores: 15, diskMiB: 500_000, modelsDir: "/Volumes/models" } });
+  // The node that reaped its engine: caps 24576 MiB RAM minus the darwin reserve 12288 = the 12288 MiB offer,
+  // under a GPU offer of 18186 MiB. `holder` is the coordinator that holds the 64-layer model.
+  const reaper = (memMiB = 18186): NodeRow => workerNode(W, "node-26bc380240373930", "darwin", m5pro, 12288, memMiB);
+  const holder = (): NodeRow => m5({ models: [Q38, Q38MTP] });
+  const split = (layers: number | undefined, over: Partial<DeploymentSpec> = {}): DeploymentSpec =>
+    ({ name: "lever", profile: q.id, kind: "split", coordinatorNodeId: M5, workerNodeIds: [W], ctx: 32768, parallel: 1, chain: 0, ...(layers === undefined ? {} : { workerLayers: [layers] }), ...over });
+
+  test("the 30-layer worker from the incident is refused: 13206 MiB resident, 12288 MiB offered RAM", () => {
+    // 30 × 389 + 1536 = 13206 MiB: inside the 18186 MiB GPU offer, outside the RAM the node enforces.
+    const e = refused({ spec: split(30), profile: q, nodes: [holder(), reaper()] });
+    expect(text(e)).toMatch(/node-26bc380240373930 needs 13206 MiB resident but the node offers only 12288 MiB RAM/);
+    expect(text(e)).toMatch(/darwin unified memory: the agent's watchdog stops a worker above its own RAM offer/);
+    // The GPU check was never the thing that failed: it had 18186 MiB to spend on those 30 layers.
+    expect(text(e)).not.toMatch(/13206 MiB for requested 30 layers but offers 18186 MiB on MTL0/);
+  });
+
+  test("a worker that fits both budgets is still admitted, and automatic placement steps down to the largest row that does", () => {
+    const p = plan({ spec: split(5), profile: q, nodes: [holder(), reaper()] });
+    expect(p.tensorSplit).toEqual([5, 59]);
+    expect(p.workers[0]).toEqual({ nodeId: W, device: "MTL0", layers: 5, port: 50200, threads: 10, memCapMiB: 18186 });
+    expect(p.reasons.join("\n")).toMatch(/requested 5 layers fit envelope \(maxCtx 262144, maxParallel 16, maxChain 3\) and 3481 MiB fits its 18186 MiB GPU offer and its 12288 MiB RAM offer/);
+    // No explicit request: the row ladder climbs to what both budgets hold (25 layers, 11261 MiB) and records
+    // why 30 was skipped, instead of admitting a worker the watchdog would stop.
+    const auto = plan({ spec: split(undefined), profile: q, nodes: [holder(), reaper()] });
+    expect(auto.tensorSplit).toEqual([25, 39]);
+    expect(auto.reasons.join("\n")).toMatch(/skipped row workerLayers 30 .*: node-26bc380240373930 needs 13206 MiB resident but the node offers only 12288 MiB RAM/);
+    expect(auto.reasons.join("\n")).toMatch(/row workerLayers 25 \(maxCtx 262144, maxParallel 16, maxChain 3\) fits/);
+  });
+
+  test("the same 30-layer shape is admitted on a node whose RAM offer holds it", () => {
+    const p = plan({ spec: split(30, { workerNodeIds: [WIDE] }), profile: q, nodes: [holder(), workerNode(WIDE, "wide", "darwin", m5pro, 16384, 18186)] });
+    expect(p.workers[0]).toMatchObject({ nodeId: WIDE, layers: 30, memCapMiB: 18186 });
+    expect(p.tensorSplit).toEqual([30, 34]);
+    expect(p.engineTensorSplit).toEqual([30, 35]);
+    expect(p.reasons.join("\n")).toMatch(/and 13206 MiB fits its 18186 MiB GPU offer and its 16384 MiB RAM offer/);
+  });
+
+  test("the GPU offer is still the gate on every OS, and a linux worker is still judged on it alone", () => {
+    // Unified shape the old fit test assumed - GPU offer equal to the RAM offer: the original GPU check still
+    // fires on it, so the new RAM check agrees with it instead of replacing it.
+    const unified = refused({ spec: split(30), profile: q, nodes: [holder(), reaper(12288)] });
+    expect(text(unified)).toMatch(/needs 13206 MiB for requested 30 layers but offers 12288 MiB on MTL0/);
+    // A linux worker's layers are device memory, not the host RAM the agent caps: the same 30 layers under a
+    // 18186 MiB CUDA offer stay admitted on a node offering 8192 MiB RAM.
+    const p = plan({ spec: split(30, { workerNodeIds: [LW] }), profile: q, nodes: [holder(), workerNode(LW, "linux-box", "linux", cuda, 8192, 18186)] });
+    expect(p.workers[0]).toEqual({ nodeId: LW, device: "CUDA0", layers: 30, port: 50200, threads: 10, memCapMiB: 18186 });
+    expect(p.tensorSplit).toEqual([30, 34]);
   });
 });
 
