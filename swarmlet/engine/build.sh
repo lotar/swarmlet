@@ -48,7 +48,13 @@ BUILD="$SRC/build-$TARGET"
 COMMON=( -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=OFF -DGGML_NATIVE=OFF -DGGML_RPC=ON -DGGML_RPC_RDMA=OFF
          -DLLAMA_CURL=OFF -DLLAMA_BUILD_TESTS=OFF -DLLAMA_BUILD_EXAMPLES=OFF -DLLAMA_BUILD_TOOLS=ON -DLLAMA_BUILD_SERVER=ON )
 case "$TARGET" in
-  darwin) FLAGS=( -DGGML_METAL=ON -DGGML_METAL_EMBED_LIBRARY=ON -DGGML_BLAS=ON -DGGML_BLAS_VENDOR=Apple -DGGML_ACCELERATE=ON );;
+  # macOS deployment target. Without it the SDK's own version becomes the minimum for every translation
+  # unit, so the vendored subprocess header picks the POSIX-2024 spelling of posix_spawn_file_actions_
+  # addchdir (macOS 26+) while the link can still stamp an older minos - a binary that runs on the build
+  # machine and aborts on every Mac older than the SDK. Ask for 15.0 and let the header take the _np
+  # spelling that has existed since 10.15.
+  darwin) FLAGS=( -DGGML_METAL=ON -DGGML_METAL_EMBED_LIBRARY=ON -DGGML_BLAS=ON -DGGML_BLAS_VENDOR=Apple -DGGML_ACCELERATE=ON
+                  -DCMAKE_OSX_DEPLOYMENT_TARGET="${MACOS_MIN_OS_VERSION:-15.0}" );;
   linux)  if [ "${CUDA:-1}" = 1 ]; then FLAGS=( -DGGML_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES="${CUDA_ARCH:-75}" ); else FLAGS=( -DGGML_CUDA=OFF ); fi;;
 esac
 log "configure $BUILD"; cmake -S "$SRC" -B "$BUILD" "${COMMON[@]}" "${FLAGS[@]}" > "$BUILD.configure.log" 2>&1 || { tail -30 "$BUILD.configure.log"; exit 68; }

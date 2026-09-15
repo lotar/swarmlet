@@ -1,0 +1,13 @@
+# Build-context hygiene. The control loads EVERY *.json in swarmlet/control/profiles at boot and
+# throws on the first parse failure, so a non-JSON file that merely ends in ".json" crashes it.
+#
+# Found the hard way on 2026-09-12: a macOS `tar czf` of this tree carried AppleDouble
+# `._<name>` resource-fork sidecars, so `._flash-next-ud-q4kxl.json` reached the image and
+# loadProfiles() crashed the prod control in a boot loop (it filters on name.endsWith(".json"),
+# which `._flash-next-ud-q4kxl.json` satisfies). Excluding them is not cosmetic.
+#
+# Also set COPYFILE_DISABLE=1 when creating an archive from macOS.
+._*
+**/._*
+.DS_Store
+**/.DS_Store
