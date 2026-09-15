@@ -37,7 +37,7 @@ beforeAll(async () => {
   echo = createServer((s) => s.pipe(s));
   await new Promise<void>((r) => echo.listen(0, "127.0.0.1", r));
   echoPort = (echo.address() as { port: number }).port;
-  listener = startDataListener({ host: "127.0.0.1", port: LPORT, certPem: b.certPem, keyPem: b.keyPem, log, policy: { allowedFingerprints: () => allowedFps, allowedPorts: () => allowedPorts } });
+  listener = startDataListener({ host: "127.0.0.1", port: LPORT, certPem: b.certPem, keyPem: b.keyPem, log, policy: { allowedFingerprints: () => allowedFps, allowedPorts: () => allowedPorts, allowedServePorts: () => new Set<number>(), onServe: () => false } });
   await Bun.sleep(100);
 });
 
