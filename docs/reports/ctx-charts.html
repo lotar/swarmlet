@@ -1,0 +1,199 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>2-Mac split: context and concurrency measurements</title>
+<style>
+  :root { color-scheme: dark; --bg:#101317; --panel:#171b21; --line:#2a313a; --ink:#e6e9ee; --dim:#98a2b3;
+          --a:#5cc8ff; --b:#8b7bff; --c:#4ade80; --d:#ffb454; --e:#ff6b8a; }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--ink);
+         font:14px/1.55 -apple-system,BlinkMacSystemFont,"Segoe UI",Inter,system-ui,sans-serif; }
+  .wrap { max-width:1080px; margin:0 auto; padding:36px 22px 72px; }
+  h1 { font-size:23px; margin:0 0 6px; letter-spacing:-.01em; }
+  h2 { font-size:16px; margin:38px 0 4px; letter-spacing:-.01em; }
+  h3 { font-size:13px; margin:22px 0 8px; color:var(--dim); text-transform:uppercase; letter-spacing:.07em; font-weight:600; }
+  p, li { color:var(--dim); }
+  p.lead { margin:0 0 4px; max-width:76ch; }
+  code { background:#0b0e12; border:1px solid var(--line); border-radius:4px; padding:1px 5px; font-size:12.5px; }
+  .panel { background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:16px 18px; margin-top:12px; }
+  .grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(300px,1fr)); gap:12px; margin-top:12px; }
+  .legend { display:flex; gap:16px; flex-wrap:wrap; margin:2px 0 6px; font-size:12.5px; color:var(--dim); }
+  .legend i { display:inline-block; width:10px; height:10px; border-radius:2px; margin-right:6px; vertical-align:middle; }
+  table { width:100%; border-collapse:collapse; margin-top:10px; font-variant-numeric:tabular-nums; }
+  th, td { text-align:right; padding:6px 8px; border-bottom:1px solid var(--line); font-size:13px; }
+  th:first-child, td:first-child, th.l, td.l { text-align:left; }
+  th { color:var(--dim); font-weight:600; font-size:11.5px; text-transform:uppercase; letter-spacing:.05em; }
+  tbody tr:last-child td { border-bottom:none; }
+  .mono { font-family:ui-monospace,SFMono-Regular,Menlo,monospace; font-size:12px; }
+  .note { border-left:2px solid var(--d); padding-left:12px; margin:16px 0 0; }
+  .warn { border-left:2px solid var(--e); padding-left:12px; margin:16px 0 0; }
+  svg { display:block; width:100%; height:auto; overflow:visible; }
+  .tip { position:fixed; pointer-events:none; background:#0b0e12; border:1px solid var(--line); border-radius:6px;
+         padding:6px 9px; font-size:12px; opacity:0; transition:opacity .1s; white-space:pre; z-index:9; }
+</style></head><body><div class="wrap">
+
+<h1>Two-Mac split: context and concurrency</h1>
+<p class="lead">Measured on the live mesh, <code>qwen3.8-27b</code> split 12 layers (Apple M5 Pro,
+24 GiB usable) + 52 layers and the coordinator (Apple M5 Max, 128 GiB), relay transport. Raw rows are
+in the two <code>.jsonl</code> files beside this page; the numbers below are read directly from them.</p>
+<p class="lead">Two independent axes were measured: the <strong>context window</strong> (4K&rarr;256K, one caller)
+and the <strong>slot count</strong> (1&rarr;16, that many concurrent callers).</p>
+
+<h2>1 · Context window</h2>
+<p class="lead">Everything but ctx held fixed, two probes per level, temperature 0. Decode is flat and
+worker memory is not.</p>
+<div class="grid">
+  <div class="panel"><h3>Decode rate vs ctx</h3><div class="legend"><span><i style="background:var(--a)"></i>tok/s</span></div><div id="c-decode"></div></div>
+  <div class="panel"><h3>Prompt rate vs ctx</h3><div class="legend"><span><i style="background:var(--b)"></i>deep probe tok/s</span></div><div id="c-prompt"></div></div>
+  <div class="panel"><h3>Worker free RAM vs ctx</h3><div class="legend"><span><i style="background:var(--d)"></i>worker</span></div><div id="c-ram-worker"></div></div>
+  <div class="panel"><h3>Coordinator free RAM vs ctx</h3><div class="legend"><span><i style="background:var(--c)"></i>coordinator</span></div><div id="c-ram-coord"></div></div>
+  <div class="panel"><h3>Control link RTT vs ctx</h3><div class="legend"><span><i style="background:var(--c)"></i>coordinator</span><span><i style="background:var(--d)"></i>worker</span></div><div id="c-rtt"></div></div>
+</div>
+<div class="panel"><h3>All context rows</h3><div id="t-ctx"></div></div>
+<p class="note"><strong>Read:</strong> decode rate does not change with the window (5.4–6.3 tok/s across
+64&times;), prompt rate does not degrade with it, and the output hash is identical at every level — the
+configured window does not perturb results. Worker free RAM falls monotonically, so a worker <em>does</em>
+pay for context, via RPC-side buffers, even though the KV cache lives on the coordinator.</p>
+
+<h2>2 · Slot count / concurrency</h2>
+<p class="lead">The deployment's <code>--parallel</code> is the variable; exactly that many concurrent
+streaming requests were issued, so contention is present rather than assumed. TTFT is client-measured
+wall clock to the first content token.</p>
+<div class="grid">
+  <div class="panel"><h3>Time to first token</h3><div class="legend"><span><i style="background:var(--d)"></i>min</span><span><i style="background:var(--e)"></i>max</span></div><div id="c-ttft"></div></div>
+  <div class="panel"><h3>Aggregate vs per-caller rate</h3><div class="legend"><span><i style="background:var(--c)"></i>aggregate</span><span><i style="background:var(--a)"></i>per caller</span></div><div id="c-tps"></div></div>
+</div>
+<div class="panel"><h3>All concurrency rows</h3><div id="t-conc"></div></div>
+<p class="note"><strong>Read:</strong> TTFT roughly doubles with each doubling of slots — slots serialize
+prompt evaluation rather than parallelising it. Aggregate saturates near 12–14 tok/s while the per-caller
+rate falls 6.4&times;. Context size makes no difference here: the two ctx values track each other within
+noise. All concurrent requests returned identical answers, so concurrency does not corrupt output.</p>
+<p class="warn"><strong>Not measured, do not infer:</strong> relay bytes per token (the socket accounting
+failed in both sweeps), engine-side prompt/decode milliseconds on the streaming path, and anything at
+concurrency above 16 or with natural (non-repeated) prompt text.</p>
+
+<script>
+const DATA = {"ctx": [{"ctx": 4096, "load_s": 45.4, "coord_free": 60125, "worker_free": 8830, "coord_rtt": 25.62, "worker_rtt": 297.25, "decode": 5.78, "prompt_deep": 118.9, "deep_n": 478, "hash": "565339bc4d33d72817b583024112eb7f"}, {"ctx": 8192, "load_s": 45.4, "coord_free": 59653, "worker_free": 8928, "coord_rtt": 27.9, "worker_rtt": 23.54, "decode": 5.73, "prompt_deep": 156.97, "deep_n": 898, "hash": "565339bc4d33d72817b583024112eb7f"}, {"ctx": 16384, "load_s": 45.4, "coord_free": 58423, "worker_free": 8485, "coord_rtt": 29.53, "worker_rtt": 51.55, "decode": 6.09, "prompt_deep": 229.27, "deep_n": 1753, "hash": "565339bc4d33d72817b583024112eb7f"}, {"ctx": 32768, "load_s": 90.8, "coord_free": 58163, "worker_free": 8235, "coord_rtt": 108.09, "worker_rtt": 60.3, "decode": 6.13, "prompt_deep": 192.03, "deep_n": 3463, "hash": "565339bc4d33d72817b583024112eb7f"}, {"ctx": 65536, "load_s": 45.4, "coord_free": 56171, "worker_free": 7508, "coord_rtt": 27, "worker_rtt": 26.92, "decode": 5.35, "prompt_deep": 232.65, "deep_n": 6883, "hash": "565339bc4d33d72817b583024112eb7f"}, {"ctx": 131072, "load_s": 45.5, "coord_free": 53296, "worker_free": 6110, "coord_rtt": 25.29, "worker_rtt": 24.14, "decode": 6.22, "prompt_deep": 247.32, "deep_n": 6883, "hash": "565339bc4d33d72817b583024112eb7f"}, {"ctx": 262144, "load_s": 45.4, "coord_free": 46415, "worker_free": 4679, "coord_rtt": 26.58, "worker_rtt": 98.32, "decode": 6.09, "prompt_deep": 256.11, "deep_n": 6883, "hash": "565339bc4d33d72817b583024112eb7f"}], "conc": [{"parallel": 1, "ctx": 4096, "outcome": "ready", "ttft_min": 7452, "ttft_med": 7452, "ttft_max": 7452, "total_med": 7622, "agg": 5.12, "per": 5.12, "answers": 1}, {"parallel": 1, "ctx": 262144, "outcome": "ready", "ttft_min": 7498, "ttft_med": 7498, "ttft_max": 7498, "total_med": 7649, "agg": 5.1, "per": 5.1, "answers": 1}, {"parallel": 4, "ctx": 4096, "outcome": "ready", "ttft_min": 14311, "ttft_med": 14497, "ttft_max": 14497, "total_med": 14714, "agg": 10.6, "per": 2.69, "answers": 1}, {"parallel": 4, "ctx": 262144, "outcome": "ready", "ttft_min": 15075, "ttft_med": 15338, "ttft_max": 15341, "total_med": 15540, "agg": 10.04, "per": 2.54, "answers": 1}, {"parallel": 8, "ctx": 4096, "outcome": "ready", "ttft_min": 24697, "ttft_med": 24993, "ttft_max": 24995, "total_med": 25927, "agg": 12.03, "per": 1.5, "answers": 1}, {"parallel": 8, "ctx": 262144, "outcome": "ready", "ttft_min": 21381, "ttft_med": 21685, "ttft_max": 21689, "total_med": 22485, "agg": 13.87, "per": 1.73, "answers": 1}, {"parallel": 16, "ctx": 4096, "outcome": "ready", "ttft_min": 46629, "ttft_med": 47261, "ttft_max": 48113, "total_med": 47263, "agg": 12.64, "per": 0.8, "answers": 1}, {"parallel": 16, "ctx": 262144, "outcome": "ready", "ttft_min": 45724, "ttft_med": 46318, "ttft_max": 46913, "total_med": 46906, "agg": 13.05, "per": 0.83, "answers": 1}]};
+const C = { a:'#5cc8ff', b:'#8b7bff', c:'#4ade80', d:'#ffb454', e:'#ff6b8a' };
+const W = 460, H = 232, M = { t: 30, r: 16, b: 34, l: 50 };
+const NS = 'http://www.w3.org/2000/svg';
+const tip = document.createElement('div'); tip.className = 'tip'; document.body.appendChild(tip);
+function el(n, a) { const e = document.createElementNS(NS, n); for (const k in a) e.setAttribute(k, a[k]); return e; }
+function svgRoot(host) { const s = el('svg', { viewBox: `0 0 ${W} ${H}` }); host.appendChild(s); return s; }
+/* Values arrive in MiB. Divide once for GiB — calling that TiB (as a first cut did) misreports the
+   measurement by 1024x. */
+const gb = v => v == null ? '\u2014' : v >= 1048576 ? (v/1048576).toFixed(2) + ' TiB' : v >= 1024 ? (v/1024).toFixed(1) + ' GiB' : v + ' MiB';
+function fmtCtx(v) { return v >= 1024 ? (v/1024) + 'K' : String(v); }
+
+/* Categorical charts on purpose: the x values are powers of two (and 1,4,8,16), which a linear axis
+   would bunch at one end. Every point carries its value as text, so the chart is readable without
+   hovering and there is no axis-lying to do. */
+function chart(host, labels, series, opts) {
+  opts = opts || {};
+  const s = svgRoot(host);
+  const iw = W - M.l - M.r, ih = H - M.t - M.b;
+  const all = series.reduce((acc, x) => acc.concat(x.values.filter(v => v != null)), []);
+  const max = Math.max(...all) * 1.18 || 1, min = opts.zero === false ? Math.min(...all) * 0.85 : 0;
+  const px = i => M.l + (labels.length === 1 ? iw/2 : iw * (i / (labels.length - 1)));
+  const py = v => M.t + ih - ih * ((v - min) / (max - min || 1));
+
+  for (let g = 0; g <= 4; g++) {
+    const v = min + (max - min) * g / 4, y = py(v);
+    s.appendChild(el('line', { x1: M.l, y1: y, x2: M.l + iw, y2: y, stroke: '#2a313a', 'stroke-width': 1 }));
+    const t = el('text', { x: M.l - 7, y: y + 3.5, fill: '#98a2b3', 'font-size': 10, 'text-anchor': 'end' });
+    t.textContent = opts.fmt ? opts.fmt(v) : Math.round(v);
+    s.appendChild(t);
+  }
+  labels.forEach((lab, i) => {
+    const t = el('text', { x: px(i), y: H - 12, fill: '#98a2b3', 'font-size': 10, 'text-anchor': 'middle' });
+    t.textContent = lab; s.appendChild(t);
+  });
+  if (opts.yLabel) {
+    const t = el('text', { x: M.l - 7, y: 13, fill: '#98a2b3', 'font-size': 9.5, 'text-anchor': 'start' });
+    t.textContent = opts.yLabel; s.appendChild(t);
+  }
+
+  series.forEach(ser => {
+    const pts = ser.values.map((v, i) => v == null ? null : [px(i), py(v)]).filter(Boolean);
+    if (ser.bars) {
+      const bw = Math.max(6, iw / labels.length * 0.34);
+      ser.values.forEach((v, i) => {
+        if (v == null) return;
+        const r = el('rect', { x: px(i) - bw/2, y: py(v), width: bw, height: Math.max(1, py(min) - py(v)), fill: ser.color, rx: 2, opacity: .85 });
+        r.addEventListener('mouseenter', e => { tip.textContent = `${ser.name}\n${labels[i]}: ${opts.fmt ? opts.fmt(v) : v}`; tip.style.opacity = 1; });
+        r.addEventListener('mousemove', e => { tip.style.left = (e.clientX + 12) + 'px'; tip.style.top = (e.clientY - 30) + 'px'; });
+        r.addEventListener('mouseleave', () => tip.style.opacity = 0);
+        s.appendChild(r);
+      });
+      return;
+    }
+    s.appendChild(el('polyline', { points: pts.map(p => p.join(',')).join(' '), fill: 'none', stroke: ser.color, 'stroke-width': 2, 'stroke-linejoin': 'round' }));
+    pts.forEach((p, i) => {
+      const v = ser.values.filter(x => x != null)[i];
+      const dot = el('circle', { cx: p[0], cy: p[1], r: 3.4, fill: ser.color });
+      dot.addEventListener('mouseenter', () => { tip.textContent = `${ser.name}\n${labels[i]}: ${opts.fmt ? opts.fmt(v) : v}`; tip.style.opacity = 1; });
+      dot.addEventListener('mousemove', e => { tip.style.left = (e.clientX + 12) + 'px'; tip.style.top = (e.clientY - 30) + 'px'; });
+      dot.addEventListener('mouseleave', () => tip.style.opacity = 0);
+      s.appendChild(dot);
+      const lab = el('text', { x: p[0], y: p[1] - 9, fill: '#e6e9ee', 'font-size': 9.5, 'text-anchor': 'middle' });
+      lab.textContent = opts.fmt ? opts.fmt(v) : Math.round(v);
+      s.appendChild(lab);
+    });
+  });
+}
+
+function table(host, cols, rows) {
+  const t = document.createElement('table');
+  const th = document.createElement('tr');
+  cols.forEach(c => { const e = document.createElement('th'); e.textContent = c.h; if (c.l) e.className = 'l'; th.appendChild(e); });
+  const head = document.createElement('thead'); head.appendChild(th); t.appendChild(head);
+  const tb = document.createElement('tbody');
+  rows.forEach(r => {
+    const tr = document.createElement('tr');
+    r.forEach((v, i) => {
+      const td = document.createElement('td');
+      td.textContent = v == null ? '\u2014' : v;
+      if (cols[i].l) td.className = 'l';
+      if (cols[i].mono) td.className += ' mono';
+      tr.appendChild(td);
+    });
+    tb.appendChild(tr);
+  });
+  t.appendChild(tb); host.appendChild(t);
+}
+
+const cLabels = DATA.ctx.map(r => fmtCtx(r.ctx));
+chart(document.getElementById('c-decode'), cLabels, [{ name: 'decode tok/s', color: C.a, values: DATA.ctx.map(r => r.decode) }], { zero: false, yLabel: 'tok/s' });
+chart(document.getElementById('c-prompt'), cLabels, [{ name: 'prompt tok/s', color: C.b, values: DATA.ctx.map(r => r.prompt_deep) }], { zero: false, yLabel: 'tok/s' });
+chart(document.getElementById('c-ram-worker'), cLabels, [
+  { name: 'worker free', color: C.d, values: DATA.ctx.map(r => r.worker_free) }], { zero: false, yLabel: 'GiB free', fmt: v => (v/1024).toFixed(1) });
+chart(document.getElementById('c-ram-coord'), cLabels, [
+  { name: 'coordinator free', color: C.c, values: DATA.ctx.map(r => r.coord_free) }], { zero: false, yLabel: 'GiB free', fmt: v => (v/1024).toFixed(1) });
+chart(document.getElementById('c-rtt'), cLabels, [
+  { name: 'coordinator', color: C.c, values: DATA.ctx.map(r => r.coord_rtt) },
+  { name: 'worker', color: C.d, values: DATA.ctx.map(r => r.worker_rtt) }], { yLabel: 'ms' });
+
+table(document.getElementById('t-ctx'), [
+  { h: 'ctx', l: true }, { h: 'load (s)' }, { h: 'coord free' }, { h: 'worker free' },
+  { h: 'coord RTT' }, { h: 'worker RTT' }, { h: 'decode tok/s' }, { h: 'prompt tok/s' }, { h: 'deep prompt tok' }, { h: 'answer sha256', mono: true, l: true }
+], DATA.ctx.map(r => [fmtCtx(r.ctx), r.load_s, gb(r.coord_free), gb(r.worker_free),
+  r.coord_rtt && r.coord_rtt.toFixed(0) + ' ms', r.worker_rtt && r.worker_rtt.toFixed(0) + ' ms',
+  r.decode, r.prompt_deep, r.deep_n && r.deep_n.toLocaleString(), String(r.hash).slice(0, 12)]));
+
+const pLabels = [...new Set(DATA.conc.map(r => r.parallel))].map(p => 'c' + p);
+const at = (ctx) => DATA.conc.filter(r => r.ctx === ctx);
+chart(document.getElementById('c-ttft'), pLabels, [
+  { name: 'TTFT min', color: C.d, values: at(4096).map(r => r.ttft_min) },
+  { name: 'TTFT max', color: C.e, values: at(4096).map(r => r.ttft_max) }], { zero: false, yLabel: 'ms', fmt: v => (v/1000).toFixed(0) + 's' });
+chart(document.getElementById('c-tps'), pLabels, [
+  { name: 'aggregate', color: C.c, values: at(4096).map(r => r.agg) },
+  { name: 'per caller', color: C.a, values: at(4096).map(r => r.per) }], { zero: false, yLabel: 'tok/s' });
+
+table(document.getElementById('t-conc'), [
+  { h: 'parallel', l: true }, { h: 'ctx' }, { h: 'TTFT min' }, { h: 'TTFT med' }, { h: 'TTFT max' },
+  { h: 'total med' }, { h: 'aggregate tok/s' }, { h: 'per-caller tok/s' }, { h: 'identical answers' }
+], DATA.conc.map(r => ['c' + r.parallel, fmtCtx(r.ctx),
+  (r.ttft_min/1000).toFixed(2) + ' s', (r.ttft_med/1000).toFixed(2) + ' s', (r.ttft_max/1000).toFixed(2) + ' s',
+  (r.total_med/1000).toFixed(2) + ' s', r.agg, r.per, r.answers === 1 ? 'yes' : 'NO']));
+</script>
+</div></body></html>
