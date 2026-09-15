@@ -1,6 +1,13 @@
 import { expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 const source = readFileSync(new URL("../ui/app.js", import.meta.url), "utf8");
+// Slice by marker pair. A bare "  var live =" also matches the `var live` inside renderThroughput, and
+// slicing from there cuts statements out of their function (SyntaxError inside new Function below).
+function between(from: string, to: string): string {
+  const start = source.indexOf(from), end = source.indexOf(to);
+  if (start < 0 || end <= start) throw new Error(`control/ui/app.js no longer contains ${JSON.stringify(from)} .. ${JSON.stringify(to)}`);
+  return source.slice(start, end);
+}
 function fixture() {
   const doc = { hidden: true };
   const state = { authed: true, active: "nodes", drawer: {} };
@@ -13,8 +20,8 @@ function fixture() {
   let loads = 0;
   let load: () => Promise<unknown> = () => Promise.resolve();
   const loadNodes = () => { loads++; return load(); };
-  const liveSource = source.slice(source.indexOf("  var live ="), source.indexOf("  var booting ="));
-  const resumeSource = source.slice(source.indexOf("  function resumeView()"), source.indexOf("  D.addEventListener('visibilitychange'"));
+  const liveSource = between("  var live = { es: null", "  var booting =");
+  const resumeSource = between("  function resumeView()", "  D.addEventListener('visibilitychange'");
   const f = new Function("D", "state", "window", "EventSource", "loadNodes", "loadDeployments", "renderJoinCode", "$", "showError", "boot", liveSource + resumeSource + "return {tick, startLive, stopLive, resumeView};")(
     doc, state, { EventSource }, EventSource, loadNodes, () => Promise.resolve(), () => {}, () => ({}), () => {}, () => {},
   );
@@ -42,7 +49,7 @@ test("slow refreshes cannot accumulate and failure permits a later retry", async
   f.setLoad(() => Promise.resolve()); await f.tick(); expect(f.loads()).toBe(2);
 });
 test("GET timeout cancels a stuck request; writes have no automatic abort", async () => {
-  const apiSource = source.slice(source.indexOf("  function api("), source.indexOf("  function showLogin()"));
+  const apiSource = between("  function api(", "  function showLogin()");
   let expire!: () => void;
   let cleared = 0;
   let signal: AbortSignal | undefined;
