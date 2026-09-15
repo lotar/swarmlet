@@ -41,6 +41,12 @@ export interface Capabilities {
   diskFreeMiB: number;
   privateIps: string[];
   publicIp?: string;
+  /**
+   * Endpoints a peer may dial directly, including a gateway port mapping the node requested for
+   * itself (node-agent/nat.ts). Port-bearing, because a router grants whichever external port it
+   * likes; empty unless a mapping is actually live.
+   */
+  publicEndpoints?: Array<{ host: string; port: number }>;
   /** Port of this node's TLS data listener (default AGENT_DATA_PORT); peers dial privateIps/publicIp at this port. */
   dataPort?: number;
   /** Linux: which cgroup controllers the user slice delegates (hard enforcement possible). */
@@ -111,6 +117,12 @@ export interface Endpoint {
   port: number;
   direct: Array<{ host: string; port: number }>;
   relay: boolean;
+  /**
+   * This peer will serve its port TO us over a reverse connection (it dials in). Set when control
+   * issued that peer a `serve` target, so we prefer the inbound stream over addresses that, on a
+   * network where the peer could not be dialled, are known not to answer.
+   */
+  inbound?: boolean;
 }
 
 export interface WorkerAssignment {
@@ -121,9 +133,29 @@ export interface WorkerAssignment {
   device: string;
   threads: number;
   memCapMiB?: number;
+  /**
+   * How many of the model's transformer blocks this worker holds, and how many the model has.
+   *
+   * The count exists only in the coordinator's tensor split, so without it a worker cannot tell its
+   * owner what the machine is actually doing — it would know it is busy and nothing more. Both
+   * fields are informational: the engine is driven entirely by the tensor split the coordinator
+   * sends, so a worker never acts on them.
+   */
+  layers?: number;
+  modelLayers?: number;
   peerPort?: number;
   /** Servers this worker pushes forwarded tensors to (index = position in the coordinator's --rpc list). */
   peers?: Array<{ index: number; endpoint: Endpoint }>;
+  /**
+   * Where this worker dials IN to serve its own rpc port.
+   *
+   * A worker behind a router nobody administers may never be diallable, and waiting for one that is
+   * is not a strategy. The direction of the connect is not a property of the topology, so the worker
+   * opens the stream to a peer that IS reachable - normally the coordinator, which publishes a
+   * gateway mapping - and serves `port` over it. The bytes and the latency are those of a direct
+   * dial; only who dials differs (node-agent/transport/servedial.ts).
+   */
+  serve?: Endpoint;
   /** Cert fingerprints allowed to connect to this node's data listener for this assignment. */
   allow: string[];
   enforce?: { ramMiB?: number; cpuCores?: number };
@@ -248,8 +280,14 @@ export type DeploymentState = "planned" | "placing" | "loading" | "ready" | "dra
 
 export interface DeploymentSpec {
   name: string;
-  /** Model profile id (control/profiles/*.json) or "external". */
+  /** Model profile id (control/profiles/*.json), "external", or "auto" to let control choose. */
   profile: string;
+  /**
+   * Serve the best model the nodes online can actually place, and keep re-deciding as they come and go.
+   * The chosen profile and kind are written back onto this spec, so the record always says what is
+   * really being served; the flag is what keeps the choice open.
+   */
+  autoModel?: boolean;
   kind: DeploymentKind;
   coordinatorNodeId?: string;
   workerNodeIds?: string[];
@@ -347,6 +385,11 @@ export interface EnvelopeRow {
 
 export interface ModelProfile {
   id: string;
+  /**
+   * Preference order for automatic model choice: higher is the better model to serve. Editorial on
+   * purpose - file size is not quality - and read only by the auto policy.
+   */
+  rank?: number;
   name: string;
   /** Served model name for /v1 routing. */
   modelName: string;
@@ -364,6 +407,69 @@ export interface ModelProfile {
   extraArgs: string[];
   /** Per-worker VRAM margin for compute buffers at the envelope's max ctx/parallel. */
   workerMarginMiB: number;
+  /** How a node obtains these files when it does not have them. Optional: a profile without it
+   *  can still be served, but a node owner has no in-UI way to fetch the weights. */
+  download?: ModelDownload;
+}
+
+/**
+ * One file a node fetches to serve a profile's model. `name` must match the profile's
+ * `ggufPattern` (kind "gguf") or `mtpPattern` (kind "mtp"); validation enforces that, so a file
+ * obtained this way is by construction the file the planner will match on that node.
+ *
+ * The hash is the whole-file sha256. It is what makes an unauthenticated third-party URL safe to
+ * fetch: the bytes are verified before the file is published into the models directory, so a
+ * mutated or truncated download becomes a failed fetch, never a served model.
+ */
+export interface ModelDownloadFile {
+  name: string;
+  kind: "gguf" | "mtp";
+  url: string;
+  sha256: string;
+  bytes: number;
+}
+
+export interface ModelDownload {
+  files: ModelDownloadFile[];
+}
+
+/**
+ * One model the fleet can serve, advertised to node owners so they can opt in and fetch it.
+ * Reaches a node through the existing node-scoped `/v1/models?catalog=1` response, so no new
+ * control-to-agent message is needed: the node requests the catalog with its own API key.
+ */
+export interface CatalogModel {
+  id: string;
+  object: string;
+  created: number;
+  owned_by: string;
+  ready: number;
+  /** True when this node could serve the model as it stands (weights present, offer sufficient). */
+  local_eligible: boolean;
+  local_reasons: string[];
+  /** Present when the profile declares how to obtain the weights; absent means "cannot fetch". */
+  download?: ModelDownload;
+}
+
+/**
+ * Where a node may fetch weights from. Remote origins must be https; an explicit loopback origin is
+ * allowed so a node can pull from a mirror on its own machine (and so this path is testable without
+ * a TLS fixture). Nothing here is trusted for integrity — the declared sha256 is what decides
+ * whether fetched bytes are ever installed.
+ */
+export const DOWNLOAD_URL_RE = /^https:\/\/[^\s]+$|^http:\/\/(?:127\.0\.0\.1|localhost)(?::\d+)?(?:\/[^\s]*)?$/;
+
+/** Reject a catalog whose payload cannot be trusted to describe what will actually be downloaded. */
+export function validCatalogDownload(file: unknown): file is ModelDownloadFile {
+  if (typeof file !== "object" || file === null) return false;
+  const f = file as Partial<ModelDownloadFile>;
+  if (typeof f.name !== "string" || f.name.length === 0 || f.name.length > 240) return false;
+  if (f.name.includes("/") || f.name.includes("\\") || f.name === "." || f.name === "..") return false;
+  if (f.kind !== "gguf" && f.kind !== "mtp") return false;
+  if (typeof f.url !== "string" || !DOWNLOAD_URL_RE.test(f.url) || f.url.length > 2048) return false;
+  if (typeof f.sha256 !== "string" || !/^[0-9a-f]{64}$/.test(f.sha256)) return false;
+  if (typeof f.bytes !== "number" || !Number.isSafeInteger(f.bytes) || f.bytes <= 0) return false;
+  return true;
 }
 
 // ---------- agent channel messages ----------
