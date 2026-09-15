@@ -2,7 +2,7 @@
 // (-> failed from anywhere). Turns a Plan into assignments (workers first, coordinator last), waits
 // for the states the agents report, and tears everything down on any failure or node loss.
 
-import { AGENT_DATA_PORT, type Assignment, type AssignmentState, type CoordinatorAssignment, type Deployment, type DeploymentSpec, type Endpoint, type ModelProfile, type NativeExecutionPlan, type Plan, type ReplicaAssignment, type StageAssignment, type WorkerAssignment } from "../protocol/types.ts";
+import { AGENT_DATA_PORT, type Assignment, type AssignmentState, type CoordinatorAssignment, type Deployment, type DeploymentKind, type DeploymentSpec, type Endpoint, type ModelProfile, type NativeExecutionPlan, type Plan, type ReplicaAssignment, type StageAssignment, type WorkerAssignment } from "../protocol/types.ts";
 import type { AgentChannel } from "./channel.ts";
 import type { Logger } from "./log.ts";
 import { PlanError } from "./planner.ts";
@@ -14,6 +14,12 @@ import type { Qwen35NativeQualification } from "./profiles/qwen35-native.ts";
 export interface DeploymentDeps {
   reg: Registry; channel: AgentChannel; profiles: Map<string, ModelProfile>; log: Logger;
   recoveryDelayMs?: number; stopTimeoutMs?: number; reconnectGraceMs?: number;
+  /** Floor between two automatic re-placements of the same deployment (default 10 min). */
+  moveIntervalMs?: number;
+  /** A deployment must have been stable this long before it can be moved (default 60 s). */
+  moveSettleMs?: number;
+  /** How long a deployment may sit non-ready before the sweeper re-plans it (default 5 min). */
+  wedgedLoadMs?: number;
   nativeQualifications?: readonly Qwen35NativeQualification[];
 }
 
@@ -23,6 +29,8 @@ const WORKER_TIMEOUT_MS = 5 * 60_000;
 const COORDINATOR_TIMEOUT_MS = 60 * 60_000;
 const STOP_TIMEOUT_MS = 2 * 60_000;
 const MAX_RECOVERY_ATTEMPTS = 5;
+/** Default for DeploymentDeps.wedgedLoadMs: a load that has not finished in this long has stopped making progress. */
+const WEDGED_LOAD_MS = 5 * 60_000;
 
 function newId(prefix: string): string {
   const b = new Uint8Array(6); crypto.getRandomValues(b);
@@ -48,6 +56,15 @@ export class DeploymentManager {
   // A channel loss invalidates relay RPC state. Keep routing withdrawn while acknowledged
   // teardown and bounded reconnect run, then build a fresh placement (never resume RPC state).
   private reconnecting = new Map<string, { deadline: number; cleanupDeadline?: number; nodes: string[]; reason: string }>();
+  /** Last move decision per deployment - a re-placement, or a rescue attempt that could not move: the
+   *  cooldown that stops two equivalent placements fighting. */
+  private lastMove = new Map<string, number>();
+  /** Nodes a deployment has just failed to start on, so neither a retry nor the recovery re-chooses them. */
+  private moveExcluded = new Map<string, { nodes: Set<string>; at: number }>();
+  private get moveIntervalMs(): number { return this.deps.moveIntervalMs ?? 10 * 60_000; }
+  private get wedgedLoadMs(): number { return this.deps.wedgedLoadMs ?? WEDGED_LOAD_MS; }
+  /** A move must be worth that reload: layers off the serving node, or a materially larger coordinator. */
+  private readonly moveMarginLayers = 2;
 
   constructor(private readonly deps: DeploymentDeps) {}
 
@@ -130,9 +147,31 @@ export class DeploymentManager {
       const expired = reconnect && (reconnect.cleanupDeadline === undefined
         ? Date.now() >= reconnect.deadline : cleanupPending && Date.now() >= reconnect.cleanupDeadline);
       if (reconnect && (expired || intent.attempts >= MAX_RECOVERY_ATTEMPTS)) {
+        // Our own cleanup may still hold this deployment; retry on the next tick instead of failing a
+        // deployment whose teardown we are ourselves running.
+        if (this.operations.has(dep.id)) return;
+        // The node is gone and the grace ran out. Killing the deployment is a choice we cannot defend:
+        // the model is still servable by whatever nodes are left, and the owner asked for a model, not
+        // for those particular machines - so move it before giving up on it.
+        const moved = await this.redistribute(dep.id, reconnect.reason).catch(() => false);
+        if (moved) return;
         this.recordFailure(dep.id, `${reconnect.reason}; ${reconnect.cleanupDeadline ? "reconnect cleanup deadline" : "reconnect grace"} expired or recovery budget exhausted`);
         return;
       }
+      // A load that cannot finish needs a way forward that does not depend on a node coming back or on a
+      // membership change control may never be told about: nothing else in this loop looks at a deployment
+      // that is stuck mid-load. The same redistribution path as every other move, under the same pacing, so
+      // this is a rescue and not a second placement mechanism.
+      if (!reconnect && intent.running && !this.operations.has(dep.id)) {
+        const wedged = this.wedgedLoadReason(dep);
+        if (wedged) {
+          this.lastMove.set(dep.id, Date.now()); // one attempt per moveIntervalMs, even one that cannot move
+          if (await this.redistribute(dep.id, wedged).catch(() => false)) return;
+        }
+      }
+      // Serving again for a minute: the exclusions have done their job, and a later move is free to consider
+      // every node again.
+      if (dep.state === "ready" && (this.moveExcluded.get(dep.id)?.at ?? 0) < Date.now() - 60_000) this.moveExcluded.delete(dep.id);
       if (dep.state === "ready" && intent.attempts && Date.now() - Date.parse(dep.updatedAt) > 60_000) {
         this.deps.reg.setDeploymentIntent(dep.id, { attempts: 0 });
       }
@@ -145,6 +184,9 @@ export class DeploymentManager {
         try { const candidate = this.plan(dep.spec, this.usedPorts(), dep.id); required = planNodes(candidate); }
         catch { return; } // wait for a viable offer instead of burning retries while the rig is absent
       }
+      // Waiting out the reconnect grace is the point: a node that blips for a few seconds must not cost
+      // an engine reload. Only when the grace expires (above) does an auto-placed deployment move, and
+      // a pinned one keeps waiting for the node its owner named.
       if (required.some((n) => !this.deps.channel.isOnline(n) || !this.deps.reg.getNode(n)?.online)) return;
       this.deps.reg.setDeploymentIntent(dep.id, { attempts: intent.attempts + 1 });
       this.deps.reg.event("deployment", `automatic recovery attempt ${intent.attempts + 1}/${MAX_RECOVERY_ATTEMPTS}`, { deploymentId: dep.id });
@@ -183,6 +225,13 @@ export class DeploymentManager {
       return;
     }
     if ((state === "failed" || (state === "stopped" && !row.retired)) && dep.state !== "stopped" && dep.state !== "failed" && dep.state !== "draining") {
+      // An agent that is going away fails its own assignments on the way out, and its socket may not have
+      // closed yet when that message lands - so "is this node still online?" cannot answer on its own. A
+      // node leaving is not a broken engine: it takes the node-loss route, so the route is withdrawn, the
+      // grace runs, and the deployment is re-placed rather than killed. Anything else is a genuine engine
+      // failure and still fails, immediately and loudly.
+      const leaving = !this.deps.channel.isOnline(nodeId) || /shutting down|going offline|agent stopping/i.test(detail ?? "");
+      if (leaving) { this.onOffline(nodeId); return; }
       void this.fail(dep.id, `assignment ${id} on ${nodeId} failed: ${detail ?? "no detail"}`).catch((e) => this.deps.log.warn("cleanup pending", { id: dep.id, error: String(e) }));
     }
   }
@@ -209,8 +258,12 @@ export class DeploymentManager {
         this.deps.reg.retireAssignment(row.id);
         this.deps.reg.setAssignmentState(row.id, "stopped", "agent confirmed assignment absent");
         for (const w of [...(this.waiters.get(row.id) ?? [])]) w("stopped");
-        if (wants && externalHealthOnly && !duplicate) this.deps.channel.assign(nodeId, row.body);
-        else if (wants && !externalHealthOnly) void this.fail(dep!.id, `node ${nodeId} restarted without assignment ${row.id}`).catch(() => {});
+        // Absence only proves a lost engine when the row was actually expected to be running. A row
+        // the node itself reported stopped on the way out - or one we retired while it was away - has
+        // nothing to lose, and failing the deployment over it turned a clean return into an outage.
+        const expected = wants && row.state !== "stopped";
+        if (expected && externalHealthOnly && !duplicate) this.deps.channel.assign(nodeId, row.body);
+        else if (expected && !externalHealthOnly) void this.fail(dep!.id, `node ${nodeId} restarted without assignment ${row.id}`).catch(() => {});
       } else if (!wants || duplicate || row.state === "stopped") {
         // Offline stop was never an acknowledgement. Keep retrying it on every hello.
         this.deps.reg.setAssignmentState(row.id, have.get(row.id)!);
@@ -228,9 +281,13 @@ export class DeploymentManager {
     for (const dep of this.deps.reg.listDeployments()) {
       if (this.closed || !this.deps.reg.deploymentIntent(dep.id).running || ["stopped", "failed", "planned", "draining"].includes(dep.state) || this.reconnecting.has(dep.id)) continue;
       const rows = this.deps.reg.listAssignments(dep.id).filter((a) => a.nodeId === nodeId && a.state !== "stopped");
-      if (!rows.length) continue;
+      // A node that leaves after already reporting its assignments stopped would otherwise look like a
+      // deployment with nothing wrong with it - ready, routing traffic, and missing a worker. The plan
+      // still names that node, so the plan decides too, not only the live assignment rows.
+      const planned = dep.plan ? planNodes(dep.plan).includes(nodeId) : false;
+      if (!rows.length && !planned) continue;
       // The external engine stays running, but the router cannot reach it until its agent returns.
-      if (rows.every((a) => a.body.kind === "replica" && a.body.external)) {
+      if (rows.length && rows.every((a) => a.body.kind === "replica" && a.body.external)) {
         this.deps.reg.updateDeployment(dep.id, { state: "loading", endpoint: null, error: `external agent ${nodeId} offline` });
         this.deps.reg.event("deployment", `agent on ${nodeId} offline; external route withdrawn until reconnect`, { deploymentId: dep.id });
         continue;
@@ -246,19 +303,250 @@ export class DeploymentManager {
     }
   }
 
+  /**
+   * A node just (re)connected. An auto-placed deployment need not keep living on the hardware that
+   * happened to exist when it started, so ask whether the nodes present *now* would place it better -
+   * and move it only when the answer is clearly better and it has been stable long enough that we are
+   * not shuffling between equivalent layouts.
+   */
+  onNodeOnline(nodeId: string): void {
+    if (this.closed) return;
+    for (const dep of this.deps.reg.listDeployments()) {
+      if (dep.state !== "ready" || !this.deps.reg.deploymentIntent(dep.id).running) continue;
+      if (this.pinsNodes(dep.spec) || this.reconnecting.has(dep.id) || this.operations.has(dep.id)) continue;
+      if (Date.now() < (this.lastMove.get(dep.id) ?? 0) + this.moveIntervalMs) continue;
+      if (Date.now() - Date.parse(dep.updatedAt) < (this.deps.moveSettleMs ?? 60_000)) continue; // freshly placed: let it settle
+      if (dep.spec.autoModel) {
+        // "Better" for an automatic deployment means a better model, not merely fewer layers somewhere.
+        // redistribute() re-decides and skips the restart when nothing would actually change.
+        const joined = this.deps.reg.getNode(nodeId)?.hostname ?? nodeId;
+        void this.redistribute(dep.id, `${joined} joined`).catch((e) => this.deps.log.warn("re-decision failed", { id: dep.id, error: String(e) }));
+        continue;
+      }
+      let candidate: Plan;
+      try { candidate = this.plan(dep.spec, this.usedPorts(), dep.id); } catch { continue; }
+      const gain = this.placementGain(dep.plan, candidate);
+      if (!gain) continue;
+      const host = this.deps.reg.getNode(nodeId)?.hostname ?? nodeId;
+      this.deps.reg.event("deployment", `${host} joined; ${dep.spec.name} fits better there (${gain})`, { deploymentId: dep.id });
+      void this.redistribute(dep.id, `better placement available (${gain})`).catch((e) => this.deps.log.warn("re-placement failed", { id: dep.id, error: String(e) }));
+    }
+  }
+
+  /**
+   * The best model the nodes online can actually serve right now.
+   *
+   * Profiles are ranked by the owner's judgement (`profile.rank`), and the first one that can be placed
+   * wins: a whole-model replica on one node is tried before a split, because a replica has no boundary
+   * traffic and no ring to cross. Nothing here decides feasibility for itself - the planner refuses a
+   * model whose weights a node does not hold and layers that do not fit, so the choice can only ever
+   * land on something the nodes can really run today.
+   */
+  private chooseAuto(base: DeploymentSpec, replacingId?: string, exclude?: Set<string>): { spec: DeploymentSpec; why: string } | null {
+    const ranked = [...this.deps.profiles.values()]
+      .filter((p) => typeof p.rank === "number")
+      .sort((a, b) => (b.rank ?? 0) - (a.rank ?? 0));
+    const tried: string[] = [];
+    const skipped: string[] = [];
+    for (const profile of ranked) {
+      for (const kind of ["replica", "split"] as const) {
+        const candidate: DeploymentSpec = {
+          ...base, profile: profile.id, kind, autoModel: true,
+          replicaNodeId: undefined, workerNodeIds: undefined, workerLayers: undefined,
+        };
+        try {
+          const planned = this.plan(candidate, this.usedPorts(), replacingId, { exclude });
+          if (!this.fitsNow(planned, profile, kind)) {
+            skipped.push(`${profile.id} needs ${this.fitNeedMiB(planned, profile, kind)} MiB free on ${this.deps.reg.getNode(planned.coordinatorNodeId)?.hostname ?? planned.coordinatorNodeId}, which has ${Math.round(this.deps.reg.getNode(planned.coordinatorNodeId)?.metrics?.freeRamMiB ?? 0)}`);
+            continue;
+          }
+          return { spec: candidate, why: `${profile.id} as ${kind}${skipped.length ? ` (skipped: ${skipped[0]})` : ""}` };
+        } catch (e) {
+          tried.push(`${profile.id}/${kind}: ${(e as Error).message.replace(/^no plan: /, "").slice(0, 140)}`);
+        }
+      }
+    }
+    this.deps.log.warn("automatic model choice found nothing placeable", { tried: tried.slice(0, 4) });
+    this.lastAutoFailure = tried;
+    return null;
+  }
+
+  /** Why the last automatic choice failed, so the operator is told rather than left guessing. */
+  private lastAutoFailure: string[] = [];
+
+  /** What an engine on this node would need resident: the weights it holds plus its host share. */
+  private fitNeedMiB(plan: Plan, profile: ModelProfile, kind: DeploymentKind): number {
+    const layers = kind === "replica"
+      ? profile.layers
+      : (plan.engineTensorSplit ?? plan.tensorSplit).at(-1) ?? profile.layers;
+    return layers * profile.layerMiB + profile.coordinatorHostMiB;
+  }
+
+  /**
+   * Whether the node that would carry the engine has that much memory free *right now*.
+   *
+   * The planner admits against the offer a node published - what it is willing to lend - not against what
+   * is free this minute, and a machine running Docker, a browser and another model still advertises its
+   * whole GPU. Without this check the automatic choice lands on the best model that fits the offer and
+   * dies in the agent's fit gate seconds later, which is exactly what happened the first time it ran.
+   */
+  private fitsNow(plan: Plan, profile: ModelProfile, kind: DeploymentKind): boolean {
+    const node = this.deps.reg.getNode(plan.coordinatorNodeId);
+    if (!node || node.os !== "darwin") return true; // the fit gate is macOS-only; elsewhere the offer governs
+    const free = node.metrics?.freeRamMiB;
+    if (typeof free !== "number") return true;      // unmeasured: the agent's gate is the only authority
+    const need = this.fitNeedMiB(plan, profile, kind);
+    if (free >= need) return true;
+    this.deps.log.info("automatic choice skipped a model that does not fit now", { profile: profile.id, node: node.hostname, freeMiB: Math.round(free), needMiB: need });
+    return false;
+  }
+
+  /** True when the owner fixed the placement: an explicit choice is not ours to rewrite. */
+  private pinsNodes(spec: DeploymentSpec): boolean {
+    if (spec.kind === "external" || spec.kind === "stages" || spec.kind === "prefill-decode") return true;
+    if (spec.kind === "replica") return !!spec.replicaNodeId;
+    return !!spec.coordinatorNodeId || !!(spec.workerNodeIds && spec.workerNodeIds.length);
+  }
+
+  /** Layers the serving (coordinator) node carries in a plan; lower is better. */
+  private servingLayers(plan: Plan | null | undefined): number | null {
+    const split = plan?.engineTensorSplit ?? plan?.tensorSplit;
+    if (!split || !split.length) return null;
+    return split[split.length - 1] ?? null;
+  }
+
+  /**
+   * How much better a candidate placement is, or null when it is not worth an engine restart.
+   * Deliberately narrow: fewer layers on the serving node, or a coordinator with materially more
+   * memory. Anything else is variation, not improvement.
+   */
+  private placementGain(current: Plan | null | undefined, candidate: Plan): string | null {
+    const nowLayers = this.servingLayers(current), nextLayers = this.servingLayers(candidate);
+    if (nowLayers !== null && nextLayers !== null && nextLayers <= nowLayers - this.moveMarginLayers) {
+      return `${nowLayers} -> ${nextLayers} layers on the serving node`;
+    }
+    const nowCoord = current?.coordinatorNodeId, nextCoord = candidate.coordinatorNodeId;
+    if (nextCoord && nextCoord !== nowCoord) {
+      const a = this.deps.reg.getNode(nowCoord ?? "")?.offer?.ramMiB ?? 0;
+      const b = this.deps.reg.getNode(nextCoord)?.offer?.ramMiB ?? 0;
+      if (a > 0 && b >= a * 1.25) {
+        return `coordinator ${this.deps.reg.getNode(nextCoord)?.hostname ?? nextCoord} offers ${Math.round(b / 1024)} vs ${Math.round(a / 1024)} GiB`;
+      }
+    }
+    return null;
+  }
+
+  /**
+   * The reason a non-ready deployment should be re-planned, or null when it is not wedged.
+   *
+   * A load can stop making progress for reasons the reconnect path cannot see: the plan can name a node
+   * that is no longer online - so the load can never finish - or the engines can simply never report
+   * again. The first is answered once the deployment has settled, the second only after it has been
+   * non-ready past wedgedLoadMs. Nothing here decides an unreadable or pinned placement: an unknown plan
+   * is not evidence of a wedged load, and a pinned one belongs to its owner.
+   */
+  private wedgedLoadReason(dep: Deployment): string | null {
+    if (dep.state !== "placing" && dep.state !== "loading") return null;
+    const plan = dep.plan;
+    if (!plan || this.pinsNodes(dep.spec)) return null;
+    const age = Date.now() - Date.parse(dep.updatedAt);
+    if (!Number.isFinite(age)) return null; // a timestamp we cannot read is not evidence of anything
+    // The same two pacing rules as any other move: a freshly placed deployment settles first, and a
+    // deployment is never re-planned twice inside moveIntervalMs.
+    if (age < (this.deps.moveSettleMs ?? 60_000)) return null;
+    if (Date.now() < (this.lastMove.get(dep.id) ?? 0) + this.moveIntervalMs) return null;
+    const gone = planNodes(plan).filter((n) => !this.deps.channel.isOnline(n) || !this.deps.reg.getNode(n)?.online);
+    if (gone.length) return `plan names ${gone.map((n) => this.deps.reg.getNode(n)?.hostname ?? n).join(", ")}, which is offline`;
+    if (age < this.wedgedLoadMs) return null;
+    return `still not ready after ${Math.round(age / 1000)}s`;
+  }
+
+  /**
+   * Re-plan a running deployment against the nodes that are here now, and start the result.
+   *
+   * False when the spec pins its nodes, when no placement exists (the deployment is then failed with
+   * the reason attached rather than left limping), or when another operation owns the deployment.
+   */
+  private async redistribute(id: string, reason: string): Promise<boolean> {
+    let dep = this.deps.reg.getDeployment(id);
+    if (!dep || this.closed || this.operations.has(id)) return false;
+    if (this.pinsNodes(dep.spec)) {
+      this.deps.reg.event("deployment", `${dep.spec.name}: ${reason}; placement is pinned, not moving`, { deploymentId: id });
+      return false;
+    }
+    if (this.operations.has(id)) return false;
+    if (dep.spec.autoModel) {
+      // Re-decide the model first: a node joining may make a better one servable, and a node leaving may
+      // take one away. The concrete choice is written back, so the record always says what is served.
+      const excludeNow = new Set<string>(this.moveExcluded.get(id)?.nodes ?? []);
+      const choice = this.chooseAuto(dep.spec, id, excludeNow);
+      if (!choice) {
+        this.deps.reg.event("deployment", `${dep.spec.name}: nothing placeable after ${reason} - ${this.lastAutoFailure[0] ?? "no candidate"}`, { deploymentId: id });
+        return false;
+      }
+      if (choice.spec.profile !== dep.spec.profile || choice.spec.kind !== dep.spec.kind) {
+        this.deps.reg.event("deployment", `${dep.spec.name}: automatic model choice is now ${choice.why} (was ${dep.spec.profile}/${dep.spec.kind})`, { deploymentId: id });
+        this.deps.reg.updateDeployment(id, { spec: choice.spec });
+        // Re-read: everything below must plan the model we just chose, not the one we are replacing.
+        dep = this.deps.reg.getDeployment(id)!;
+      }
+    }
+    let candidate: Plan;
+    try { candidate = this.plan(dep.spec, this.usedPorts(), id); }
+    catch (e) {
+      this.deps.reg.event("deployment", `${dep.spec.name}: cannot re-place after ${reason} - ${(e as Error).message}`, { deploymentId: id });
+      return false;
+    }
+    const name = (n: string) => this.deps.reg.getNode(n)?.hostname ?? n;
+    const before = dep.plan ? planNodes(dep.plan).map(name).join(", ") : "-";
+    const after = planNodes(candidate).map(name).join(", ");
+    this.deps.reg.setDeploymentIntent(id, { attempts: 0, retryAt: 0 });
+    this.deps.reg.event("deployment", `${dep.spec.name}: re-placing after ${reason} (${before} -> ${after})`, { deploymentId: id });
+    this.lastMove.set(id, Date.now());
+    try {
+      await this.start(id, true, undefined, { abandonOfflineCleanup: true, fromReady: true }); // start() re-plans and clears the reconnect record
+      return true;
+    } catch (e) {
+      // A move that cannot start must not cost the placement that was serving. Drop the node that failed
+      // and try once more without it; the exclusion is remembered, so the recovery that follows avoids it
+      // too, instead of bouncing off the same node five times.
+      const why = (e as Error).message;
+      const failed = [...new Set(this.deps.reg.listAssignments(id)
+        .filter((a) => a.detail && /engine exited|exited \(code|SIGABRT|SIGTERM|failed to allocate|not healthy/i.test(a.detail))
+        .map((a) => a.nodeId))];
+      if (failed.length) {
+        const seen = this.moveExcluded.get(id)?.nodes ?? new Set<string>();
+        for (const n of failed) seen.add(n);
+        this.moveExcluded.set(id, { nodes: seen, at: Date.now() });
+        this.deps.reg.event("deployment", `${dep.spec.name}: re-placement did not start (${why}); re-placing without ${failed.map(name).join(", ")}`, { deploymentId: id });
+        return this.redistribute(id, reason);
+      }
+      this.deps.reg.event("deployment", `${dep.spec.name}: re-placement did not start (${why})`, { deploymentId: id });
+      return false;
+    }
+  }
+
   // ---------- API ----------
 
   async create(spec: DeploymentSpec): Promise<{ id: string }> {
+    let autoNote: string | undefined;
     if (!spec.name || !/^[a-zA-Z0-9._-]{1,64}$/.test(spec.name)) throw new Error("name must be 1-64 chars of [a-zA-Z0-9._-]");
     if (spec.kind === "external") {
       this.assertExternalOptions(spec);
       if (!spec.external?.nodeId || !spec.external.url || !spec.external.modelName) throw new Error("external needs external.nodeId, url, modelName");
       this.assertUniqueExternal(spec);
+    } else if (spec.profile === "auto" || spec.autoModel) {
+      // Automatic: pick the best model these nodes can serve, and keep the door open to change it.
+      const choice = this.chooseAuto({ ...spec, profile: spec.profile === "auto" ? "" : spec.profile, autoModel: true });
+      if (!choice) throw new Error(`no model can be placed on the nodes online right now. The best candidate failed with: ${this.lastAutoFailure[0] ?? "no profile is ranked and placeable"}`);
+      spec = choice.spec;
+      autoNote = choice.why;
     } else if (!this.deps.profiles.has(spec.profile)) {
       throw new Error(`unknown profile ${spec.profile} (have ${[...this.deps.profiles.keys()].join(", ")})`);
     }
+    const note = spec.autoModel ? `, automatic: ${autoNote ?? spec.profile}` : "";
     const dep = this.deps.reg.createDeployment(newId("dep"), spec);
-    this.deps.reg.event("deployment", `created ${spec.name} (${spec.kind})`, { deploymentId: dep.id });
+    this.deps.reg.event("deployment", `created ${spec.name} (${spec.kind}${note})`, { deploymentId: dep.id });
     return { id: dep.id };
   }
 
@@ -427,13 +715,19 @@ export class DeploymentManager {
     return { accepted: true, id };
   }
 
-  async start(id: string, recovering = false, fleetToken?: symbol): Promise<void> {
+  async start(id: string, recovering = false, fleetToken?: symbol, opts: { abandonOfflineCleanup?: boolean; fromReady?: boolean } = {}): Promise<void> {
     this.assertFleetAccess(fleetToken);
     const dep = this.must(id);
     if (this.closed) throw new Error("control is shutting down");
     if (this.updatingNode()) throw new Error("node update in progress; retry after recovery");
     if (this.operations.has(id)) throw new Error("deployment operation already in progress");
-    if (!["planned", "stopped", "failed"].includes(dep.state) && !(recovering && this.reconnecting.has(id) && dep.state === "loading")) throw new Error(`cannot start from state ${dep.state}`);
+    // A re-placement is the one caller allowed to restart a healthy deployment: the plan it is
+    // replacing is its own, the route is withdrawn first, and teardown still proves the old engine
+    // stopped before anything new starts. Every other caller keeps the stricter rule.
+    const restartable = ["planned", "stopped", "failed"].includes(dep.state)
+      || (recovering && this.reconnecting.has(id) && dep.state === "loading")
+      || (opts.fromReady === true && ["ready", "placing", "loading"].includes(dep.state));
+    if (!restartable) throw new Error(`cannot start from state ${dep.state}`);
     if (dep.spec.kind === "external") { this.assertExternalOptions(dep.spec); this.assertUniqueExternal(dep.spec, id); }
     this.reconnecting.delete(id);
     this.deps.reg.setDeploymentIntent(id, { running: true, ...(recovering ? {} : { attempts: 0, retryAt: 0 }) });
@@ -441,7 +735,10 @@ export class DeploymentManager {
     this.deps.reg.updateDeployment(id, { state: "placing", error: null, endpoint: null });
     return this.enqueue(id, async () => {
       try {
-        await this.teardown(id);
+        // Starting tolerates cleanup it cannot prove on a node that is gone; stopping does not (a stop must
+        // prove what it reports). Without this, one node leaving mid-teardown makes a deployment
+        // unrestartable - every attempt refuses to proceed past an acknowledgement that cannot arrive.
+        await this.teardown(id, { abandonOfflineCleanup: opts.abandonOfflineCleanup ?? true });
         this.assertRunning(id, generation);
         if (dep.spec.kind === "external") await this.startExternal(dep, generation);
         else if (dep.spec.kind === "replica") await this.startReplica(dep, generation);
@@ -450,7 +747,7 @@ export class DeploymentManager {
       } catch (e) {
         if (!this.closed && generation === (this.generations.get(id) ?? 0)) {
           this.recordFailure(id, (e as Error).message);
-          await this.teardown(id).catch(() => {});
+          await this.teardown(id, { abandonOfflineCleanup: opts.abandonOfflineCleanup ?? true }).catch(() => {});
         }
         throw e;
       }
@@ -613,9 +910,23 @@ export class DeploymentManager {
     const coord = this.node(plan.coordinatorNodeId);
     const workers = plan.workers.map((w) => ({ w, node: this.node(w.nodeId) }));
     const relayOnly = dep.spec.transport === "relay";
+    // Reverse dial is behind a switch while its pairing is unproven end to end: with it on, a worker
+    // offers inbound streams and the coordinator prefers them, and the engine currently fails to
+    // complete a load on them (see docs/reports). Default off keeps every split on the relay it had
+    // before; set SWARMLET_REVERSE_DIAL=1 to exercise the path.
+    const reverseDial = process.env.SWARMLET_REVERSE_DIAL === "1";
     const endpointFor = (node: NodeRow, port: number): Endpoint => ({
       nodeId: node.id, certFp: node.certFp, port,
-      direct: relayOnly ? [] : [...(node.caps?.privateIps ?? []), ...(node.caps?.publicIp ? [node.caps.publicIp] : [])].map((host) => ({ host, port: node.caps?.dataPort ?? AGENT_DATA_PORT })),
+      direct: relayOnly ? [] : [
+        ...(node.caps?.privateIps ?? []).map((host) => ({ host, port: node.caps?.dataPort ?? AGENT_DATA_PORT })),
+        ...(node.caps?.publicIp ? [{ host: node.caps.publicIp, port: node.caps.dataPort ?? AGENT_DATA_PORT }] : []),
+        // A node behind a router nobody here administers can still be dialled directly: it asked its
+        // own gateway for a mapping (node-agent/nat.ts). These come last so a peer on the same LAN
+        // never leaves it, and they carry their own port because the router picks the external one.
+        ...(node.caps?.publicEndpoints ?? [])
+          .filter((e) => e && typeof e.host === "string" && e.host.length > 0 && Number.isInteger(e.port) && e.port > 0 && e.port < 65536)
+          .map((e) => ({ host: e.host, port: e.port })),
+      ],
       relay: true,
     });
     // workers first, in ring order; worker i pushes to worker i+1 (peerPort) when forwarding is on
@@ -625,7 +936,12 @@ export class DeploymentManager {
       const allow = [coord.certFp, ...(prev ? [prev.node.certFp] : [])];
       const peers = next && w.peerPort && next.w.peerPort ? [{ index: i + 1, endpoint: endpointFor(next.node, next.w.peerPort) }] : undefined;
       const allocation = plan.allocations?.find(a => a.nodeId === node.id);
-      const a: WorkerAssignment = { kind: "worker", id: newId("as"), deploymentId: dep.id, port: w.port, device: w.device, threads: w.threads, memCapMiB: w.memCapMiB, peerPort: w.peerPort, peers, allow, enforce: { ramMiB: allocation?.ramMiB ?? node.offer?.ramMiB, cpuCores: allocation?.cpuCores ?? node.offer?.cpuCores } };
+      // Offer the worker a reverse path to the coordinator. Set unconditionally rather than trying to
+      // detect reachability at plan time: control cannot know which of the coordinator's addresses the
+      // worker can reach, and an unused offer costs the worker a few idle sockets while a missing one
+      // costs the whole ring its direct path.
+      const serve = reverseDial ? endpointFor(coord, w.port) : undefined;
+      const a: WorkerAssignment = { kind: "worker", id: newId("as"), deploymentId: dep.id, port: w.port, device: w.device, threads: w.threads, memCapMiB: w.memCapMiB, peerPort: w.peerPort, peers, allow, serve, enforce: { ramMiB: allocation?.ramMiB ?? node.offer?.ramMiB, cpuCores: allocation?.cpuCores ?? node.offer?.cpuCores }, layers: w.layers, modelLayers: profile.layers };
       return { nodeId: node.id, a };
     });
     for (const { nodeId, a } of assignments) { if (!this.deps.channel.assign(nodeId, a)) throw new Error(`node ${nodeId} is offline`); }
@@ -637,7 +953,8 @@ export class DeploymentManager {
     const port = this.freePort(coord.id, serverPortBase(), this.usedPorts());
     const c: CoordinatorAssignment = {
       kind: "coordinator", id: newId("as"), deploymentId: dep.id, model: { path: plan.modelPath },
-      rpc: workers.map(({ w, node }) => endpointFor(node, w.port)), devices: [...workers.map((_, i) => `RPC${i}`), plan.coordinatorDevice],
+      // Marked inbound: each worker was given a serve target, so these addresses are only a fallback.
+      rpc: workers.map(({ w, node }) => ({ ...endpointFor(node, w.port), inbound: reverseDial })), devices: [...workers.map((_, i) => `RPC${i}`), plan.coordinatorDevice],
       tensorSplit: plan.engineTensorSplit ?? plan.tensorSplit, ctx: plan.ctx, parallel: plan.parallel,
       mtp: plan.chain > 0 && plan.mtpPath ? { path: plan.mtpPath, chain: plan.chain } : undefined,
       speculation: plan.speculation,
@@ -691,7 +1008,7 @@ export class DeploymentManager {
       ? "automatic recovery exhausted; explicit Start required" : `recovery scheduled in ${delay}ms after required nodes reconnect`, { deploymentId: id });
   }
 
-  private async teardown(id: string): Promise<void> {
+  private async teardown(id: string, opts: { abandonOfflineCleanup?: boolean } = {}): Promise<void> {
     if (this.closed) throw new Error("control is shutting down");
     const rows = this.deps.reg.listAssignments(id).filter((r) => r.state !== "stopped");
     // coordinator first (it holds the client sockets), then workers
@@ -700,13 +1017,24 @@ export class DeploymentManager {
       this.deps.reg.retireAssignment(r.id);
       const stop: Assignment = { kind: "stop", id: r.body.id, deploymentId: id };
       this.deps.channel.send(r.nodeId, { t: "assign", assignment: stop });
+      // An offline node cannot answer, so its cleanup can never be proven - and a re-placement must not
+      // be blocked forever by that. The assignment is already retired, so control reissues the stop the
+      // moment the node reconnects; until then its route is withdrawn and it serves nothing. Everything
+      // that CAN answer is still waited for, unchanged: no second engine on a node we can reach.
+      if (opts.abandonOfflineCleanup && !this.deps.channel.isOnline(r.nodeId)) {
+        const host = this.deps.reg.getNode(r.nodeId)?.hostname ?? r.nodeId;
+        this.deps.log.info("abandoning cleanup on an offline node for a re-placement", { deploymentId: id, nodeId: r.nodeId });
+        this.deps.reg.event("deployment", `${host} is offline; its cleanup is unprovable, retired and will be stopped on reconnect`, { deploymentId: id });
+        continue;
+      }
       // Offline nodes may reconnect inside this budget. Hello reissues the stop or confirms
       // absence; a failed send is not grounds to skip waiting for that acknowledgement.
       // A failed engine can still own ports or have cleanup in progress. Only stopped/hello absence proves release.
       await this.waitFor(r.id, ["stopped"], this.deps.stopTimeoutMs ?? STOP_TIMEOUT_MS, false).catch(() => {});
       if (this.closed) throw new Error("control is shutting down");
     }
-    const pending = this.deps.reg.listAssignments(id).filter((r) => r.state !== "stopped");
+    const pending = this.deps.reg.listAssignments(id).filter((r) => r.state !== "stopped"
+      && !(opts.abandonOfflineCleanup && !this.deps.channel.isOnline(r.nodeId)));
     if (pending.length) throw new Error(`cleanup pending acknowledgement: ${pending.map((r) => r.id).join(", ")}`);
   }
 
@@ -762,13 +1090,21 @@ export class DeploymentManager {
     if (this.closed || !this.deps.reg.deploymentIntent(id).running || generation !== (this.generations.get(id) ?? 0)) throw new Error("deployment operation cancelled");
   }
 
-  private plan(spec: DeploymentSpec, usedPorts: Map<string, Set<number>>, replacingId?: string): Plan {
+  private plan(spec: DeploymentSpec, usedPorts: Map<string, Set<number>>, replacingId?: string, opts: { exclude?: Set<string> } = {}): Plan {
     const profile = this.deps.profiles.get(spec.profile);
     if (!profile) throw new Error(`unknown profile ${spec.profile}`);
     try {
       const input = this.fleetInput();
+      // A node that just failed to hold this deployment is not a candidate again: excluding it is what
+      // turns a failed move back into a placement that works, and what stops the ordinary recovery from
+      // walking into the same node it just bounced off.
+      const remembered = replacingId ? this.moveExcluded.get(replacingId) : undefined;
+      const fresh = !!remembered && Date.now() - remembered.at <= 10 * 60_000;
+      if (remembered && !fresh) this.moveExcluded.delete(replacingId!);
+      const exclude = new Set<string>([...(opts.exclude ?? []), ...(fresh ? remembered!.nodes : [])]);
+      const nodes = exclude.size ? input.nodes.filter((n) => !exclude.has(n.id)) : input.nodes;
       const reserved = reservedResources(input.deployments, input.assignments, input.nodes, new Set(replacingId ? [replacingId] : []));
-      return planWithResources({ spec, profile, nodes: input.nodes, reserved, usedPorts, nativeQualifications: this.deps.nativeQualifications });
+      return planWithResources({ spec, profile, nodes, reserved, usedPorts, nativeQualifications: this.deps.nativeQualifications });
     } catch (e) {
       if (e instanceof PlanError) throw new Error(`no plan: ${e.message}`); // message already carries every reason
       throw e as Error;
