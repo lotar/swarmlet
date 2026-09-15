@@ -1,0 +1,97 @@
+{
+  "id": "qwen38-27b-q8",
+  "name": "Qwen3.8-27B Q8_0 (dense VL, hybrid gated-deltanet/attention)",
+  "rank": 30,
+  "modelName": "qwen3.8-27b",
+  "ggufPattern": "^Qwen3\\.8-27B-Q8_0\\.gguf$",
+  "mtpPattern": "^mtp-Qwen3\\.8-27B-Q8_0\\.gguf$",
+  "layers": 64,
+  "layerMiB": 389,
+  "coordinatorHostMiB": 12288,
+  "boundaryBytes": 20480,
+  "workerMarginMiB": 1536,
+  "envelope": [
+    {
+      "workerLayers": 5,
+      "maxCtx": 262144,
+      "maxParallel": 16,
+      "maxChain": 3
+    },
+    {
+      "workerLayers": 6,
+      "maxCtx": 262144,
+      "maxParallel": 16,
+      "maxChain": 3
+    },
+    {
+      "workerLayers": 8,
+      "maxCtx": 262144,
+      "maxParallel": 16,
+      "maxChain": 3
+    },
+    {
+      "workerLayers": 10,
+      "maxCtx": 262144,
+      "maxParallel": 16,
+      "maxChain": 3
+    },
+    {
+      "workerLayers": 12,
+      "maxCtx": 262144,
+      "maxParallel": 16,
+      "maxChain": 3
+    },
+    {
+      "workerLayers": 15,
+      "maxCtx": 262144,
+      "maxParallel": 16,
+      "maxChain": 3
+    },
+    {
+      "workerLayers": 20,
+      "maxCtx": 262144,
+      "maxParallel": 16,
+      "maxChain": 3
+    },
+    {
+      "workerLayers": 25,
+      "maxCtx": 262144,
+      "maxParallel": 16,
+      "maxChain": 3
+    },
+    {
+      "workerLayers": 30,
+      "maxCtx": 262144,
+      "maxParallel": 16,
+      "maxChain": 3
+    }
+  ],
+  "extraArgs": [
+    "-fa",
+    "on",
+    "--cache-ram",
+    "0",
+    "--ctx-checkpoints",
+    "0",
+    "--predict",
+    "52428"
+  ],
+  "download": {
+    "files": [
+      {
+        "name": "Qwen3.8-27B-Q8_0.gguf",
+        "kind": "gguf",
+        "url": "https://huggingface.co/ggml-org/Qwen3.8-27B-GGUF/resolve/main/Qwen3.8-27B-Q8_0.gguf",
+        "sha256": "f5c702d8820d36fb55985bb238fc83ee3a313e920f4b752a437c3a6a9e14e4c8",
+        "bytes": 28595763552
+      },
+      {
+        "name": "mtp-Qwen3.8-27B-Q8_0.gguf",
+        "kind": "mtp",
+        "url": "https://huggingface.co/ggml-org/Qwen3.8-27B-GGUF/resolve/main/mtp-Qwen3.8-27B-Q8_0.gguf",
+        "sha256": "cbf60a0c48b431bb61f1d49b8948dc88ac29c398d6dbdbbb2e6e89ef77eacc9a",
+        "bytes": 3164006688
+      }
+    ]
+  }
+}
