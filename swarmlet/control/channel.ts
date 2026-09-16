@@ -23,6 +23,9 @@ export interface ConnData {
   mux: StreamMux | null;
   agentVersion: string;
   lastSeen: number;
+  /** Set when the connection went quiet past staleMs: the route is withdrawn but the socket is kept, so a
+   *  slow or protocol-behind agent does not lose its session over a missed ping. */
+  unresponsiveAt?: number;
   ping?: { ts: string; started: number };
   link?: { rttMs: number; measuredAt: string };
 }
@@ -34,6 +37,8 @@ export interface ChannelHooks {
   onLog?: (nodeId: string, assignmentId: string, line: string) => void;
   onHello?: (nodeId: string, hello: HelloMsg) => void;
   onOffline?: (nodeId: string) => void;
+  /** A connection that had gone unresponsive spoke again: the same socket is a live route once more. */
+  onNodeOnline?: (nodeId: string) => void;
 }
 
 const encoder = new TextEncoder();
@@ -60,8 +65,13 @@ export class AgentChannel {
   via(nodeId: string): ConnVia | null { return this.conns.get(nodeId)?.data.via ?? null; }
   link(nodeId: string) { return this.conns.get(nodeId)?.data.link; }
 
-  isOnline(nodeId: string): boolean { return this.conns.has(nodeId); }
-  onlineNodeIds(): string[] { return [...this.conns.keys()]; }
+  /** True when the node has a connection AND that connection is answering. A socket kept open for a node
+   *  that stopped responding is not a route: every caller that places work checks this first. */
+  isOnline(nodeId: string): boolean {
+    const ws = this.conns.get(nodeId);
+    return !!ws && ws.data.unresponsiveAt === undefined;
+  }
+  onlineNodeIds(): string[] { return [...this.conns.entries()].filter(([, ws]) => ws.data.unresponsiveAt === undefined).map(([id]) => id); }
 
   send(nodeId: string, msg: ControlToAgent): boolean {
     const ws = this.conns.get(nodeId);
@@ -189,11 +199,43 @@ export class AgentChannel {
     }
   }
 
-  /** Send a ping to every node; drop connections silent for longer than `staleMs`. */
-  sweep(staleMs = 30_000): void {
-    const cutoff = Date.now() - staleMs;
+  /** Send a ping to every node, and judge how it answers.
+   *
+   *  A node that has been silent for `staleMs` is no longer a route - its assignments cannot be reached,
+   *  so it is taken offline and `onOffline` runs, exactly as if the socket had closed. What it does NOT do
+   *  is close the socket: a quiet connection is not proof of a dead one. An older agent that does not speak
+   *  this ping yet, a frame lost on a relay hop, or a machine briefly suspended would all have been torn
+   *  down and forced into a full reconnect (the live case on 2026-09-16: one node reconnected ~100 times a
+   *  day for five days, every time 30s after its hello, because nothing it sent afterwards reached control).
+   *  The socket is kept for `staleMs * reapFactor` so a recoverable one can resume with no reconnect, and
+   *  only then closed - which still reaps a genuinely half-open connection. */
+  sweep(staleMs = 30_000, reapFactor = 10): void {
+    const now = Date.now();
+    const cutoff = now - staleMs;
     for (const [nodeId, ws] of this.conns) {
-      if (ws.data.lastSeen < cutoff) { this.log.warn("stale connection dropped", { nodeId }); ws.close(1001, "stale"); continue; }
+      if (ws.data.lastSeen < cutoff) {
+        if (ws.data.unresponsiveAt === undefined) {
+          ws.data.unresponsiveAt = now;
+          ws.data.mux?.closeAll("node unresponsive");
+          this.reg.setOnline(nodeId, false);
+          this.reg.event("offline", `unresponsive for ${Math.round(staleMs / 1000)}s (route withdrawn, socket kept)`, { nodeId });
+          this.hooks.onOffline?.(nodeId);
+          this.log.warn("node unresponsive; route withdrawn", { nodeId, staleMs });
+        }
+        if (now - ws.data.unresponsiveAt > staleMs * reapFactor) {
+          this.log.warn("unresponsive connection closed", { nodeId, silentMs: now - ws.data.lastSeen });
+          ws.close(1001, "stale");
+        }
+        continue;
+      }
+      if (ws.data.unresponsiveAt !== undefined) {
+        // It answered again on the same socket: hand it back its route without a reconnect.
+        ws.data.unresponsiveAt = undefined;
+        this.reg.setOnline(nodeId, true, ws.data.agentVersion || undefined);
+        this.reg.event("online", "responsive again (route restored)", { nodeId });
+        this.hooks.onNodeOnline?.(nodeId);
+        this.log.info("node responsive again", { nodeId });
+      }
       if (ws.data.ping && performance.now() - ws.data.ping.started < staleMs) continue;
       const ts = new Date().toISOString();
       ws.data.ping = { ts, started: performance.now() };
