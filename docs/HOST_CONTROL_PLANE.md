@@ -19,3 +19,37 @@ python3 swarmlet/e2e/idle-window.py --allow-stopped --check --control-url https:
 ```
 
 The gate still reads the admin token from `--control-config` (default `~/.swarmlet/control/control.json`), requires known zero activity, and preserves the existing production-owner and listener checks. Omit `--check` and supply the operator after `--` to run inside a verified quiet window. The default controller URL remains localhost for local installations.
+
+## Releasing an agent build to the fleet
+
+The node agent ships as a **signed release** in the controller's data dir, not as a git checkout: nodes
+pull it with their own updater (`~/.swarmlet/logs/agent.out.log` shows `verified release <seq>` →
+`started agent …` → `activated release <seq>`), and the feed refuses to move backwards.
+
+```sh
+# on the build host (the engine payload must be native for the target platform)
+cd swarmlet
+SWARMLET_ENGINE_DIST=<a previous release's engine dir> bun run node-agent/build.ts darwin
+tar czf /tmp/agent-<platform>-<arch>-<seq>.tar.gz -C dist/agent/darwin swarmlet-node engine
+
+# on the host running the controller (the signing key lives in the data dir; publishing never generates one)
+scp /tmp/agent-<platform>-<arch>-<seq>.tar.gz root@the-shop:/root/
+ssh root@the-shop 'mkdir -p /src-<seq> && tar xzf /root/agent-<platform>-<arch>-<seq>.tar.gz -C /src-<seq> \
+  && find /src-<seq> -name "._*" -delete && chmod -R a+rX /src-<seq>'
+ssh root@the-shop 'docker run --rm --user 1000:1000 \
+  -v /root/projects/swarmlet-control/build:/app \
+  -v /root/projects/swarmlet-control/data:/data \
+  -v /src-<seq>:/src:ro -w /app oven/bun:1.3.14-slim \
+  bun run swarmlet/control/publish-release.ts /data /src darwin arm64 <seq> <version>'
+```
+
+Four traps, each learned the hard way on 2026-09-16:
+
+1. **`bun` is not installed on the controller host.** Run the publisher *inside* the Bun image (`oven/bun:1.3.14-slim`, the same runtime the controller container uses) with the host's build dir, data dir and payload mounted.
+2. **Run it as uid 1000 (`--user 1000:1000`)** — that is the `bun` user inside the container and the `claude` user on the host that owns the release tree (`drwx------`). Root-owned release files are what you get otherwise.
+3. **`tar` from macOS preserves the builder's uid and mode.** A payload extracted as root stays `uid 501`, mode `700`, and uid 1000 then cannot read it (the publisher fails with `EACCES` in `publishRelease`). `chmod -R a+rX` after extraction.
+4. **Strip AppleDouble files** (`find … -name '._*' -delete`): macOS tar adds ~17 of them for this payload, and an `._*.json` reaching a node once crashed production in a boot loop.
+
+Verify after publishing: the feed's `sequence` advanced, `swarmlet-node`'s `sha256` in the manifest equals the
+binary you built, and on a node that `~/.swarmlet/releases/<seq>-*/swarmlet-node` hashes the same. A release
+that is wrong can be superseded (never rewritten) with a higher sequence.
