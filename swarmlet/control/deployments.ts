@@ -16,6 +16,8 @@ export interface DeploymentDeps {
   recoveryDelayMs?: number; stopTimeoutMs?: number; reconnectGraceMs?: number;
   /** Floor between two automatic re-placements of the same deployment (default 10 min). */
   moveIntervalMs?: number;
+  /** Overridable for tests and for a rig that wants a longer memory: how long a crashed placement is refused. */
+  crashCooldownMs?: number;
   /** A deployment must have been stable this long before it can be moved (default 60 s). */
   moveSettleMs?: number;
   /** How long a deployment may sit non-ready before the sweeper re-plans it (default 5 min). */
@@ -31,6 +33,9 @@ const STOP_TIMEOUT_MS = 2 * 60_000;
 const MAX_RECOVERY_ATTEMPTS = 5;
 /** Default for DeploymentDeps.wedgedLoadMs: a load that has not finished in this long has stopped making progress. */
 const WEDGED_LOAD_MS = 5 * 60_000;
+/** How long a placement that took the engine down is kept out of the way, and how far a repeat extends it. */
+const CRASH_COOLDOWN_MS = 60 * 60_000;
+const CRASH_COOLDOWN_MAX_MS = 24 * 60 * 60_000;
 
 function newId(prefix: string): string {
   const b = new Uint8Array(6); crypto.getRandomValues(b);
@@ -39,6 +44,38 @@ function newId(prefix: string): string {
 
 function planNodes(plan: Plan): string[] {
   return plan.nativeExecution ? plan.nativeExecution.endpoints.map(e => e.nodeId) : [plan.coordinatorNodeId, ...plan.workers.map(w => w.nodeId)];
+}
+
+/** True when a candidate would put exactly the same work on exactly the same nodes as the plan already
+ *  running. A re-decision that reaches the same layout must not cost an engine reload: a 27B model takes
+ *  minutes to come back, and the placement it would come back to is the one that never stopped serving.
+ *  Ports are deliberately not compared - they can shift when another deployment takes one, and a port
+ *  change alone is not worth an outage. */
+export function samePlacement(a: Plan | null | undefined, b: Plan | null | undefined): boolean {
+  if (!a || !b) return false;
+  if (a.coordinatorNodeId !== b.coordinatorNodeId || a.coordinatorDevice !== b.coordinatorDevice) return false;
+  if (a.modelPath !== b.modelPath || a.mtpPath !== b.mtpPath) return false;
+  if (a.ctx !== b.ctx || a.parallel !== b.parallel || a.chain !== b.chain) return false;
+  if (JSON.stringify(a.speculation ?? null) !== JSON.stringify(b.speculation ?? null)) return false;
+  if (JSON.stringify(a.nativeExecution ?? null) !== JSON.stringify(b.nativeExecution ?? null)) return false;
+  if (a.workers.length !== b.workers.length) return false;
+  for (let i = 0; i < a.workers.length; i++) {
+    const x = a.workers[i]!, y = b.workers[i]!;
+    if (x.nodeId !== y.nodeId || x.layers !== y.layers || x.device !== y.device || x.threads !== y.threads) return false;
+  }
+  const aSplit = a.engineTensorSplit ?? a.tensorSplit, bSplit = b.engineTensorSplit ?? b.tensorSplit;
+  if (aSplit.length !== bSplit.length) return false;
+  for (let i = 0; i < aSplit.length; i++) if (aSplit[i] !== bSplit[i]) return false;
+  return true;
+}
+
+/** A stable name for what was put where, used to remember a placement that crashed. Ports and timings are
+ *  excluded on purpose: the shape is the model, the nodes, the split and the threads - not the ephemeral
+ *  numbers that change when another deployment takes a port. */
+export function planFingerprint(plan: Plan): string {
+  const workers = plan.workers.map((w) => `${w.nodeId}/${w.device}/${w.layers}/${w.threads}`).join(",");
+  const split = (plan.engineTensorSplit ?? plan.tensorSplit).join("-");
+  return [plan.coordinatorNodeId, plan.coordinatorDevice, workers, split, plan.ctx, plan.parallel, plan.chain, plan.modelPath].join("|");
 }
 
 export class DeploymentManager {
@@ -59,9 +96,13 @@ export class DeploymentManager {
   /** Last move decision per deployment - a re-placement, or a rescue attempt that could not move: the
    *  cooldown that stops two equivalent placements fighting. */
   private lastMove = new Map<string, number>();
+  /** Placements this deployment has proved it cannot run: fingerprint -> why, and when to try again.
+   *  A shape that aborted in the engine is not a layout to re-decide into fifteen minutes later. */
+  private blocked = new Map<string, Map<string, { until: number; cooldownMs: number; why: string }>>();
   /** Nodes a deployment has just failed to start on, so neither a retry nor the recovery re-chooses them. */
   private moveExcluded = new Map<string, { nodes: Set<string>; at: number }>();
   private get moveIntervalMs(): number { return this.deps.moveIntervalMs ?? 10 * 60_000; }
+  private get crashCooldownMs(): number { return this.deps.crashCooldownMs ?? CRASH_COOLDOWN_MS; }
   private get wedgedLoadMs(): number { return this.deps.wedgedLoadMs ?? WEDGED_LOAD_MS; }
   /** A move must be worth that reload: layers off the serving node, or a materially larger coordinator. */
   private readonly moveMarginLayers = 2;
@@ -232,6 +273,9 @@ export class DeploymentManager {
       // failure and still fails, immediately and loudly.
       const leaving = !this.deps.channel.isOnline(nodeId) || /shutting down|going offline|agent stopping/i.test(detail ?? "");
       if (leaving) { this.onOffline(nodeId); return; }
+      // The engine died on its own here (a node that is leaving took the branch above). Remember the shape so
+      // that the next re-decision cannot walk into it again.
+      if (/code\s*(?!0[,\s)])[1-9]|SIG[A-Z]+/.test(detail ?? "") && dep.plan) this.blockPlacement(dep.id, dep.plan, detail ?? "engine failed");
       void this.fail(dep.id, `assignment ${id} on ${nodeId} failed: ${detail ?? "no detail"}`).catch((e) => this.deps.log.warn("cleanup pending", { id: dep.id, error: String(e) }));
     }
   }
@@ -461,6 +505,41 @@ export class DeploymentManager {
     return `still not ready after ${Math.round(age / 1000)}s`;
   }
 
+  /** Remember that this deployment cannot run this shape, and say so once, with the evidence. */
+  private blockPlacement(id: string, plan: Plan, why: string): void {
+    const fingerprint = planFingerprint(plan);
+    let perDeployment = this.blocked.get(id);
+    if (!perDeployment) { perDeployment = new Map(); this.blocked.set(id, perDeployment); }
+    const previous = perDeployment.get(fingerprint);
+    // Every repeat of the same crash buys a longer rest: one outage teaches the control nothing new, so the
+    // shape is kept out of the way rather than rediscovered on a timer.
+    const cooldownMs = previous ? Math.min(previous.cooldownMs * 4, CRASH_COOLDOWN_MAX_MS) : this.crashCooldownMs;
+    perDeployment.set(fingerprint, { until: Date.now() + cooldownMs, cooldownMs, why });
+    this.deps.reg.event("deployment", `this placement crashed (${why}); not retrying it for ${Math.round(cooldownMs / 60_000)} min - stop and start the deployment to clear that memory`, { deploymentId: id });
+  }
+
+  /** The evidence against this shape, if it is still within its rest. */
+  private blockedUntil(id: string, plan: Plan): { until: number; why: string } | null {
+    const fingerprint = planFingerprint(plan);
+    const perDeployment = this.blocked.get(id);
+    const entry = perDeployment?.get(fingerprint);
+    if (!entry) return null;
+    if (entry.until <= Date.now()) { perDeployment!.delete(fingerprint); return null; }
+    return entry;
+  }
+
+  /** Plan a spec for a deployment, refusing a shape this deployment has already crashed on. Every start
+   *  path funnels through here, so a recovery, a move and a manual start are equally unable to adopt a
+   *  placement that is known to take the engine down. */
+  private planFor(dep: Deployment): Plan {
+    const plan = this.plan(dep.spec, this.usedPorts(), dep.id);
+    const blocked = this.blockedUntil(dep.id, plan);
+    if (blocked) {
+      throw new Error(`refusing a placement this deployment crashed on ${Math.max(1, Math.round((blocked.until - Date.now()) / 60_000))} min ago: ${blocked.why}`);
+    }
+    return plan;
+  }
+
   /**
    * Re-plan a running deployment against the nodes that are here now, and start the result.
    *
@@ -500,6 +579,21 @@ export class DeploymentManager {
     const name = (n: string) => this.deps.reg.getNode(n)?.hostname ?? n;
     const before = dep.plan ? planNodes(dep.plan).map(name).join(", ") : "-";
     const after = planNodes(candidate).map(name).join(", ");
+    const blockedCandidate = this.blockedUntil(id, candidate);
+    if (blockedCandidate) {
+      this.lastMove.set(id, Date.now());
+      const keepServing = dep.state === "ready";
+      this.deps.reg.event("deployment", `${dep.spec.name}: ${reason}; ${after} crashed recently (${blockedCandidate.why}) - ${keepServing ? "keeping the placement that is serving" : "refusing to place it again yet"}`, { deploymentId: id });
+      return false;
+    }
+    // A re-decision that lands on the layout already running must not cost a reload. This is the case that
+    // restarted a serving deployment every time a peer node flapped: the candidate was identical, the event
+    // below still announced a re-placement, and the model had to come back up to reach where it already was.
+    if (dep.state === "ready" && dep.plan && samePlacement(dep.plan, candidate)) {
+      this.lastMove.set(id, Date.now()); // pacing: nothing to re-decide here for another move interval
+      this.deps.reg.event("deployment", `${dep.spec.name}: ${reason}; placement unchanged (${after}) - not restarting`, { deploymentId: id });
+      return false;
+    }
     this.deps.reg.setDeploymentIntent(id, { attempts: 0, retryAt: 0 });
     this.deps.reg.event("deployment", `${dep.spec.name}: re-placing after ${reason} (${before} -> ${after})`, { deploymentId: id });
     this.lastMove.set(id, Date.now());
@@ -758,6 +852,8 @@ export class DeploymentManager {
     this.assertFleetAccess(fleetToken);
     this.must(id);
     this.reconnecting.delete(id);
+    // An explicit stop is the owner saying "start again from scratch": forget what crashed.
+    this.blocked.delete(id);
     this.deps.reg.setDeploymentIntent(id, { running: false, attempts: 0, retryAt: 0 });
     this.cancel(id);
     this.deps.reg.updateDeployment(id, { state: "draining", endpoint: null });
@@ -855,7 +951,7 @@ export class DeploymentManager {
 
   private async startReplica(dep: Deployment, generation: number): Promise<void> {
     const profile = this.deps.profiles.get(dep.spec.profile)!;
-    const plan = this.plan(dep.spec, this.usedPorts(), dep.id);
+    const plan = this.planFor(dep);
     this.deps.reg.updateDeployment(dep.id, { plan, state: "loading" });
     const node = this.node(plan.coordinatorNodeId);
     const port = this.freePort(node.id, serverPortBase(), this.usedPorts());
@@ -905,7 +1001,7 @@ export class DeploymentManager {
   private async startSplit(dep: Deployment, generation: number): Promise<void> {
     const profile = this.deps.profiles.get(dep.spec.profile)!;
     const used = this.usedPorts();
-    const plan = this.plan(dep.spec, used, dep.id);
+    const plan = this.planFor(dep);
     this.deps.reg.updateDeployment(dep.id, { plan });
     const coord = this.node(plan.coordinatorNodeId);
     const workers = plan.workers.map((w) => ({ w, node: this.node(w.nodeId) }));

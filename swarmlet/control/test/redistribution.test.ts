@@ -11,10 +11,10 @@
 // membership answer, so only the sweeper can rescue it - through the same redistribution path again.
 import { afterEach, expect, test } from "bun:test";
 import { Registry } from "../registry.ts";
-import { DeploymentManager } from "../deployments.ts";
+import { DeploymentManager, samePlacement } from "../deployments.ts";
 import { loadProfiles } from "../planner.ts";
 import type { AgentChannel } from "../channel.ts";
-import type { Assignment, AssignmentState, ControlToAgent, DeploymentSpec } from "../../protocol/types.ts";
+import type { Assignment, AssignmentState, ControlToAgent, DeploymentSpec, Plan } from "../../protocol/types.ts";
 
 const fixtures: Array<{ reg: Registry; manager: DeploymentManager }> = [];
 afterEach(() => { for (const f of fixtures.splice(0)) { f.manager.dispose(); f.reg.close(); } });
@@ -25,7 +25,7 @@ const auto: DeploymentSpec = { name: "auto", kind: "split", profile: "qwen35-2b-
 /** Pinned: the owner named the machines, so the control must not move it behind their back. */
 const pinned: DeploymentSpec = { name: "pinned", kind: "split", profile: "qwen35-2b-q8", coordinatorNodeId: "mac", workerNodeIds: ["l1"], transport: "relay", ctx: 1024, parallel: 1, chain: 0 };
 
-function rig(reconnectGraceMs = 5, pacing: { moveIntervalMs?: number; moveSettleMs?: number; wedgedLoadMs?: number } = {}) {
+function rig(reconnectGraceMs = 5, pacing: { moveIntervalMs?: number; moveSettleMs?: number; wedgedLoadMs?: number; crashCooldownMs?: number } = {}) {
   const reg = new Registry(":memory:");
   const online = new Set(["mac", "l1", "l2"]);
   const sent: Array<{ node: string; a: Assignment }> = [];
@@ -52,7 +52,8 @@ function rig(reconnectGraceMs = 5, pacing: { moveIntervalMs?: number; moveSettle
   manager = new DeploymentManager({ reg, channel, profiles: loadProfiles(), log: quiet, recoveryDelayMs: 0, reconnectGraceMs, stopTimeoutMs: 15,
     moveSettleMs: pacing.moveSettleMs ?? 0, moveIntervalMs: pacing.moveIntervalMs ?? 0,
     // Left unset unless a test names it: the shipped threshold is what the default rigs exercise.
-    ...(pacing.wedgedLoadMs === undefined ? {} : { wedgedLoadMs: pacing.wedgedLoadMs }) });
+    ...(pacing.wedgedLoadMs === undefined ? {} : { wedgedLoadMs: pacing.wedgedLoadMs }),
+    ...(pacing.crashCooldownMs === undefined ? {} : { crashCooldownMs: pacing.crashCooldownMs }) });
   fixtures.push({ reg, manager });
   for (const id of ["mac", "l1", "l2"]) {
     const mac = id === "mac", device = mac ? "metal:0" : "cuda:0";
@@ -473,4 +474,171 @@ test("a freshly placed deployment settles before the rescue may move it", async 
 
   expect(f.reg.getDeployment(id)!.state).toBe("loading");
   expect(replaces(f.reg)).toBe(0);
+});
+
+// ---------------------------------------------------------------------------
+// A re-decision that lands on the layout already running must not reload the
+// engine. This is the failure that restarted the production deployment every
+// time a peer node flapped: the candidate plan was identical, the control
+// announced a re-placement, and a 27B model had to be reloaded - minutes of
+// outage - to reach the placement that had never stopped serving.
+// ---------------------------------------------------------------------------
+
+/** A minimal plan; each test varies exactly one thing about it. */
+const planOf = (over: Partial<Plan> = {}): Plan => ({
+  coordinatorNodeId: "mac", coordinatorDevice: "metal:0", workers: [], tensorSplit: [10], ctx: 1024, parallel: 1, chain: 0,
+  env: {}, modelPath: "/models/a.gguf", reasons: [], ...over,
+});
+const worker = (over: Partial<Plan["workers"][number]> = {}): Plan["workers"][number] =>
+  ({ nodeId: "l1", device: "cuda:0", layers: 3, port: 50200, peerPort: 50201, threads: 10, memCapMiB: 3600, ...over });
+
+test("samePlacement: identical placements are equivalent", () => {
+  expect(samePlacement(planOf(), planOf())).toBe(true);
+  expect(samePlacement(planOf({ workers: [worker(), worker({ nodeId: "l2", port: 50210, peerPort: 50211 })] }),
+                       planOf({ workers: [worker(), worker({ nodeId: "l2", port: 50210, peerPort: 50211 })] }))).toBe(true);
+});
+
+test("samePlacement: ports are not part of the placement", () => {
+  // A port can move because another deployment took it. That is not worth an outage.
+  expect(samePlacement(planOf({ workers: [worker()] }), planOf({ workers: [worker({ port: 50999, peerPort: 51000 })] }))).toBe(true);
+});
+
+test("samePlacement: the material fields all matter", () => {
+  const base = planOf({ workers: [worker()] });
+  expect(samePlacement(base, planOf({ workers: [worker({ layers: 4 })] }))).toBe(false);          // different split
+  expect(samePlacement(base, planOf({ workers: [worker({ device: "cpu" })] }))).toBe(false);      // different device
+  expect(samePlacement(base, planOf({ workers: [worker({ threads: 8 })] }))).toBe(false);         // different threads
+  expect(samePlacement(base, planOf({ workers: [worker({ nodeId: "l2" })] }))).toBe(false);       // different node
+  expect(samePlacement(base, planOf({ workers: [] }))).toBe(false);                                // workers dropped
+  expect(samePlacement(base, planOf({ workers: [worker()], coordinatorNodeId: "l1" }))).toBe(false);
+  expect(samePlacement(base, planOf({ workers: [worker()], modelPath: "/models/b.gguf" }))).toBe(false);
+  expect(samePlacement(base, planOf({ workers: [worker()], ctx: 2048 }))).toBe(false);
+  expect(samePlacement(base, planOf({ workers: [worker()], parallel: 2 }))).toBe(false);
+  expect(samePlacement(base, planOf({ workers: [worker()], chain: 2 }))).toBe(false);
+  expect(samePlacement(base, planOf({ workers: [worker()], tensorSplit: [9, 1] }))).toBe(false);
+  expect(samePlacement(base, planOf({ workers: [worker()], engineTensorSplit: [9, 1] }))).toBe(false);
+});
+
+test("samePlacement: worker order is part of the placement", () => {
+  const a = planOf({ workers: [worker(), worker({ nodeId: "l2" })] });
+  const b = planOf({ workers: [worker({ nodeId: "l2" }), worker()] });
+  expect(samePlacement(a, b)).toBe(false);
+});
+
+test("samePlacement: a missing plan is never equivalent", () => {
+  expect(samePlacement(null, planOf())).toBe(false);
+  expect(samePlacement(undefined, planOf())).toBe(false);
+  expect(samePlacement(planOf(), null)).toBe(false);
+});
+
+test("a node joining does not reload a ready deployment when the plan would not change", async () => {
+  const f = rig(150);
+  const { id } = await f.manager.create({ ...auto, autoModel: true, kind: "replica" });
+  await f.manager.start(id);
+  await settle();
+  expect(f.reg.getDeployment(id)!.state).toBe("ready");
+  const before = f.sent.length;               // every assign, including a restart's stop+assign, lands in sent
+  f.manager.onNodeOnline("l2");                // a peer node rejoining - the live trigger for this bug
+  await settle();
+  expect(f.sent.length).toBe(before);          // no teardown, no reload
+  expect(f.reg.getDeployment(id)!.state).toBe("ready");
+  expect(events(f.reg).some((e) => /placement unchanged/.test(e))).toBe(true);
+});
+
+test("a re-decision that changes the placement still restarts", async () => {
+  const f = rig(150);
+  const { id } = await f.manager.create({ ...auto, autoModel: true, kind: "replica" });
+  await f.manager.start(id);
+  await settle();
+  const before = f.sent.length;
+  // A material change to what is being asked for: the same nodes cannot serve the new context unchanged.
+  f.reg.updateDeployment(id, { spec: { ...f.reg.getDeployment(id)!.spec, ctx: 2048 } });
+  f.manager.onNodeOnline("l2");
+  await settle();
+  expect(f.sent.length).toBeGreaterThan(before);
+  expect(events(f.reg).some((e) => /placement unchanged/.test(e))).toBe(false);
+});
+
+// ---------------------------------------------------------------------------
+// A placement that took the engine down is not one to walk into again. The
+// production deployment was caught in exactly this loop: an alternative layout
+// aborted the engine (SIGABRT inside the RPC backend), nothing recorded it, and
+// the next re-decision chose the same shape fifteen minutes later.
+// ---------------------------------------------------------------------------
+
+/** Assignments that actually start work - a stop is cleanup, not a placement. */
+const workStarts = (sent: Array<{ node: string; a: Assignment }>) => sent.filter((x) => x.a.kind !== "stop");
+const workAssignment = (reg: Registry, id: string) =>
+  reg.listAssignments(id).find((a) => (a.body as { kind?: string }).kind !== "stop" && a.state !== "stopped" && !a.retired);
+
+test("an engine crash is remembered and that shape is not placed again", async () => {
+  const f = rig(150);
+  const { id } = await f.manager.create(auto);
+  await f.manager.start(id);
+  await settle();
+  const a = workAssignment(f.reg, id)!;
+  const before = workStarts(f.sent).length;
+
+  f.report(a.nodeId, a.id, "failed", "engine exited (code 134, SIGABRT): ggml_backend_rpc_add_server");
+  await settle();
+  await sweep(f.manager);
+
+  expect(events(f.reg).some((e) => /this placement crashed/.test(e))).toBe(true);
+  expect(events(f.reg).some((e) => /not retrying it for/.test(e))).toBe(true);
+  expect(workStarts(f.sent).length).toBe(before);                       // recovery refused to respawn it
+  const dep = f.reg.getDeployment(id)!;
+  expect(String(dep.error ?? "")).toMatch(/refusing a placement/);   // and said why, loudly
+});
+
+test("a graceful exit blocks nothing: recovery places the deployment again", async () => {
+  const f = rig(150);
+  const { id } = await f.manager.create(auto);
+  await f.manager.start(id);
+  await settle();
+  const a = workAssignment(f.reg, id)!;
+  const before = workStarts(f.sent).length;
+
+  f.report(a.nodeId, a.id, "failed", "engine exited (code 0, signal=null, stopping=true)");
+  await settle();
+  await sweep(f.manager);
+
+  expect(events(f.reg).some((e) => /this placement crashed/.test(e))).toBe(false);
+  expect(workStarts(f.sent).length).toBeGreaterThan(before);             // it was allowed to come back
+});
+
+test("the memory expires: once the cooldown has passed the shape may be placed again", async () => {
+  const f = rig(150, { crashCooldownMs: 1500 });
+  const { id } = await f.manager.create(auto);
+  await f.manager.start(id);
+  await settle();
+  const a = workAssignment(f.reg, id)!;
+  const before = workStarts(f.sent).length;
+
+  f.report(a.nodeId, a.id, "failed", "engine exited (code 134, SIGABRT): boom");
+  await settle();
+  await sweep(f.manager, 2);                                  // the recovery attempt is what meets the memory
+  expect(String(f.reg.getDeployment(id)!.error ?? "")).toMatch(/refusing a placement/);
+  expect(workStarts(f.sent).length).toBe(before);             // and it did not respawn the shape
+
+  await Bun.sleep(1600);                                      // the memory lapses
+  await f.manager.start(id);                                  // an explicit start is allowed through again
+  await settle();
+  expect(workStarts(f.sent).length).toBeGreaterThan(before);
+});
+
+test("a repeat crash is remembered for longer than the first", async () => {
+  const f = rig(150);
+  const { id } = await f.manager.create(auto);
+  await f.manager.start(id);
+  await settle();
+  const plan = f.reg.getDeployment(id)!.plan!;
+  // White box on purpose: the second strike is a policy about the memory itself, and driving two real
+  // crashes of one shape would test the recovery budget twice over instead.
+  const memory = f.manager as unknown as { blockPlacement(id: string, plan: Plan, why: string): void };
+  memory.blockPlacement(id, plan, "first strike");
+  memory.blockPlacement(id, plan, "second strike");
+  const minutes = events(f.reg).filter((e) => /not retrying it for/.test(e))
+    .map((m) => Number(/(\d+) min/.exec(m)?.[1] ?? -1));
+  expect(minutes.length).toBe(2);
+  expect(minutes.sort((a, b) => a - b)).toEqual([60, 240]);    // an hour, then four times that after the repeat
 });
