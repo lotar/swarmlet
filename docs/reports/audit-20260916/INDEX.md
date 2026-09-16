@@ -85,7 +85,8 @@ Independent confirmation, from a different agent in a different lane (`L6.md`):
 | L7 | swarmlet node-agent | `L7.md` | 186 pass / 0 fail; **provably dead** config surface (`NodeConfig.advertise`, `IS_WINDOWS`, `ENGINE_BINARIES`); download size-only acceptance flagged |
 | L8 | UIs, protocol, profiles, packaging | `L8.md` | Dockerfile COPY sources all resolve; 26/29 control endpoints have a UI caller; **profile-vs-doc-vs-test disagreement tabulated**; the install.sh incident |
 | L9 | benchmark evidence estate | `L9.md` | re-derivation of published numbers from raw JSONL; unreferenced harness scripts listed |
-| L5, L10 | tests/evals; live system survey | not delivered | both lanes were still running when the night ended; their briefs are in the dispatch script (`/tmp/e2e-audit/dispatch.js`) if you want them re-run |
+| L5 | tests/evals estate | not delivered | its headline output is the gate status below, which is measured |
+| L10 | live system survey | **done by hand** (see below) | the lane did not deliver; the survey was cheap enough to run directly |
 
 ## Second pass (same night, after the first index)
 
@@ -95,6 +96,7 @@ Independent confirmation, from a different agent in a different lane (`L6.md`):
 | `a386557` (+ pointer `e59297d`) | the heal loop's LOCAL-PATCH guard watched **16 files by existence** while there are **17 files / 36 sites**: doctor.ts logged OK with five of six patches reverted. It now checks a per-file count over all 17 and says what it verified | **the live loop adopted it on its next tick**: `11:36:52 | local-patches OK (17 files, 36 marker sites)`; new test `tests/test_gbrain_heal_patch_guard.sh` (8 pass) in `validate.sh --fast` (PASS=180) |
 | `01dba90` | the flash profile README described the levers experiment (ctx 1536, chain 8/12, 2 GiB host) while the production launcher passes `--ctx-size 262144 --parallel 4` and no draft head | doc now follows the rig that runs and says where each number comes from |
 | `(this commit)` | `control/test/profile-invariants.test.ts` derives its expectations from the shipped profiles; found the 35B's unreachable `maxChain 7` on its first run (row is now 0) | control 246 pass / 0 fail |
+| `131aad4` | `sin-harness/test/evidence-integrity.test.ts`: a published report may not cite scratch for a file the repository holds, and a chart's stated range must match the series it embeds. It found the CTX_SWEEP report sending readers to `/tmp/ctxsweep.jsonl` while `ctxsweep-raw-20260913.jsonl` was committed next to it, and a headline "5.3-6.3" against a plotted minimum of 5.35 | `test:unit` 65 pass / 0 fail; the test carries a "teeth" case proving it flags the defect it was written for |
 
 Two things worth knowing from this pass:
 
@@ -118,6 +120,34 @@ site: install.test.sh         -> PASS=26 FAIL=0
 fleet: validate.sh --fast     -> PASS=180 FAIL=0 SKIP=7
 control + tools:              -> 246 + 6 (profile invariants, engine churn) in the gate
 ```
+
+## Live system survey (L10, run by hand)
+
+- **launchd**: every loaded `com.fleet.*` / `com.lotar.*` / `ai.swarmlet.*` job's program and script argument
+  still exists. No stale plists - the class where a job silently fails because its script moved is clean.
+- **Locks**: `~/.ai-fleet/runtime-control.lock` (Jul 10) and ten `~/.ai-fleet/task-journal/*.lock` files
+  (Jul 11-23) have **no holder** and are months old. Nothing appears to be waiting on them, and the live
+  ones (`gbrain-sweeper/sweeper.lock`, rewritten at 11:43) are in use and correct. Deleting the old ones is
+  safe-looking but is a judgement call; they are a cleanup candidate, not a bug I fixed.
+- **Logs**: nothing unbounded. Largest are `cf-tunnel.log` 14 MB, `fleet-cron.log` 9.9 MB,
+  `gbrain-sweeper.log` 5.3 MB, `gbrain-heal.log` 4.8 MB.
+- **The mesh right now**: `/v1/models` on :47800 serves `qwen3.8-27b`, `local`, `swarmlet` (`route: local`),
+  one engine (pid 30373 as of 11:55), deployment `state=ready`, plan `workers: 0 chain: 0`.
+- **The churn is still happening** (16 spawns in the last 3 h at 5.72/h) because the control-plane fix is
+  committed but not deployed. That is the one number to re-check after shipping it:
+  `bun swarmlet/tools/engine-churn.mjs --since -3h` should drop to 0-1 spawns.
+
+## Cleanup candidates (sized, none of them touched)
+
+| what | size | why it is a candidate | risk |
+|---|---|---|---|
+| `sin-harness/data/` | 1.1 GB | gitignored scratch; includes ~624 MB of campaign directories that no script or doc references (only the audit report names them) | it is evidence for old measurements - archive rather than delete if unsure |
+| `swarmlet/engine/` | 6.7 GB | vendored llama.cpp source + build output; needed to rebuild the engine, which is exactly why the deployment-taget pin lives there | keep |
+| `swarmlet/dist/` | 1.3 GB | build output, regenerable | keep or regenerate |
+| `swarmlet/node-shell/` | 3.8 GB | the Mac app shell build | keep if you ship the app |
+| `sin-harness/rig/llama-src` | 93 MB | a second copy of the engine source, excluded from typecheck | keep while the rig builds against it |
+| `local-llm`: 6 Class-A dead scripts + two absent lanes' serve/plist surface | ~88 KB + 60 KB cache | L1 proved zero references | another session is editing that repo |
+| `~/Library/LaunchAgents` July lock files | < 1 KB each | no holders, months old | none observed |
 
 ## How to ship the control fix (the one thing that needs you)
 
