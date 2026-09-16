@@ -87,6 +87,27 @@ Independent confirmation, from a different agent in a different lane (`L6.md`):
 | L9 | benchmark evidence estate | `L9.md` | re-derivation of published numbers from raw JSONL; unreferenced harness scripts listed |
 | L5, L10 | tests/evals; live system survey | not delivered | both lanes were still running when the night ended; their briefs are in the dispatch script (`/tmp/e2e-audit/dispatch.js`) if you want them re-run |
 
+## Second pass (same night, after the first index)
+
+| commit | what | evidence |
+|---|---|---|
+| `86efcae` | the node's Mac app updater logged **8,499 identical failures**, one every ~30 s, because the verifier quotes a temp path with a fresh uuid per attempt and the "already reported" guard compared the raw text. Volatile parts are normalised, and a payload that cannot verify is now terminal for that release (one clear warning, no loop) | node-agent 188 pass / 0 fail |
+| `a386557` (+ pointer `e59297d`) | the heal loop's LOCAL-PATCH guard watched **16 files by existence** while there are **17 files / 36 sites**: doctor.ts logged OK with five of six patches reverted. It now checks a per-file count over all 17 and says what it verified | **the live loop adopted it on its next tick**: `11:36:52 | local-patches OK (17 files, 36 marker sites)`; new test `tests/test_gbrain_heal_patch_guard.sh` (8 pass) in `validate.sh --fast` (PASS=180) |
+| `01dba90` | the flash profile README described the levers experiment (ctx 1536, chain 8/12, 2 GiB host) while the production launcher passes `--ctx-size 262144 --parallel 4` and no draft head | doc now follows the rig that runs and says where each number comes from |
+| `(this commit)` | `control/test/profile-invariants.test.ts` derives its expectations from the shipped profiles; found the 35B's unreachable `maxChain 7` on its first run (row is now 0) | control 246 pass / 0 fail |
+
+Two things worth knowing from this pass:
+
+- **`local-llm` is being edited by another session right now** (its `llm-switch.sh` changed at 10:57:26 while
+  the L1 lane was reading it). I did not touch that repo: L1's findings - `llm-switch list` documented but
+  missing (rc=2), six Class-A dead scripts, the two absent lanes' serve/plist surface, the log rotators -
+  are recorded in `L1.md` for whoever owns the file. Its `status` verb also classified the mesh engine on
+  :8100 as an ORPHAN, which is worth a look: that process belongs to the swarmlet node, not to this repo.
+- **`llm-tune doctor` says NOT READY** for a different reason than it looks: `BLOCK swap free 1G < floor 4G`,
+  `load 21.57 across 18 cores`, and `fit: NEED 133.7 GiB … HAVE metal-free 107.3 GiB` at ctx 262144 with
+  f16 KV. That is the box's state, not a config error, and it is why the local rig should stay down
+  unless a lane needs it.
+
 ## Gate status
 
 ```
@@ -94,6 +115,8 @@ swarmlet: bun run test        -> 467 pass / 0 fail   (typecheck + protocol + con
           bun test e2e        -> 8 pass / 2 fail     (identical on d0fc32a - pre-existing, see above)
 sin-harness: release-check.sh -> RELEASE_CHECK_OK version=1.0.0-alpha.1 portable=true
 site: install.test.sh         -> PASS=26 FAIL=0
+fleet: validate.sh --fast     -> PASS=180 FAIL=0 SKIP=7
+control + tools:              -> 246 + 6 (profile invariants, engine churn) in the gate
 ```
 
 ## How to ship the control fix (the one thing that needs you)
@@ -126,8 +149,12 @@ want to watch it: `--since -3h --json | python3 -m json.tool`.)
    is deliberate (the PLE n-gram table is mmap-backed and "deliberately NOT part of the fit gate"). The JSON is
    what the planner uses; the arithmetic is load-bearing (a full 48-layer replica is 109952 of 110000 MiB), so
    the README is the thing that is wrong - unless 32768 was a typo. See `L8.md` §1.3.
-3. **`qwen36-35b-a3b-q4km` declares `maxChain: 7` with no `mtpPattern`** - the planner refuses chain>0 for a
-   profile without a draft head, so that field is unreachable data. Either add the mtpPattern or drop the 7.
+3. ~~`qwen36-35b-a3b-q4km` declares `maxChain: 7` with no mtpPattern~~ - **done**, the row is 0 and
+   `control/test/profile-invariants.test.ts` fails if any shipped row advertises a chain it cannot deliver.
+   Related and still open: a **replica** with chain > 0 is refused outright ("MTP is not qualified:
+   draft-head residency is not included in the replica memory admission check"), so the 27B's chain-3 rows
+   are usable in splits only. That is a deliberate gap (the controller list stays empty until the rig proof
+   succeeds); closing it is a product decision, and the test pins the refusal by name meanwhile.
 4. **L3's graph-janitor challenge** (83.6 % of links synthesised by a requirement nobody owns).
 5. **gbrain 0.42.53.0 → 0.50.0.0** would clobber all 16+ local patches; the patch list is now one of the
    questions L4's report answers.
