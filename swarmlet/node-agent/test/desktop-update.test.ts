@@ -3,7 +3,7 @@ import { createHash } from 'node:crypto';
 import { mkdtemp, mkdir, readFile, readdir, rename, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { DesktopAppUpdater, installMacDesktop, swapMacDirectories } from '../desktop-update.ts';
+import { DesktopAppUpdater, installMacDesktop, isTerminalUpdateFailure, normaliseUpdateError, swapMacDirectories } from '../desktop-update.ts';
 import { MAC_APP_DESCRIPTOR, MAC_APP_ID, parseMacDesktop, type MacDesktop } from '../../protocol/desktop.ts';
 import type { ReleaseManifest } from '../../protocol/release.ts';
 import { agentPaths } from '../paths.ts';
@@ -100,5 +100,24 @@ test('a pending trial is never used to install the Mac app', async () => {
   } finally {
     if (oldSequence === undefined) delete process.env.SWARMLET_RELEASE_SEQUENCE; else process.env.SWARMLET_RELEASE_SEQUENCE = oldSequence;
     if (oldSupervised === undefined) delete process.env.SWARMLET_SUPERVISED; else process.env.SWARMLET_SUPERVISED = oldSupervised;
+  }
+});
+
+// The failure this guards against, measured on a real machine: the updater is handed a temp directory whose
+// name carries a fresh uuid per attempt, the verifier quotes that name back, so every attempt looked like a
+// NEW error and the "already reported this one" guard never fired. 8499 identical warnings, every ~30 s.
+test('a repeated installer failure is recognised as the same failure', () => {
+  const a = 'Mac app signature verification failed: /Users/x/Applications/.Swarmlet Node.update-68c5d426-14c8-4111-8eb9-64e758f68393.app: invalid signature (code or signature have been modified)';
+  const b = 'Mac app signature verification failed: /Users/x/Applications/.Swarmlet Node.update-9a8daebb-58c5-48c9-971e-9a0f53940ce2.app: invalid signature (code or signature have been modified)';
+  expect(normaliseUpdateError(a)).toBe(normaliseUpdateError(b));
+  expect(normaliseUpdateError(a)).toMatch(/\.update-<id>/);
+  // Two genuinely different failures must still look different, or the guard would hide a new problem.
+  expect(normaliseUpdateError('disk full')).not.toBe(normaliseUpdateError(a));
+});
+
+test('a payload that cannot verify is terminal, a transient error is not', () => {
+  expect(isTerminalUpdateFailure('Mac app signature verification failed: /tmp/x: invalid signature')).toBe(true);
+  for (const transient of ['fetch failed', 'ETIMEDOUT', 'disk full', 'Mac app update is already in progress']) {
+    expect(isTerminalUpdateFailure(transient)).toBe(false);
   }
 });

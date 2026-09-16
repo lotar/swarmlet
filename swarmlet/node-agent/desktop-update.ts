@@ -121,15 +121,32 @@ export interface DesktopUpdateStatus {
   sequence?: number; version?: string; path?: string; backup?: string; detail?: string;
 }
 
+/** The error text with the volatile parts removed, so a repeated failure is recognised as the same one.
+ *  The installer is handed a temp directory whose name carries a fresh uuid per attempt and the verifier
+ *  quotes it back - which is how one broken payload reported itself 8499 times on a single machine. */
+export function normaliseUpdateError(message: string): string {
+  return message
+    .replace(/\.update-[0-9a-f][0-9a-f-]{6,}/gi, ".update-<id>")
+    .replace(/\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b/gi, "<uuid>");
+}
+
+/** A release whose own signature does not verify cannot be fixed by waiting: retrying it every 30 seconds
+ *  repeats the same failure forever. Only a new release can help, so stop asking. */
+export function isTerminalUpdateFailure(message: string): boolean {
+  return /signature verification failed/i.test(message);
+}
+
 export class DesktopAppUpdater {
   status: DesktopUpdateStatus = { state: process.platform === 'darwin' ? 'waiting' : 'not-applicable' };
   private busy = false;
   private completed = 0;
+  /** A release this agent has already proved it cannot install; it is not attempted again. */
+  private giveUp = 0;
   constructor(private paths: AgentPaths, private key: () => JsonWebKey | null | undefined, private log: Logger) {}
 
   async tick(): Promise<void> {
     const sequence = Number(process.env.SWARMLET_RELEASE_SEQUENCE ?? 0);
-    if (process.platform !== 'darwin' || process.env.SWARMLET_SUPERVISED !== '1' || !sequence || this.busy || this.completed === sequence) return;
+    if (process.platform !== 'darwin' || process.env.SWARMLET_SUPERVISED !== '1' || !sequence || this.busy || this.completed === sequence || this.giveUp === sequence) return;
     this.busy = true;
     try {
       const state = await readUpdateState(join(this.paths.stateDir, 'updates.json'));
@@ -154,9 +171,16 @@ export class DesktopAppUpdater {
       this.completed = sequence;
       this.log.info(result.changed ? 'Mac app automatically installed' : 'Mac app matches active release', this.status as unknown as Record<string, unknown>);
     } catch (error) {
-      const detail = (error as Error).message;
+      const raw = (error as Error).message;
+      const detail = normaliseUpdateError(raw);
       if (this.status.state !== 'error' || this.status.detail !== detail) this.log.warn('Mac app update failed', { detail });
-      this.status = { state: 'error', sequence, detail };
+      if (isTerminalUpdateFailure(raw)) {
+        this.giveUp = sequence;
+        this.status = { state: 'error', sequence, detail: `${detail} - this release cannot be installed; waiting for a new one` };
+        this.log.warn('Mac app update abandoned for this release', { sequence });
+      } else {
+        this.status = { state: 'error', sequence, detail };
+      }
     } finally { this.busy = false; }
   }
 }
