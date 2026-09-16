@@ -21,10 +21,50 @@ set -euo pipefail
 
 CONTROL_URL="${SWARMLET_CONTROL_URL:-https://app.swarmlet.ai}"
 AGENT_DIR="${SWARMLET_AGENT_DIR:-$HOME/swarmlet-agent}"
-CODE="${1:-${SWARMLET_JOIN_CODE:-}}"
+CODE="${SWARMLET_JOIN_CODE:-}"
 
 say() { printf '\033[1m==>\033[0m %s\n' "$*"; }
 die() { printf '\033[1;31merror:\033[0m %s\n' "$*" >&2; exit 1; }
+
+usage() {
+  cat <<'USAGE'
+Install this box as a node in the Swarmlet mesh.
+
+  bash install.sh <JOIN-CODE>       first enrollment (mint a code in the control UI: Nodes ->
+                                    new join code; codes expire in 10 minutes)
+  bash install.sh --upgrade         reinstall the agent files on a box that is ALREADY enrolled
+                                    and restart the node service
+  bash install.sh --help            this text
+
+Options:
+  --upgrade        explicit upgrade of an already-enrolled box. Without it, running this on an
+                   enrolled box does nothing but print this usage - a bare no-arg run used to
+                   silently download a release, rewrite the launchd unit and restart the node,
+                   dropping whatever the engine was serving.
+  --force          with --upgrade: reinstall even when the published bundle is the one already
+                   installed (same contents). Without it, an identical bundle is a no-op.
+  --help, -h       this text.
+
+Environment (unchanged):
+  SWARMLET_CONTROL_URL   default https://app.swarmlet.ai
+  SWARMLET_BUNDLE_URL    default <control>/agent/latest.tar.gz
+  SWARMLET_AGENT_DIR     default $HOME/swarmlet-agent
+  SWARMLET_REJOIN=1      re-enroll even if this box already has a node identity
+  SWARMLET_SKIP_VERIFY=1 skip the sha256 check (not recommended)
+USAGE
+}
+
+UPGRADE=0; FORCE=0
+for arg in "$@"; do
+  case "$arg" in
+    --help|-h) usage; exit 0 ;;
+    --upgrade) UPGRADE=1 ;;
+    --force)   FORCE=1 ;;
+    --*)       usage; die "unknown option '$arg'" ;;
+    *)         if [ -z "$CODE" ]; then CODE="$arg"; else usage; die "unexpected extra argument '$arg'"; fi ;;
+  esac
+done
+if [ "$UPGRADE" = 0 ] && [ "${SWARMLET_REJOIN:-0}" = 1 ]; then UPGRADE=1; fi
 
 # ---- platform ---------------------------------------------------------------
 os="$(uname -s)"; arch="$(uname -m)"
@@ -63,11 +103,27 @@ fi
 _have_identity=0
 [ -r "${SWARMLET_HOME:-$HOME/.swarmlet}/node.json" ] && grep -q '"enrolledNodeId"[[:space:]]*:[[:space:]]*"' "$HOME/.swarmlet/node.json" && _have_identity=1
 if [ -z "$CODE" ] && [ "$_have_identity" = 0 ]; then
-  die "no join code given. Usage: bash install.sh <JOIN-CODE>
+  usage
+  die "no join code given.
    Mint one (valid 10 minutes) with:
      curl -sX POST $CONTROL_URL/api/join-codes -H \"Authorization: Bearer <admin token>\""
 fi
+if [ -z "$CODE" ] && [ "$_have_identity" = 1 ] && [ "$UPGRADE" != 1 ]; then
+  # This is the case that bit us: on an already-enrolled box the no-join-code guard above does not
+  # fire, so a bare no-arg run used to download a release, rewrite the service unit and restart the
+  # node - dropping whatever the engine was serving at that moment.
+  say "this box is already enrolled as $(sed -n 's/.*\"enrolledNodeId\"[[:space:]]*:[[:space:]]*\"\([^\"]*\)\".*/\1/p' "${SWARMLET_HOME:-$HOME/.swarmlet}/node.json" | head -1)"
+  usage
+  die "refusing to upgrade without being asked.
+   Nothing was downloaded and the service was not touched. To upgrade this node deliberately:
+     bash install.sh --upgrade"
+fi
+if [ "$_have_identity" = 1 ] && [ "$UPGRADE" = 1 ]; then
+  say "upgrading an enrolled node: files -> $AGENT_DIR, then the service unit is reinstalled and the
+   node restarts (anything the engine is serving right now is dropped)"
+fi
 
+BUNDLE_SHA_MARKER="$AGENT_DIR/.bundle.sha256"
 say "control:   $CONTROL_URL"
 say "node:      $os_id/$arch_id"
 say "install to: $AGENT_DIR"
@@ -90,6 +146,13 @@ if [ "${SWARMLET_SKIP_VERIFY:-0}" != "1" ]; then
    got  $got
    Refusing to install. Retry, or set SWARMLET_SKIP_VERIFY=1 to override."
     say "sha256 verified: $got"
+    # Same contents as what is already installed: say so and stop before anything is unpacked or
+    # restarted. Only trustworthy for installs that recorded the marker (this version and later).
+    if [ -r "$BUNDLE_SHA_MARKER" ] && [ "$(cat "$BUNDLE_SHA_MARKER" 2>/dev/null)" = "$got" ] && [ "$FORCE" != 1 ]; then
+      say "this exact bundle is already installed ($got)"
+      say "nothing to do; the node was not restarted. Re-run with --upgrade --force to reinstall anyway."
+      exit 0
+    fi
   else
     echo "warning: no .sha256 published for $BUNDLE; skipping integrity check" >&2
   fi
@@ -101,6 +164,8 @@ say "unpacking to $AGENT_DIR"
 tar xzf "$tmp/$BUNDLE" -C "$AGENT_DIR" --strip-components=1
 [ -x "$AGENT_DIR/swarmlet-node" ] || chmod +x "$AGENT_DIR/swarmlet-node"
 [ -d "$AGENT_DIR/engine" ] && chmod +x "$AGENT_DIR"/engine/* 2>/dev/null || true
+# Record what was installed, so a later run can tell "same release" from "new release".
+if [ -n "${got:-}" ]; then printf '%s\n' "$got" > "$BUNDLE_SHA_MARKER"; fi
 # A tarball fetched over the network on macOS gets quarantined and killed on first run.
 if [ "$os_id" = darwin ] && command -v xattr >/dev/null; then
   xattr -c "$AGENT_DIR/swarmlet-node" 2>/dev/null || true
