@@ -19,8 +19,11 @@ Read this first: it is the map. Everything below links to a report in this direc
 4. **I disturbed the live mesh once, and it was my brief's fault, not the agent's**: an auditor ran
    `bash site/install.sh` as a "usage check"; the no-args guard only fires on a box that is *not* enrolled, so
    on this (enrolled) Mac it silently took the upgrade path, rewrote the launchd plist and restarted the node.
-   Cost: one dropped generation, ~60 s. Repro and the fix are in L8 (`L8.md` §1.0/§3 D1); the installer fix
-   itself is still OPEN (see "Open decisions").
+   Cost: one dropped generation, ~60 s. Repro is in `L8.md` §1.0/§3 D1, and the installer fix landed in
+   `c28a953`: a bare no-arg run on an enrolled box now prints usage and exits non-zero without downloading
+   anything, `--upgrade` is the only way to upgrade (and says the node will restart), and re-running the
+   same bundle is a no-op. 26 tests in `site/install.test.sh` drive the real script in a throwaway HOME
+   against a stubbed curl; `release-check.sh` runs them.
 5. **Nothing to stop, nothing left running that I started**: the local-llm rig (`:8099` flashnext) was already
    stopped and stayed stopped. The only engine resident is the mesh one on `:47800`/`:8100`, which serves other
    people - I did not touch it beyond read-only checks (and one fixed bug in the control that was restarting it).
@@ -54,6 +57,9 @@ Independent confirmation, from a different agent in a different lane (`L6.md`):
 | `1170231` | `redistribute()` no longer restarts a **ready** deployment whose candidate plan is equivalent to the plan running (`samePlacement`), and a plan that crashed **ungracefully** is remembered per deployment (`planFingerprint`, `blockPlacement`, `planFor`) and refused while it is serving. Rest starts at 1 h, each repeat x4 (cap 24 h); an explicit stop clears the memory. | `control/test/redistribution.test.ts` 32 pass / 0 fail (11 new); full suite 224→242 pass |
 | `bbdd979` | `planner.test.ts` asserts the **shipped** envelopes (flash: `coordinatorHostMiB 32768`, `maxCtx 262144`, `maxChain 0`; 27B ladder `[5,6,8,10,12,15,20,25,30]`) instead of the ladders they replaced. Chain-dependent rules are now exercised through a chain-capable **clone** of the same profile, which is the only honest way to keep that coverage when the shipped rows allow no chain. | `bun run test` 461 pass / 0 fail, tsc clean |
 | `cadaf04` | `tools/engine-churn.mjs`: engine churn/spawn/exit report with signals and reasons, per-hour histogram, longest no-engine window; exit 2 on churn or any ungraceful exit. Plus 6 tests over 4 fixtures (one taken from the real log) and the release gate now runs `tools`. | gate 467 pass / 0 fail; run against the real log finds the 102-restart day |
+| `50d277a` | deleted four pieces of config surface nothing reads (`IS_WINDOWS`, `ENGINE_BINARIES`, `pipeSockets`, `NodeConfig.advertise`) - the last one was a node.json knob that looked supported and was silently dropped | node-agent 186 pass / 0 fail; each symbol had exactly one reference (its declaration) |
+| `c28a953` | `install.sh`: no-arg on an enrolled box refuses (this is the incident), `--upgrade` is explicit, same bundle = no-op, `--help` exists | `site/install.test.sh` 26 pass / 0 fail, wired into `release-check.sh` |
+| `46dc1b9`, `8c169ee` | `sin-harness/tsconfig.json` included `**/*.ts` while its own `.gitignore` ignores `data/`, so ignored scratch failed the typecheck and **the release gate could not pass on this machine**; and my installer-test line needed an absolute path | `bash sin-harness/scripts/release-check.sh` → **RELEASE_CHECK_OK** |
 | (earlier today) `d0fc32a`, `c6c3177`, `5802b38`, … | the audit-visible surface: pruned envelopes, placement UI, build target pin, install.sh served from the app host | see `git log` |
 
 ### Two things I checked rather than assumed
@@ -81,6 +87,15 @@ Independent confirmation, from a different agent in a different lane (`L6.md`):
 | L9 | benchmark evidence estate | `L9.md` | re-derivation of published numbers from raw JSONL; unreferenced harness scripts listed |
 | L5, L10 | tests/evals; live system survey | not delivered | both lanes were still running when the night ended; their briefs are in the dispatch script (`/tmp/e2e-audit/dispatch.js`) if you want them re-run |
 
+## Gate status
+
+```
+swarmlet: bun run test        -> 467 pass / 0 fail   (typecheck + protocol + control + node-agent + tools)
+          bun test e2e        -> 8 pass / 2 fail     (identical on d0fc32a - pre-existing, see above)
+sin-harness: release-check.sh -> RELEASE_CHECK_OK version=1.0.0-alpha.1 portable=true
+site: install.test.sh         -> PASS=26 FAIL=0
+```
+
 ## How to ship the control fix (the one thing that needs you)
 
 The control plane is **not** on this Mac - only the HUD containers (`sblC*`), inventory staging and
@@ -104,9 +119,9 @@ want to watch it: `--since -3h --json | python3 -m json.tool`.)
 
 ## Open decisions
 
-1. **install.sh must not self-upgrade on a no-arg run** (the incident above). Proposed: no args on an enrolled
-   box prints usage and exits non-zero; `--upgrade` is explicit; same-release upgrades are a no-op unless
-   `--force`; `--help` exists. Touching it needs care - it is the file users curl. NOT DONE.
+1. ~~install.sh must not self-upgrade on a no-arg run~~ - **done** (`c28a953` + `site/install.test.sh`). The
+   one thing left in that file is a matter of taste, not safety: the same-release no-op relies on a digest
+   marker written by this version, so installs that predate it re-run the upgrade once.
 2. **flash-next `coordinatorHostMiB`**: the profile says 32768, `profiles/README.md` says 2048 and argues 2048
    is deliberate (the PLE n-gram table is mmap-backed and "deliberately NOT part of the fit gate"). The JSON is
    what the planner uses; the arithmetic is load-bearing (a full 48-layer replica is 109952 of 110000 MiB), so
