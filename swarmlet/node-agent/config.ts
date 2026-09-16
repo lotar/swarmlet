@@ -38,7 +38,6 @@ export interface NodeConfig {
   /** Directory with ggml-rpc-server / llama-server / llama-ring-bench. */
   enginePath: string;
   /** Extra hosts other nodes may try for the direct path (public DNS name / port-forwarded address). */
-  advertise: string[];
   externals: ExternalService[];
 }
 
@@ -108,7 +107,7 @@ export function contributionOffer(caps: Capabilities, current: Offer): Offer {
 export function loadNodeConfig(paths: AgentPaths): NodeConfig {
   const base: NodeConfig = {
     controlUrl: null, agentUrl: null, enrolledNodeId: null, discovery: true, offer: defaultOffer(paths.home),
-    uiPort: AGENT_UI_PORT, dataPort: AGENT_DATA_PORT, enginePath: defaultEnginePath(), advertise: [], externals: [],
+    uiPort: AGENT_UI_PORT, dataPort: AGENT_DATA_PORT, enginePath: defaultEnginePath(), externals: [],
   };
   if (!existsSync(paths.configFile)) { saveNodeConfig(paths, base); return base; }
   const stored = JSON.parse(readFileSync(paths.configFile, "utf8")) as Partial<NodeConfig>;

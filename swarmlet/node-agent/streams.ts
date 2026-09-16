@@ -15,18 +15,6 @@ export function pipe(stream: MuxStream, sock: Socket): void {
   stream.onEnd(() => { if (!socketClosed) sock.destroy(); });
 }
 
-/** Socket <-> socket, two-way, with drain-based backpressure. */
-export function pipeSockets(a: Socket, b: Socket): void {
-  const fwd = (src: Socket, dst: Socket) => {
-    src.on("data", (chunk: Buffer) => { if (!dst.write(chunk)) src.pause(); });
-    dst.on("drain", () => src.resume());
-    src.on("end", () => dst.end());
-    src.on("error", () => dst.destroy());
-    src.on("close", () => dst.destroy());
-  };
-  fwd(a, b);
-  fwd(b, a);
-}
 
 /** Collects chunks until a sink is attached, then forwards everything in order. */
 export class EarlyBuffer {

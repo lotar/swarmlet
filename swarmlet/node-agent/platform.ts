@@ -5,7 +5,6 @@ import type { Capabilities } from "../protocol/types.ts";
 
 export type Platform = Capabilities["os"];
 
-export const IS_WINDOWS = process.platform === "win32";
 
 /** process.platform narrowed to what the mesh supports; throws for anything else. */
 export function platformOf(p: string = process.platform): Platform {
@@ -23,5 +22,3 @@ export function engineDistName(platform: string = process.platform): string {
   return platform === "win32" ? "windows" : platform;
 }
 
-/** Engine binary names as they appear in an engine dist for `platform` (sha256.txt keys, bundle resources). */
-export const ENGINE_BINARIES = ["ggml-rpc-server", "llama-server", "llama-ring-bench"] as const;
