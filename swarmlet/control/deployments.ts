@@ -554,6 +554,7 @@ export class DeploymentManager {
       return false;
     }
     if (this.operations.has(id)) return false;
+    let modelChanged = false;
     if (dep.spec.autoModel) {
       // Re-decide the model first: a node joining may make a better one servable, and a node leaving may
       // take one away. The concrete choice is written back, so the record always says what is served.
@@ -566,6 +567,7 @@ export class DeploymentManager {
       if (choice.spec.profile !== dep.spec.profile || choice.spec.kind !== dep.spec.kind) {
         this.deps.reg.event("deployment", `${dep.spec.name}: automatic model choice is now ${choice.why} (was ${dep.spec.profile}/${dep.spec.kind})`, { deploymentId: id });
         this.deps.reg.updateDeployment(id, { spec: choice.spec });
+        modelChanged = true;
         // Re-read: everything below must plan the model we just chose, not the one we are replacing.
         dep = this.deps.reg.getDeployment(id)!;
       }
@@ -593,6 +595,30 @@ export class DeploymentManager {
       this.lastMove.set(id, Date.now()); // pacing: nothing to re-decide here for another move interval
       this.deps.reg.event("deployment", `${dep.spec.name}: ${reason}; placement unchanged (${after}) - not restarting`, { deploymentId: id });
       return false;
+    }
+    // A different layout is not by itself a reason to spend a reload. The README documents the bar for a
+    // move - at least moveMarginLayers fewer layers on the serving node, or a coordinator with >=25% more
+    // RAM - and onNodeOnline applies it to a fixed profile. An automatic deployment re-decides on the same
+    // trigger, and with no gain check it moved for a single layer or for nothing at all: 35 of 37
+    // re-placements on 2026-09-16 came from this path, 31 of them because one peer flapped, and each one
+    // stopped a 27B engine to arrive somewhere it effectively already was. A move is still allowed when
+    // the model itself changed (that is the gain for an automatic deployment) or when the running plan
+    // named a node that is gone (then the move is forced, not chosen).
+    if (!modelChanged && dep.state === "ready" && dep.plan) {
+      // Only a pure layout change is discretionary. If the candidate serves a different context, parallelism,
+      // chain, speculation or model file, then the request itself changed - the plan must follow it even
+      // though no node is spared, so `sameRequest` is what separates "the operator asked for something else"
+      // from "the same thing somewhere else".
+      const sameRequest = dep.plan.modelPath === candidate.modelPath && dep.plan.mtpPath === candidate.mtpPath
+        && dep.plan.ctx === candidate.ctx && dep.plan.parallel === candidate.parallel && dep.plan.chain === candidate.chain
+        && JSON.stringify(dep.plan.speculation ?? null) === JSON.stringify(candidate.speculation ?? null)
+        && JSON.stringify(dep.plan.nativeExecution ?? null) === JSON.stringify(candidate.nativeExecution ?? null);
+      const still = planNodes(dep.plan).every((n) => this.deps.reg.getNode(n)?.online && this.deps.channel.isOnline(n));
+      if (sameRequest && still && !this.placementGain(dep.plan, candidate)) {
+        this.lastMove.set(id, Date.now());
+        this.deps.reg.event("deployment", `${dep.spec.name}: ${reason}; ${after} is not a material gain over ${before} - not restarting`, { deploymentId: id });
+        return false;
+      }
     }
     this.deps.reg.setDeploymentIntent(id, { attempts: 0, retryAt: 0 });
     this.deps.reg.event("deployment", `${dep.spec.name}: re-placing after ${reason} (${before} -> ${after})`, { deploymentId: id });

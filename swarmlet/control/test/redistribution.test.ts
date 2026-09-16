@@ -642,3 +642,34 @@ test("a repeat crash is remembered for longer than the first", async () => {
   expect(minutes.length).toBe(2);
   expect(minutes.sort((a, b) => a - b)).toEqual([60, 240]);    // an hour, then four times that after the repeat
 });
+
+test("a peer flapping with an unchanged plan does not restart the engine", async () => {
+  // 2026-09-16, live: one offline peer reconnected every ~15 minutes; every reconnect re-decided the
+  // placement, and every re-decision retired a serving 27B engine to arrive at the plan it was already
+  // running. 65 of 85 re-placements in 21.8h were literal no-ops, each costing 1-5 minutes with no model
+  // served, and all of them read `(Lotars-MBP.home -> Lotars-MBP.home)`. This pins the guard that stops
+  // exactly that shape: a node that is not even in the plan leaves and comes straight back, the plan the
+  // deployment already runs stays the best one, so nothing may be restarted.
+  const f = rig(150);
+  const { id } = await f.manager.create({ ...auto, kind: "replica" });
+  await f.manager.start(id);
+  await settle();
+  const beforeSends = f.sent.length;
+  const beforeNodes = liveNodes(f.reg, id);
+  expect(beforeNodes).not.toContain("l2");      // the flapping peer holds no part of this placement
+
+  f.online.delete("l2"); f.manager.onOffline("l2");
+  await settle();
+  f.online.add("l2"); f.manager.onNodeOnline("l2");
+  await settle();
+
+  expect(f.reg.getDeployment(id)?.state).toBe("ready");
+  expect(liveNodes(f.reg, id)).toEqual(beforeNodes);                       // the same placement
+  expect(f.sent.length).toBe(beforeSends);                                 // nothing was restarted
+  // Two different filters enforce this property, and which one speaks depends on the spec: a fixed-profile
+  // deployment is stopped by the material-gain check in onNodeOnline (a silent skip, because the layout is
+  // identical), while an autoModel deployment reaches redistribute() and is stopped by samePlacement, which
+  // emits "placement unchanged ... not restarting". The live deployment that churned on 2026-09-16 was
+  // autoModel: true, so the second path is the one that took 65 no-op re-placements to zero; this test pins
+  // the shared property, and the event text itself is asserted in the autoModel tests above.
+});
