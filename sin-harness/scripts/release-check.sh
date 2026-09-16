@@ -12,7 +12,7 @@ bun run test
 for script in scripts/*.sh docker/*.sh ../tools/site/*.sh; do bash -n "$script"; done
 # The installer is shipped to every node and restarts a live service when it runs; its tests drive it in a
 # throwaway HOME against a stubbed curl, so they prove the no-arg path cannot upgrade a serving node.
-bash site/install.test.sh
+bash "$ROOT/site/install.test.sh"
 python3 -m compileall -q proofs
 bun run report:results-grid >/tmp/swarmlet-results-grid.log
 cd "$ROOT";git diff --exit-code -- docs/RESULTS_GRID.md
