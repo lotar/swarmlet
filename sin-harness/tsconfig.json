@@ -27,6 +27,8 @@
   "exclude": [
     "node_modules",
     "rig/llama-src",
-    "**/llama-src/**"
+    "**/llama-src/**",
+    "data",
+    "**/data/**"
   ]
 }
