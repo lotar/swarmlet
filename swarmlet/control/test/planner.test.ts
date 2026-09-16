@@ -76,7 +76,7 @@ describe("profiles", () => {
     const big = profiles.get("qwen36-35b-a3b-q4km")!;
     expect(new RegExp(big.ggufPattern).test("Qwen3.6-35B-A3B-Q4_K_M.gguf")).toBe(true);
     expect(new RegExp(big.ggufPattern).test("Qwen3.6-35B-A3B-UD-IQ2_XXS.gguf")).toBe(false);
-    expect(big).toMatchObject({ layers: 40, layerMiB: 512, envelope: [{ workerLayers: 4, maxCtx: 2048, maxParallel: 4, maxChain: 7 }] });
+    expect(big).toMatchObject({ layers: 40, layerMiB: 512, envelope: [{ workerLayers: 4, maxCtx: 2048, maxParallel: 4, maxChain: 0 }] });
   });
 
   test("the 27B profile declares where its weights come from, and the names match what the planner matches on", () => {

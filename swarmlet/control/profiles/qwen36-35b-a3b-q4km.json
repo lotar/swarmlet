@@ -14,7 +14,7 @@
       "workerLayers": 4,
       "maxCtx": 2048,
       "maxParallel": 4,
-      "maxChain": 7
+      "maxChain": 0
     }
   ],
   "extraArgs": [
