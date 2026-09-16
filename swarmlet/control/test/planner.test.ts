@@ -49,7 +49,7 @@ const legion1 = (over: Partial<Fixture> = {}): NodeRow => node({ id: L1, hostnam
 const legion2 = (over: Partial<Fixture> = {}): NodeRow => node({ id: L2, hostname: "legion2", os: "linux", ramMiB: 16384, cpuCores: 12, gpus: [cuda("GTX 1650")], offer: legionOffer(), rttMs: 15, ...over });
 
 const rig = (): NodeRow[] => [m5(), legion1(), legion2()];
-const spec = (over: Partial<DeploymentSpec> = {}): DeploymentSpec => ({ name: "t", profile: flash.id, kind: "split", ctx: 1536, parallel: 3, chain: 4, ...over });
+const spec = (over: Partial<DeploymentSpec> = {}): DeploymentSpec => ({ name: "t", profile: flash.id, kind: "split", ctx: 1536, parallel: 3, chain: 0, ...over });
 const input = (over: Partial<PlanInput> = {}): PlanInput => ({ spec: spec(), profile: flash, nodes: rig(), usedPorts: new Map(), ...over });
 const plan = (over: Partial<PlanInput> = {}) => planDeployment(input(over));
 function refused(over: Partial<PlanInput>): PlanError {
@@ -61,8 +61,12 @@ const text = (e: PlanError): string => e.reasons.join("\n");
 describe("profiles", () => {
   test("the shipped profiles load with the measured envelope", () => {
     expect([...profiles.keys()].sort()).toEqual(["flash-next-ud-q4kxl", "qwen35-2b-q8", "qwen36-35b-a3b-q4km", "qwen38-27b-q8"]);
-    expect(flash).toMatchObject({ modelName: "qwen3.8-flash-next", layers: 48, layerMiB: 1608, coordinatorHostMiB: 2048, boundaryBytes: 81920, workerMarginMiB: 1536 });
-    expect(flash.envelope).toEqual([{ workerLayers: 1, maxCtx: 1536, maxParallel: 3, maxChain: 8 }, { workerLayers: 1, maxCtx: 1536, maxParallel: 1, maxChain: 12 }]);
+    expect(flash).toMatchObject({ modelName: "qwen3.8-flash-next", layers: 48, layerMiB: 1608, coordinatorHostMiB: 32768, boundaryBytes: 81920, workerMarginMiB: 1536 });
+    // The envelope is what the rig can place, not a wish list: one layer per worker, the context the model
+      // was measured at, and NO chain - no MTP head is qualified for Flash-Next yet, so a speculative request
+      // has to be refused rather than half-served. (The draft-head path is exercised through a chain-capable
+      // clone of this profile below, and through the shipped 27B rows, which do allow a chain.)
+      expect(flash.envelope).toEqual([{ workerLayers: 1, maxCtx: 262144, maxParallel: 3, maxChain: 0 }, { workerLayers: 1, maxCtx: 262144, maxParallel: 1, maxChain: 0 }]);
     expect(flash.extraArgs).toEqual(["-ot", "ple_ngram_embd=CPU", "-fa", "on", "--cache-ram", "0", "--ctx-checkpoints", "0"]);
     expect(new RegExp(flash.ggufPattern).test(shard(1).name)).toBe(true);
     expect(new RegExp(flash.ggufPattern).test(shard(2).name)).toBe(false);
@@ -81,8 +85,8 @@ describe("profiles", () => {
     // A sweep ladder, not a set of measured configurations: these rows exist so a size can be
     // requested and measured (see the 27B sweep in the profile README). Rows measured to FAIL on a
     // 32 GB worker (35, 42) are expected to be pruned once the ladder has served its purpose.
-    expect(q.envelope.map((r) => r.workerLayers)).toEqual([5, 10, 12, 15, 20, 25, 30, 35, 42]);
-    for (const row of q.envelope) expect(row.maxCtx).toBe(32768);
+    expect(q.envelope.map((r) => r.workerLayers)).toEqual([5, 6, 8, 10, 12, 15, 20, 25, 30]);
+    for (const row of q.envelope) expect(row.maxCtx).toBe(262144);
     // The load-bearing invariant: a downloaded file satisfies exactly the pattern the planner uses
     // to find that model on a node. If this drifts, a node fetches 28 GB the planner then ignores.
     const dl = q.download!.files;
@@ -139,7 +143,7 @@ describe("profiles", () => {
 });
 
 describe("split placement on the real rig", () => {
-  test("Flash-Next at ctx 1536, parallel 3, chain 4: tensor split 1,1,46 over RPC0,RPC1,MTL0", () => {
+  test("Flash-Next at ctx 1536, parallel 3, chain 0: tensor split 1,1,46 over RPC0,RPC1,MTL0", () => {
     const p = plan();
     expect(p.coordinatorNodeId).toBe(M5);
     expect(p.coordinatorDevice).toBe("MTL0");
@@ -149,15 +153,15 @@ describe("split placement on the real rig", () => {
     expect(p.workers[0]).toEqual({ nodeId: L1, device: "CUDA0", layers: 1, port: 50200, peerPort: 50201, threads: 10, memCapMiB: 3700 });
     expect(p.workers[1]).toEqual({ nodeId: L2, device: "CUDA0", layers: 1, port: 50200, peerPort: 50201, threads: 10, memCapMiB: 3700 });
     expect(p.env).toEqual({ GGML_RPC_FORWARD: "1", GGML_RPC_PIPELINE: "1", GGML_SCHED_PIPELINED_COPY: "1", GGML_RPC_GET_PIPELINE: "1", GGML_RPC_WIRE: "off" });
-    expect(p.mtpPath).toBe(MTP.path);
+    expect(p.mtpPath).toBeUndefined();   // chain 0: the shipped rows allow no speculative chain
     expect(p.modelPath).toBe(shard(1).path);
-    expect(p).toMatchObject({ ctx: 1536, parallel: 3, chain: 4 });
+    expect(p).toMatchObject({ ctx: 1536, parallel: 3, chain: 0 });
     const why = p.reasons.join("\n");
     expect(why).toMatch(/Coordinator m5: largest RAM offer \(110000 MiB\)/);
     expect(why).toMatch(/RPC0 legion1 \(12 ms\), RPC1 legion2 \(15 ms\)/);
-    expect(why).toMatch(/row workerLayers 1 \(maxCtx 1536, maxParallel 3, maxChain 8\) fits/);
-    expect(why).toMatch(/keeps 46 of 48 layers on MTL0: 46 × 1608 \+ 2048 MiB host = 76016 MiB of 110000 MiB/);
-    expect(why).toMatch(/draft head Qwen3\.8-Flash-Next-MTP-Q8_0\.gguf on m5/);
+    expect(why).toMatch(/row workerLayers 1 \(maxCtx 262144, maxParallel 3, maxChain 0\) fits/);
+    expect(why).toMatch(/keeps 46 of 48 layers on MTL0: 46 × 1608 \+ 32768 MiB host = 106736 MiB of 110000 MiB/);
+    expect(why).not.toMatch(/draft head/);          // nothing to draft with: the rows say chain 0
     expect(why).toMatch(/81920 bytes per token/);
   });
 
@@ -165,23 +169,26 @@ describe("split placement on the real rig", () => {
     const e = refused({ spec: spec({ chain: 10 }) });
     expect(e.message).toMatch(/maxChain/);
     expect(text(e)).toMatch(/No envelope row of profile flash-next-ud-q4kxl fits ctx 1536, parallel 3, chain 10/);
-    expect(text(e)).toMatch(/\(maxCtx 1536, maxParallel 3, maxChain 8\): chain 10 > maxChain 8/);
-    expect(text(e)).toMatch(/\(maxCtx 1536, maxParallel 1, maxChain 12\): parallel 3 > maxParallel 1/);
+    expect(text(e)).toMatch(/\(maxCtx 262144, maxParallel 3, maxChain 0\): chain 10 > maxChain 0/);
+    expect(text(e)).toMatch(/\(maxCtx 262144, maxParallel 1, maxChain 0\): parallel 3 > maxParallel 1, chain 10 > maxChain 0/);
     expect(text(e)).toMatch(/legion1: 3700 MiB offered on CUDA0 allows at most 1 layer/);
     expect(text(e)).toMatch(/legion2: 3700 MiB offered on CUDA0 allows at most 1 layer/);
     expect(() => plan({ spec: spec({ chain: 10 }) })).toThrow(PlanError);
   });
 
-  test("parallel 1 chain 12 fits the second row", () => {
-    const p = plan({ spec: spec({ parallel: 1, chain: 12 }) });
-    expect(p.tensorSplit).toEqual([1, 1, 46]);
-    expect(p).toMatchObject({ parallel: 1, chain: 12, mtpPath: MTP.path });
-    expect(p.reasons.join("\n")).toMatch(/maxChain 12\) fits ctx 1536, parallel 1, chain 12/);
+  test("parallel above every row is refused, and the refusal names maxParallel", () => {
+    // The second shipped row (maxParallel 1) is dominated by the first (maxParallel 3) now that both allow the
+    // same context and no chain, so the honest thing to assert is the rule they share: a parallel the rows do
+    // not allow is refused by name, never clamped.
+    const e = refused({ spec: spec({ parallel: 4 }) });
+    expect(e.message).toMatch(/maxParallel/);
+    expect(text(e)).toMatch(/maxCtx 262144, maxParallel 3, maxChain 0\): parallel 4 > maxParallel 3/);
+    expect(text(e)).toMatch(/maxCtx 262144, maxParallel 1, maxChain 0\): parallel 4 > maxParallel 1/);
   });
 
   test("ctx above the envelope is refused, never clamped", () => {
-    const e = refused({ spec: spec({ ctx: 2048 }) });
-    expect(text(e)).toMatch(/ctx 2048 > maxCtx 1536/);
+    const e = refused({ spec: spec({ ctx: 262145 }) });
+    expect(text(e)).toMatch(/ctx 262145 > maxCtx 262144/);
   });
 
   test("a 1000 MiB worker offer is refused with the per-worker reason", () => {
@@ -192,8 +199,11 @@ describe("split placement on the real rig", () => {
   });
 
   test("chain > 0 without the draft head on the coordinator is refused", () => {
-    const e = refused({ nodes: [m5({ models: [shard(1), shard(2), shard(3), shard(4), shard(5)] }), legion1(), legion2()] });
-    expect(e.message).toMatch(/chain 4 needs a draft head matching .* on m5; none of its 5 model files match/);
+    // A chain-capable clone of the shipped profile: the rule under test is the draft head, not today's
+    // (chain-free) rows.
+    const chainable = { ...flash, envelope: [{ ...flash.envelope[0]!, maxChain: 2 }] };
+    const e = refused({ spec: spec({ chain: 2 }), profile: chainable, nodes: [m5({ models: [shard(1), shard(2), shard(3), shard(4), shard(5)] }), legion1(), legion2()] });
+    expect(e.message).toMatch(/chain 2 needs a draft head matching .* on m5; none of its 5 model files match/);
     const p = plan({ spec: spec({ chain: 0 }), nodes: [m5({ models: [shard(1)] }), legion1(), legion2()] });
     expect(p.mtpPath).toBeUndefined();
     expect(p.chain).toBe(0);
@@ -256,7 +266,7 @@ describe("split placement on the real rig", () => {
 
   test("the coordinator must hold the remaining layers plus the host-side residency", () => {
     const e = refused({ nodes: [m5({ offer: m5Offer(70000) }), legion1(), legion2()] });
-    expect(text(e)).toMatch(/Coordinator m5 cannot hold 46 of 48 layers: 46 × 1608 \+ 2048 MiB host = 76016 MiB exceeds the 70000 MiB RAM offered/);
+    expect(text(e)).toMatch(/Coordinator m5 cannot hold 46 of 48 layers: 46 × 1608 \+ 32768 MiB host = 106736 MiB exceeds the 70000 MiB RAM offered/);
   });
 
   test("coordinator choice: a requested id is validated, the default is the largest RAM offer holding the model", () => {
@@ -362,7 +372,7 @@ describe("windows node placement (all shipped profiles)", () => {
 
   test("Flash-Next replica on a Windows laptop is refused by memory, never by OS", () => {
     const e = refused({ spec: spec({ kind: "replica", chain: 0 }), nodes: [winbox({ gpus: [], offer: winOffer({ roles: { worker: false, coordinator: false, replica: true }, gpu: [], ramMiB: 12288 }), models: [shard(1), shard(2), shard(3), shard(4), shard(5)] })] });
-    expect(text(e)).toMatch(/cannot hold 48 of 48 layers on CPU \(no GPU offered\): 48 × 1608 \+ 2048 MiB host = 79232 MiB exceeds the 12288 MiB RAM offered/);
+    expect(text(e)).toMatch(/cannot hold 48 of 48 layers on CPU \(no GPU offered\): 48 × 1608 \+ 32768 MiB host = 109952 MiB exceeds the 12288 MiB RAM offered/);
     expect(text(e)).not.toMatch(/win32|Windows/);
   });
 
@@ -524,7 +534,10 @@ describe("ngram speculative placement", () => {
   });
 
   test("ngram rejects MTP combination and malformed or unrecognized options", () => {
-    expect(text(refused({ spec: spec({ speculation: { type: "ngram-simple" } }) }))).toMatch(/cannot be combined with an MTP chain/);
+    // The combination rule only exists when there is a chain to combine with, and the shipped rows allow
+      // none - so it is tested on a chain-capable clone of the same profile.
+      const chainable = { ...flash, envelope: [{ ...flash.envelope[0]!, maxChain: 1 }] };
+      expect(text(refused({ spec: spec({ chain: 1, speculation: { type: "ngram-simple" } }), profile: chainable }))).toMatch(/cannot be combined with an MTP chain/);
     for (const value of [null, "ngram-simple", [], {}, { type: "draft" }, { type: "ngram-simple", draft: 4 }]) {
       expect(text(refused({ spec: spec({ chain: 0, speculation: value as DeploymentSpec["speculation"] }) }))).toMatch(/speculation must be/);
     }
@@ -681,7 +694,7 @@ describe("replica placement", () => {
     expect(p.mtpPath).toBeUndefined();
     expect(planDevices(p)).toEqual(["MTL0"]);
     expect(p.env.GGML_RPC_FORWARD).toBe("0");
-    expect(p.reasons.join("\n")).toMatch(/Replica m5 keeps 48 of 48 layers on MTL0: 48 × 1608 \+ 2048 MiB host = 79232 MiB of 110000 MiB/);
+    expect(p.reasons.join("\n")).toMatch(/Replica m5 keeps 48 of 48 layers on MTL0: 48 × 1608 \+ 32768 MiB host = 109952 MiB of 110000 MiB/);
     expect(plan({ spec: spec({ kind: "replica", chain: 0 }) })).toEqual(plan({ spec: spec({ kind: "replica", chain: 0 }), nodes: rig().reverse() }));
   });
 
@@ -689,9 +702,10 @@ describe("replica placement", () => {
     expect(text(refused({ spec: spec({ kind: "replica", replicaNodeId: L1, chain: 0 }) }))).toMatch(/Requested replica node legion1 does not offer the replica role, holds no model matching/);
     expect(plan({ spec: spec({ kind: "replica", chain: 0, replicaNodeId: M5 }) }).coordinatorNodeId).toBe(M5);
     const e = refused({ spec: spec({ kind: "replica", chain: 0 }), nodes: [m5({ offer: m5Offer(70000) })] });
-    expect(text(e)).toMatch(/Replica m5 cannot hold 48 of 48 layers: 48 × 1608 \+ 2048 MiB host = 79232 MiB exceeds the 70000 MiB RAM offered/);
-    expect(refused({ spec: spec({ kind: "replica", chain: 4 }) }).message).toMatch(/Replica MTP is not qualified/);
-    expect(refused({ spec: spec({ kind: "replica", chain: 4 }), nodes: [m5({ models: [shard(1)] })] }).message).toMatch(/Replica MTP is not qualified/);
+    expect(text(e)).toMatch(/Replica m5 cannot hold 48 of 48 layers: 48 × 1608 \+ 32768 MiB host = 109952 MiB exceeds the 70000 MiB RAM offered/);
+    const chainable = { ...flash, envelope: [{ ...flash.envelope[0]!, maxChain: 2 }] };
+    expect(refused({ spec: spec({ kind: "replica", chain: 2 }), profile: chainable }).message).toMatch(/Replica MTP is not qualified/);
+    expect(refused({ spec: spec({ kind: "replica", chain: 2 }), profile: chainable, nodes: [m5({ models: [shard(1)] })] }).message).toMatch(/Replica MTP is not qualified/);
     expect(refused({ spec: spec({ kind: "replica", chain: 0 }), nodes: [] }).message).toMatch(/No online node offers the replica role/);
     expect(refused({ spec: spec({ kind: "replica", chain: 0 }), nodes: [m5({ online: false }), legion1()] }).message).toMatch(/No online node offers the replica role/);
   });
