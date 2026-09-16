@@ -12,7 +12,7 @@
     "model": "./scripts/start-model.sh",
     "test": "bun run typecheck && bun run test:unit && bun run test:strict-ab-harness && bun run test:proofs-portable",
     "typecheck": "tsc --noEmit",
-    "test:unit": "bun test test/l0.test.ts test/loop.test.ts test/graduate.test.ts test/mesh.test.ts test/tiny-moe-distributed.test.ts test/tiny-moe-physical.test.ts test/evals.test.ts",
+    "test:unit": "bun test test/l0.test.ts test/loop.test.ts test/graduate.test.ts test/mesh.test.ts test/tiny-moe-distributed.test.ts test/tiny-moe-physical.test.ts test/evals.test.ts test/evidence-integrity.test.ts",
     "test:integration": "bun test test/e2e.test.ts",
     "test:docker": "bun test test/e2e-docker.test.ts",
     "test:e2e-docker": "bun run test:docker",

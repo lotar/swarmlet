@@ -2,7 +2,7 @@
 
 Measured 2026-09-13 on the live mesh: `qwen3.8-27b` split across
 **Lotars-MBP.home** (Apple M5 Max, 128 GiB, coordinator) and **MBP-od-Veimir** (Apple M5 Pro,
-24 GiB usable, worker). Produced by `ctxsweep.py` (raw rows: `/tmp/ctxsweep.jsonl`).
+24 GiB usable, worker). Produced by `ctxsweep.py` (raw rows: `ctxsweep-raw-20260913.jsonl` in this directory; the tables in `ctx-charts.html` are built from it).
 
 **Interactive view:** [`ctx-charts.html`](ctx-charts.html) renders both sweeps as charts from these same raw rows (self-contained; open it directly, no server needed).
 
@@ -38,7 +38,7 @@ Two probes per level, both temperature 0 and seed 42:
 
 ## Findings
 
-**1. Decode throughput is flat across context.** 5.3–6.3 tok/s across a 64×
+**1. Decode throughput is flat across context.** 5.4–6.2 tok/s across a 64×
 change in the context window, with no trend. For this architecture the configured ctx does not buy or
 cost decode speed. The spread looks like measurement noise on 42–57-token answers, not a curve.
 
@@ -96,7 +96,7 @@ from the reservation. I lost two runs to this before finding it.
 ## Reproduce
 
 ```bash
-python3 ctxsweep.py          # /tmp/ctxsweep.py; writes /tmp/ctxsweep.jsonl + /tmp/ctxsweep.log
+python3 ctxsweep.py          # writes ctxsweep-raw-20260913.jsonl next to this file (regenerate the charts from it)
 ```
 
 Levels, probes and caps are constants at the top of that file. The sweep stops every `ctxsweep*` and
