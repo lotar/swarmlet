@@ -10,7 +10,7 @@
   },
   "scripts": {
     "typecheck": "tsc --noEmit",
-    "test": "bun run typecheck && bun test protocol control node-agent",
+    "test": "bun run typecheck && bun test protocol control node-agent tools",
     "test:protocol": "bun test protocol",
     "test:control": "bun test control",
     "test:agent": "bun test node-agent",
