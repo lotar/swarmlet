@@ -28,3 +28,4 @@ sin-harness/data-docker/
 swarmlet/engine/.build/
 swarmlet/engine/build-*.log
 swarmlet/**/*.log
+/site/agent/

@@ -87,3 +87,23 @@ Three facts this cost a day to learn:
    `swarmlet-node` sha256 in the release manifest it was built from, and the served `.sha256` must match the
    served tarball. A 200 response and a completed install prove nothing about freshness — this is exactly how a
    six-day-old bundle sat behind a "re-run to upgrade" instruction.
+
+### A node that cannot hold a control session can only be rescued by the installer
+
+The supervisor installs a release only after a health gate. That gate used to require `connected: true` from the
+running agent; `2026091701` changed the pre-swap check so it no longer does (the trial still does, and only when
+the outgoing release was connected). A node still running an older build keeps the old gate, so a node whose
+control session is broken cannot install the fix that would repair it. That is a bootstrap deadlock, and it is
+why one node sat five days and ~100 reconnects a day behind while its heartbeats reached control the whole time.
+
+Spot it: the node's `releaseSequence` stays put — in the control's stored metrics for that node, or
+`curl -s http://127.0.0.1:47800/api/status` on the machine — while its metrics keep arriving.
+
+The escape hatch is the installer, which needs no session:
+
+```sh
+curl -fsSL https://app.swarmlet.ai/install.sh | bash -s -- --upgrade
+```
+
+It installs a current supervisor, which then installs the current release by itself within minutes. Nothing else
+reaches such a node: the control can assign work, but it cannot push config or trigger an install.

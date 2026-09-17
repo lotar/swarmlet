@@ -16,6 +16,9 @@ bash "$ROOT/site/install.test.sh"
 python3 -m compileall -q proofs
 bun run report:results-grid >/tmp/swarmlet-results-grid.log
 cd "$ROOT";git diff --exit-code -- docs/RESULTS_GRID.md
+# The installer bundle a stranger downloads must be the agent the feed serves. A stale one turns
+# "re-run the installer to upgrade" into a downgrade; it skipped itself silently for six days.
+bash "$ROOT/sin-harness/scripts/check-served-bundle.sh"
 # product surface (node agent, control plane, protocol): strict typecheck + unit/integration tests, no engine or rig needed
 cd "$ROOT/swarmlet";bun install --frozen-lockfile;bun run test
 for script in engine/*.sh e2e/*.sh; do bash -n "$script"; done
