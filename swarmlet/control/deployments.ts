@@ -564,7 +564,17 @@ export class DeploymentManager {
         this.deps.reg.event("deployment", `${dep.spec.name}: nothing placeable after ${reason} - ${this.lastAutoFailure[0] ?? "no candidate"}`, { deploymentId: id });
         return false;
       }
-      if (choice.spec.profile !== dep.spec.profile || choice.spec.kind !== dep.spec.kind) {
+      const kindChanged = choice.spec.kind !== dep.spec.kind;
+      const profileChanged = choice.spec.profile !== dep.spec.profile;
+      if (kindChanged && dep.state === "ready") {
+        // A kind change is a different topology, not a better model: replica -> split rebuilds the plan
+        // around RPC workers, and a split that names a worker behind a relay aborts the coordinator's whole
+        // engine (2026-09-17 12:25Z: replica reloads, coordinator spawns, SIGABRT in ggml_backend_rpc_add_server,
+        // then the crash cooldown restores a replica). While a deployment is serving, the automatic chooser
+        // may still improve the model - it must not change the shape underneath it. It gets its way once the
+        // deployment is no longer ready, which is when a re-shape costs nothing extra.
+        this.deps.reg.event("deployment", `${dep.spec.name}: automatic model choice wanted ${choice.why}, but ${dep.spec.kind} is serving - keeping the shape (was ${dep.spec.profile}/${dep.spec.kind})`, { deploymentId: id });
+      } else if (profileChanged || kindChanged) {
         this.deps.reg.event("deployment", `${dep.spec.name}: automatic model choice is now ${choice.why} (was ${dep.spec.profile}/${dep.spec.kind})`, { deploymentId: id });
         this.deps.reg.updateDeployment(id, { spec: choice.spec });
         modelChanged = true;

@@ -673,3 +673,31 @@ test("a peer flapping with an unchanged plan does not restart the engine", async
   // autoModel: true, so the second path is the one that took 65 no-op re-placements to zero; this test pins
   // the shared property, and the event text itself is asserted in the autoModel tests above.
 });
+
+test("the automatic chooser may change the model but not the shape while serving", async () => {
+  // Live case, 2026-09-17 12:25Z: a serving replica was re-shaped into a split, whose coordinator aborted
+  // (SIGABRT in ggml_backend_rpc_add_server) before the crash cooldown restored a replica. A kind change is a
+  // different topology, not a better model - and it is what makes the RPC worker path reachable at all.
+  const f = rig();
+  const { id } = await f.manager.create({ ...auto, kind: "replica", autoModel: true });
+  await f.manager.start(id);
+  await settle();
+  const serving = f.reg.getDeployment(id)!;
+  expect(serving.state).toBe("ready");
+  expect(serving.spec.kind).toBe("replica");
+
+  // Drive the decision directly: a chooser that insists on a split, exactly as the live one did.
+  const decide = (spec: typeof serving.spec) => { (f.manager as unknown as { chooseAuto: unknown }).chooseAuto = () => ({ spec, why: "a split looks better" }); };
+  const redistribute = (target: string) => (f.manager as unknown as { redistribute(id: string, why: string): Promise<boolean> }).redistribute(target, "test wants a split");
+
+  decide({ ...serving.spec, kind: "split" });
+  expect(await redistribute(id)).toBe(false);                        // refused before anything restarted
+  expect(f.reg.getDeployment(id)?.spec.kind).toBe("replica");        // the shape held
+  expect(events(f.reg).some((m) => m.includes("keeping the shape"))).toBe(true);
+
+  // The same decider on a deployment that is not serving may re-shape it: nothing live is lost.
+  const idle = await f.manager.create({ ...auto, name: "idle", kind: "replica", autoModel: true });
+  decide({ ...f.reg.getDeployment(idle.id)!.spec, kind: "split" });
+  await redistribute(idle.id);
+  expect(f.reg.getDeployment(idle.id)?.spec.kind).toBe("split");
+});
