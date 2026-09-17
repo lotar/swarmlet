@@ -53,3 +53,37 @@ Four traps, each learned the hard way on 2026-09-16:
 Verify after publishing: the feed's `sequence` advanced, `swarmlet-node`'s `sha256` in the manifest equals the
 binary you built, and on a node that `~/.swarmlet/releases/<seq>-*/swarmlet-node` hashes the same. A release
 that is wrong can be superseded (never rewritten) with a higher sequence.
+
+### The installer bundle (`/agent/latest.tar.gz`) is a separate artifact — keep it current
+
+`site/install.sh` does not install a release. It unpacks a single hand-built bundle into `~/swarmlet-agent`,
+reinstalls the service unit, and that unit then runs whatever release the supervisor already has in
+`~/.swarmlet/releases`. The bundle is served by the `swarmlet-web` container from
+`/usr/share/nginx/html/agent/latest.tar.gz`. On 2026-09-17 it was a build from revision `b5bf4209` whose agent
+matched **none** of the published releases — six days stale, which turns "re-run the installer to upgrade" into
+a downgrade. The served `install.sh` was stale for the same reason (same image).
+
+Rebuild it from the release you intend to install:
+
+```sh
+cd swarmlet/dist/agent && rm -rf /tmp/bundle && mkdir -p /tmp/bundle/darwin
+cp -a darwin/swarmlet-node darwin/engine darwin/agent-build.json /tmp/bundle/darwin/
+cd /tmp/bundle && tar czf /tmp/latest.tar.gz darwin && shasum -a 256 /tmp/latest.tar.gz > /tmp/latest.tar.gz.sha256
+scp /tmp/latest.tar.gz /tmp/latest.tar.gz.sha256 site/install.sh root@the-shop:/root/agent-upload/
+ssh the-shop 'docker cp /root/agent-upload/latest.tar.gz swarmlet-web:/usr/share/nginx/html/agent/latest.tar.gz
+             docker cp /root/agent-upload/latest.tar.gz.sha256 swarmlet-web:/usr/share/nginx/html/agent/latest.tar.gz.sha256
+             docker cp /root/agent-upload/install.sh swarmlet-web:/usr/share/nginx/html/install.sh'
+```
+
+Three facts this cost a day to learn:
+
+1. **`docker cp` is not durable.** Recreating the `swarmlet-web` container reverts both files to whatever the
+   image holds. The real fix is to COPY the bundle into the site image at build time, so the artifact cannot
+   drift from the releases again.
+2. **The bundle is darwin-arm64 only, on purpose.** `install.sh` refuses any other platform with "no bundle is
+   published for `<os>/<arch>`" instead of installing something wrong; a non-macOS node takes
+   `SWARMLET_BUNDLE_URL` explicitly.
+3. **Verify by hash, never by success.** The bundle's `darwin/swarmlet-node` must hash equal to the
+   `swarmlet-node` sha256 in the release manifest it was built from, and the served `.sha256` must match the
+   served tarball. A 200 response and a completed install prove nothing about freshness — this is exactly how a
+   six-day-old bundle sat behind a "re-run to upgrade" instruction.
