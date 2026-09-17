@@ -20,7 +20,7 @@ const log = makeLogger("test", "warn");
 const capsFor = (hostname: string): Capabilities => ({
   os: "linux", arch: "x64", hostname, ramMiB: 16000, ramReserveMiB: 4096, cpuCores: 12,
   gpus: [{ id: "cuda:0", name: "GTX", backend: "cuda", engineName: "CUDA0", totalMiB: 4096 }],
-  diskFreeMiB: 100000, privateIps: ["127.0.0.1"], measuredAt: new Date().toISOString(),
+  diskFreeMiB: 100000, privateIps: ["127.0.0.1"], measuredAt: new Date().toISOString(), publicEndpoints: [{ host: "127.0.0.1", port: 47801 }],
 });
 const offer: Offer = { enabled: true, roles: { worker: true, coordinator: false, replica: false }, gpu: [{ id: "cuda:0", memMiB: 3000 }], ramMiB: 8000, cpuCores: 6, diskMiB: 10000, modelsDir: "/tmp" };
 

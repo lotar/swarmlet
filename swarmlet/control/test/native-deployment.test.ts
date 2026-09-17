@@ -48,7 +48,7 @@ function rig() {
       hostname: id, os, arch: mac ? "arm64" : "x64", ramMiB: mac ? 131072 : 16384, ramReserveMiB: 4096, cpuCores: 8,
       gpus: [{ id: device, name: device, backend: mac ? "metal" : "cuda", engineName: mac ? "MTL0" : "CUDA0", totalMiB: mac ? 110000 : 4096 }],
       engine: { proto: "8.1", sha256: { "mesh-stage-worker": binary[id]! }, stages: { engine } },
-      diskFreeMiB: 100000, privateIps: ["127.0.0.1"], measuredAt: new Date().toISOString(),
+      diskFreeMiB: 100000, privateIps: ["127.0.0.1"], measuredAt: new Date().toISOString(), publicEndpoints: [{ host: "127.0.0.1", port: 47801 }],
     } });
     reg.setOffer(id, { enabled: true, roles: { worker: true, coordinator: true, replica: true }, gpu: [{ id: device, memMiB: mac ? 100000 : 3600 }], ramMiB: mac ? 110000 : 8192, cpuCores: 8, diskMiB: 100000, modelsDir: "/models" });
     reg.setOnline(id, true);
@@ -237,7 +237,7 @@ test("disconnecting a non-first native stage invalidates execution and cleans ev
   expect(f.manager.routing()).toEqual([]);
   await Bun.sleep(30);
   await f.manager.reconcile();
-  expect(f.reg.deploymentIntent(id).attempts).toBe(0);
+  expect(f.reg.deploymentIntent(id).attempts).toBe(1);   // the plan named l2, so recovery re-plans instead of waiting for it
   expect(stageMessages(f)).toHaveLength(3);
   f.online.add("l2"); f.reg.setOnline("l2", true);
   f.manager.onHello("l2", old.filter((a) => a.nodeId === "l2").map((a) => ({ id: a.id, state: "ready" as const })));

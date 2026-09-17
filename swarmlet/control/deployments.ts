@@ -228,7 +228,28 @@ export class DeploymentManager {
       // Waiting out the reconnect grace is the point: a node that blips for a few seconds must not cost
       // an engine reload. Only when the grace expires (above) does an auto-placed deployment move, and
       // a pinned one keeps waiting for the node its owner named.
-      if (required.some((n) => !this.deps.channel.isOnline(n) || !this.deps.reg.getNode(n)?.online)) return;
+      // A stored plan that names a node which is gone must not become a wait. This is what turned one crash
+      // into 38 minutes on 2026-09-17: the plan named a node, that node was offline, and every reconcile tick
+      // returned here waiting for it while a replica could have served instead. The owner asked for a model,
+      // not for those machines - unless the spec pins them, in which case waiting is the point.
+      const missing = (nodes: string[]) => nodes.filter((n) => !this.deps.channel.isOnline(n) || !this.deps.reg.getNode(n)?.online);
+      const offline = missing(required);
+      // Only when no reconnect grace is running: a node that blips for a few seconds must not cost a reload,
+      // and that is the grace's whole purpose. This path is for the case the grace cannot cover - the control
+      // restarted, or the grace expired, and the stored plan still names a node that is not coming back.
+      if (offline.length && !reconnect) {
+        if (dep.spec.external || this.pinsNodes(dep.spec)) return;
+        const host = (n: string) => this.deps.reg.getNode(n)?.hostname ?? n;
+        const seen = this.moveExcluded.get(dep.id)?.nodes ?? new Set<string>();
+        for (const n of offline) seen.add(n);
+        this.moveExcluded.set(dep.id, { nodes: seen, at: Date.now() });
+        this.deps.reg.event("deployment", `${dep.spec.name}: recovery re-plans without ${offline.map(host).join(", ")} (offline, and the stored plan still named ${offline.length === 1 ? "it" : "them"})`, { deploymentId: dep.id });
+        try { required = planNodes(this.plan(dep.spec, this.usedPorts(), dep.id)); } catch { return; }
+        // Only a plan that still needs a missing node waits for one to come back.
+        if (missing(required).length) return;
+        // One re-plan per few ticks, not one per tick; the exclusions above make the next attempt converge.
+        this.deps.reg.setDeploymentIntent(dep.id, { attempts: intent.attempts, retryAt: Date.now() + 5_000 });
+      }
       this.deps.reg.setDeploymentIntent(dep.id, { attempts: intent.attempts + 1 });
       this.deps.reg.event("deployment", `automatic recovery attempt ${intent.attempts + 1}/${MAX_RECOVERY_ATTEMPTS}`, { deploymentId: dep.id });
       await this.start(dep.id, true).catch(() => {}); // start records the error and next backoff

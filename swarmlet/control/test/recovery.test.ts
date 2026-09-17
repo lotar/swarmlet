@@ -40,7 +40,7 @@ function rig(path = ":memory:", reconnectGraceMs = 30_000, stopTimeoutMs = 15) {
     reg.upsertNode({ id, pubJwk: {}, certFp: `fp-${id}`, hostname: id, os, arch: mac ? "arm64" : "x64", caps: {
       hostname: id, os, arch: mac ? "arm64" : "x64", ramMiB: mac ? 131072 : 16384, ramReserveMiB: 4096, cpuCores: 12,
       gpus: [{ id: device, name: device, backend: mac ? "metal" : "cuda", engineName: mac ? "MTL0" : "CUDA0", totalMiB: mac ? 110000 : 4096 }],
-      diskFreeMiB: 100000, privateIps: ["127.0.0.1"], measuredAt: new Date().toISOString(),
+      diskFreeMiB: 100000, privateIps: ["127.0.0.1"], measuredAt: new Date().toISOString(), publicEndpoints: [{ host: "127.0.0.1", port: 47801 }],
     } });
     reg.setOffer(id, { enabled: true, roles: { worker: !mac, coordinator: mac, replica: mac }, gpu: [{ id: device, memMiB: mac ? 100000 : 3600 }], ramMiB: mac ? 110000 : 8192, cpuCores: 10, diskMiB: 100000, modelsDir: "/models" });
     reg.setOnline(id, true);
@@ -119,7 +119,7 @@ test("offline worker is not falsely stopped; reconnect cleans it before fresh th
   await settle();
   expect(f.reg.getAssignment(l1.id)?.state).toBe("listening");
   await f.manager.reconcile();
-  expect(f.reg.deploymentIntent(id).attempts).toBe(0);
+  expect(f.reg.deploymentIntent(id).attempts).toBe(1);   // the plan named l1, so recovery re-plans instead of waiting for it
   f.online.add("l1"); f.manager.onHello("l1", [{ id: l1.id, state: "listening" }]); await settle();
   expect(f.reg.getAssignment(l1.id)?.state).toBe("stopped");
   const stoppedAt = f.sent.findIndex((s) => s.a.id === l1.id && s.a.kind === "stop");

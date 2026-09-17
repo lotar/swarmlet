@@ -35,7 +35,7 @@ function holder(profile: ModelProfile, hostMiB: number): Offered {
     id: "1111111111111111", pubJwk: {}, certFp: "fp", hostname: "holder", os: "darwin", arch: "arm64",
     enrolledAt: T0, lastSeen: T0, online: true, agentVersion: "0.1.0",
     caps: { os: "darwin", arch: "arm64", hostname: "holder", ramMiB: 131072, ramReserveMiB: 4096, cpuCores: 16,
-      gpus: [gpu], diskFreeMiB: 500_000, privateIps: ["10.0.0.1"], measuredAt: T0 },
+      gpus: [gpu], diskFreeMiB: 500_000, privateIps: ["10.0.0.1"], measuredAt: T0 , publicEndpoints: [{ host: "127.0.0.1", port: 47801 }]},
     offer: { enabled: true, roles: { worker: true, coordinator: true, replica: true }, gpu: [{ id: "metal:0", memMiB: hostMiB }],
       ramMiB: 131072, cpuCores: 16, diskMiB: 500_000, modelsDir: "/models" },
     models: [

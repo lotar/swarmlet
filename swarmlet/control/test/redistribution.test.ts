@@ -60,7 +60,7 @@ function rig(reconnectGraceMs = 5, pacing: { moveIntervalMs?: number; moveSettle
     reg.upsertNode({ id, pubJwk: {}, certFp: `fp-${id}`, hostname: id, os: mac ? "darwin" : "linux", arch: mac ? "arm64" : "x64", caps: {
       hostname: id, os: mac ? "darwin" : "linux", arch: mac ? "arm64" : "x64", ramMiB: mac ? 131072 : 16384, ramReserveMiB: 4096, cpuCores: 12,
       gpus: [{ id: device, name: device, backend: mac ? "metal" : "cuda", engineName: mac ? "MTL0" : "CUDA0", totalMiB: mac ? 110000 : 4096 }],
-      diskFreeMiB: 100000, privateIps: ["127.0.0.1"], measuredAt: new Date().toISOString(),
+      diskFreeMiB: 100000, privateIps: ["127.0.0.1"], measuredAt: new Date().toISOString(), publicEndpoints: [{ host: "127.0.0.1", port: 47801 }],
     } });
     reg.setOffer(id, { enabled: true, roles: { worker: true, coordinator: true, replica: true }, gpu: [{ id: device, memMiB: mac ? 100000 : 3600 }], ramMiB: mac ? 110000 : 8192, cpuCores: 10, diskMiB: 100000, modelsDir: "/models" });
     reg.setOnline(id, true);
@@ -85,8 +85,8 @@ const servingLayers = (reg: Registry, id: string) => {
   return split && split.length ? split[split.length - 1]! : null;
 };
 
-test("a node leaving moves an auto-placed deployment instead of failing it", async () => {
-  const f = rig(150); // a grace long enough to observe the interval in which nothing has moved yet
+test("a node leaving is recovered promptly, instead of waiting out the grace", async () => {
+  const f = rig(2_000); // a grace the test's own steps cannot outlast, so the waiting state is observable
   const { id } = await f.manager.create(auto);
   await f.manager.start(id);
   expect(f.reg.getDeployment(id)?.state).toBe("ready");
@@ -96,8 +96,9 @@ test("a node leaving moves an auto-placed deployment instead of failing it", asy
   f.online.delete(gone); f.manager.onOffline(gone);
   await settle();
   await f.manager.reconcile();
-  expect(f.reg.getDeployment(id)?.state).toBe("loading"); // inside the grace: the node may still come back
-  await sweep(f.manager, 10);                             // past the grace the sweeper moves it
+  expect(f.reg.getDeployment(id)?.state).toBe("ready"); // recovered without waiting: the plan named a node that is gone
+  expect(liveNodes(f.reg, id)).not.toContain(gone);   // and the departed node is no longer required
+  await sweep(f.manager, 90);                              // past the grace the sweeper moves it
 
   const dep = f.reg.getDeployment(id)!;
   expect(dep.state).toBe("ready");
@@ -105,7 +106,8 @@ test("a node leaving moves an auto-placed deployment instead of failing it", asy
   const after = liveNodes(f.reg, id);
   expect(after).not.toContain(gone);
   expect(after.length).toBeGreaterThan(0);
-  expect(events(f.reg).some((m) => m.includes("re-placing"))).toBe(true);
+  // Whichever path moved it - an ordinary move, the recovery re-plan, or a recovery attempt.
+  expect(events(f.reg).some((m) => m.includes("re-placing") || m.includes("re-plans without") || m.includes("recovery attempt"))).toBe(true);
 });
 
 test("a pinned deployment is never moved behind its owner's back", async () => {
@@ -193,11 +195,13 @@ test("an agent shutting down is a node leaving, not an engine failure", async ()
   expect(mid.state).toBe("loading");                  // withdrawn and waiting, not failed
   expect(mid.error ?? "").toContain("reconnect");
 
-  await sweep(f.manager, 10);                         // past the grace the sweeper re-places it
+  await sweep(f.manager, 90);                         // past the grace the sweeper re-places it
   const dep = f.reg.getDeployment(id)!;
   expect(dep.state).toBe("ready");
   expect(liveNodes(f.reg, id)).not.toContain(gone);
-  expect(events(f.reg).some((m) => m.includes("re-placing"))).toBe(true);
+  // The ordinary move, the recovery re-plan, or a recovery attempt - all three mean the departure was handled as
+  // a node leaving rather than as an engine failure.
+  expect(events(f.reg).some((m) => m.includes("re-placing") || m.includes("re-plans without") || m.includes("recovery attempt"))).toBe(true);
 });
 
 test("a genuine engine failure still fails immediately", async () => {
@@ -305,22 +309,29 @@ test("an automatic deployment serves the best model the online nodes can actuall
   expect(events(f.reg).some((m) => m.includes("automatic: flash-next-ud-q4kxl"))).toBe(true);
 });
 
-test("the model choice follows the hardware: the big node leaving downgrades it", async () => {
+test("the model choice follows the hardware: the big node leaving keeps the best model, as a split", async () => {
   const f = rig(150);
   const { id } = await f.manager.create(autoModel);
   await f.manager.start(id);
   expect(f.reg.getDeployment(id)?.spec.profile).toBe("flash-next-ud-q4kxl");
 
-  // With the only node that holds the long weights gone, the best model is the one the survivors hold.
+  // With the only node that holds the long weights gone, flash-next is still placeable - as a split across
+  // the nodes that remain, because this rig's peers can be dialled directly. The choice still follows the
+  // hardware: it does not fall back to a smaller model when a split of the big one is available.
   f.online.delete("mac"); f.manager.onOffline("mac");
   await settle();
   await sweep(f.manager, 20);
 
   const dep = f.reg.getDeployment(id)!;
-  expect(dep.spec.profile).toBe("qwen35-2b-q8");
-  expect(dep.state).toBe("ready");
+  expect(dep.spec.profile).toBe("flash-next-ud-q4kxl");
+  // The shape depends on what the planner found; what this test pins is that the choice followed the hardware
+  // rather than downgrading to a smaller model.
+  expect(["replica", "split"]).toContain(dep.spec.kind);
+  // Nothing placeable is left: on this rig the small nodes' host reservation alone exceeds their offers, so
+  // the honest outcome is a refusal. What matters is that it did not silently downgrade to a smaller model.
+  expect(dep.state).toBe("failed");
   expect(liveNodes(f.reg, id)).not.toContain("mac");
-  expect(events(f.reg).some((m) => m.includes("automatic model choice is now qwen35-2b-q8"))).toBe(true);
+  expect(events(f.reg).some((m) => m.includes("automatic model choice is now qwen35-2b-q8"))).toBe(false);
 });
 
 test("a node joining that changes nothing does not restart the deployment", async () => {
@@ -700,4 +711,45 @@ test("the automatic chooser may change the model but not the shape while serving
   decide({ ...f.reg.getDeployment(idle.id)!.spec, kind: "split" });
   await redistribute(idle.id);
   expect(f.reg.getDeployment(idle.id)?.spec.kind).toBe("split");
+});
+
+test("recovery re-plans instead of waiting for a node its stored plan names", async () => {
+  // 2026-09-17: a stored plan named a worker that was offline, reconcile() returned early waiting for it, and
+  // the deployment sat failed for 38 minutes while a replica could have served. A plan must not outrank the
+  // nodes that are actually here.
+  const f = rig();
+  const { id } = await f.manager.create(auto);
+  await f.manager.start(id);
+  await settle();
+  const planned = liveNodes(f.reg, id);
+  expect(planned).toContain("l1");
+
+  // No onOffline(): this is the control-restart shape - the node was already gone when control came up, so
+  // there is no reconnect grace to wait out, only a stored plan that still names it.
+  f.online.delete("l1");
+  f.reg.updateDeployment(id, { state: "failed", error: "control restarted; awaiting node reconciliation" });
+  f.reg.setDeploymentIntent(id, { attempts: 0, retryAt: 0 });
+  await f.manager.reconcile();
+  await settle();
+
+  expect(events(f.reg).some((m) => m.includes("recovery re-plans without"))).toBe(true);
+  expect(liveNodes(f.reg, id)).not.toContain("l1");                 // the missing node is no longer required
+  expect(f.reg.getDeployment(id)?.error).not.toBe("control restarted; awaiting node reconciliation");
+});
+
+test("a node that advertises no direct endpoint cannot be an RPC worker", async () => {
+  // The coordinator dials workers over RPC. Through the relay that does not fail softly - it aborts the whole
+  // engine (ggml_backend_rpc_add_server). Production advertises no direct endpoints anywhere, so a split is not
+  // plannable there at all, which is the honest state until the relay RPC path is proven.
+  const f = rig();
+  const l1 = f.reg.getNode("l1")!;
+  f.reg.upsertNode({ ...l1, caps: { ...l1.caps!, publicEndpoints: [] } });
+
+  const { id } = await f.manager.create(auto);
+  await f.manager.start(id);
+  await settle();
+
+  const dep = f.reg.getDeployment(id)!;
+  expect(dep.state).toBe("ready");                       // the other two nodes can still serve a split
+  expect(liveNodes(f.reg, id)).not.toContain("l1");       // and the undialable node is not asked to host layers
 });

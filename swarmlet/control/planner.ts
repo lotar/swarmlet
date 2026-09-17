@@ -192,6 +192,15 @@ interface WorkerSlot { node: NodeRow; gpu: GpuSlot }
 const cmp = (a: string, b: string): number => (a < b ? -1 : a > b ? 1 : 0);
 const byHost = (a: NodeRow, b: NodeRow): number => cmp(a.hostname, b.hostname) || cmp(a.id, b.id);
 const rttOf = (n: NodeRow): number => n.caps?.net?.rttMs ?? Number.POSITIVE_INFINITY;
+/** Whether a peer could reach this node's engine port without the relay.
+ *
+ *  The coordinator dials each worker's RPC port. A node that advertises no direct endpoint can only be reached
+ *  through the relay, and a relayed RPC connection does not fail softly: it aborts the coordinator's whole
+ *  engine in ggml_backend_rpc_add_server. That happened 179 times in the log before this rule and three more
+ *  on 2026-09-17, each one an outage for whoever was being served - while the deployment it was serving was
+ *  fine. Splits stay available to nodes a peer can dial; a relay-only node is coordinator or replica material
+ *  until the relay RPC path is proven. */
+const dialableDirectly = (n: NodeRow): boolean => (n.caps?.publicEndpoints?.length ?? 0) > 0;
 function byRtt(a: NodeRow, b: NodeRow): number {
   const ra = rttOf(a), rb = rttOf(b);
   return ra === rb ? byHost(a, b) : ra < rb ? -1 : 1;
@@ -423,13 +432,17 @@ function planSplit(c: Ctx): Plan {
       if (!n) continue;
       const gpu = offeredGpu(n);
       if (!gpu) { c.errors.push(`Requested worker ${n.hostname} offers no GPU memory.`); continue; }
+      if (!dialableDirectly(n)) { c.errors.push(`Requested worker ${n.hostname} advertises no direct endpoint: its RPC port would have to be relayed, and a relayed RPC aborts the coordinator's engine.`); continue; }
       slots.push({ node: n, gpu });
     }
     if (slots.length) c.reasons.push(`Workers in the order the spec lists them: ${slots.map((s, i) => `RPC${i} ${s.node.hostname}`).join(", ")}.`);
   } else {
-    const picked = c.eligible.filter((n) => n !== coord && n.offer!.roles.worker && offeredGpu(n) !== null).sort(byRtt);
+    const eligibleWorkers = c.eligible.filter((n) => n !== coord && n.offer!.roles.worker && offeredGpu(n) !== null);
+    const picked = eligibleWorkers.filter(dialableDirectly).sort(byRtt);
+    const relayOnly = eligibleWorkers.filter((n) => !dialableDirectly(n)).map((n) => n.hostname);
     for (const n of picked) slots.push({ node: n, gpu: offeredGpu(n)! });
-    if (slots.length) c.reasons.push(`Workers: every other online node with the worker role and a GPU offer, ordered by RTT to control then hostname: ${slots.map((s, i) => `RPC${i} ${s.node.hostname} (${rttLabel(s.node)})`).join(", ")}.`);
+    if (relayOnly.length) c.reasons.push(`Not usable as RPC workers, because no direct endpoint is advertised and a relayed RPC aborts the coordinator's engine: ${relayOnly.join(", ")}.`);
+    if (slots.length) c.reasons.push(`Workers: every other online node with the worker role, a GPU offer and a direct endpoint, ordered by RTT to control then hostname: ${slots.map((s, i) => `RPC${i} ${s.node.hostname} (${rttLabel(s.node)})`).join(", ")}.`);
   }
   if (slots.length === 0) c.errors.push("A split needs at least one worker; use kind replica to run the whole model on one node.");
   if (!coord || c.errors.length) throw new PlanError(c.headline, c.errors);

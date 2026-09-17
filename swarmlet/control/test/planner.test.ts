@@ -34,6 +34,10 @@ function node(f: Fixture): NodeRow {
     caps: {
       os: f.os, arch, hostname: f.hostname, ramMiB: f.ramMiB, ramReserveMiB: f.os === "darwin" ? 12288 : f.os === "win32" ? 6144 : 4096, cpuCores: f.cpuCores, gpus: f.gpus,
       diskFreeMiB: 500_000, privateIps: ["10.0.0.1"], measuredAt: T0, ...(f.rttMs !== undefined ? { net: { rttMs: f.rttMs, measuredAt: T0 } } : {}),
+      // A rig whose peers can be dialled directly. The planner refuses RPC workers without one, because a
+      // relayed RPC connection aborts the coordinator's engine (ggml_backend_rpc_add_server) rather than
+      // failing softly. Production advertises no direct endpoints, so splits are unplannable there.
+      publicEndpoints: [{ host: "10.0.0.1", port: 47801 }],
     },
     offer: f.offer, models: f.models ?? [], metrics: null,
   };

@@ -4,7 +4,10 @@ const ts = new Date().toISOString();
 export function fleetNode(id: string, overrides: Partial<NodeRow> = {}): NodeRow {
   return { id, hostname: id, os: 'linux', arch: 'x64', enrolledAt: ts, lastSeen: ts, online: true, pubJwk: {}, certFp: id, agentVersion: '0.1.0',
     caps: { allocationVersion: 1, os: 'linux', arch: 'x64', hostname: id, ramMiB: 16384, ramReserveMiB: 4096, cpuCores: 10,
-      gpus: [{ id: 'cuda:0', name: 'Test GPU', backend: 'cuda', engineName: 'CUDA0', totalMiB: 8192 }], diskFreeMiB: 100000, privateIps: [], measuredAt: ts, net: { rttMs: 10, measuredAt: ts } },
+      gpus: [{ id: 'cuda:0', name: 'Test GPU', backend: 'cuda', engineName: 'CUDA0', totalMiB: 8192 }], diskFreeMiB: 100000, privateIps: [], measuredAt: ts, net: { rttMs: 10, measuredAt: ts },
+      // A rig that can dial its peers directly. Without this no split is plannable (see planner.ts: a relayed
+      // RPC connection aborts the coordinator's engine), which is exactly production's state today.
+      publicEndpoints: [{ host: '127.0.0.1', port: 47801 }] },
     offer: { enabled: true, roles: { worker: true, coordinator: true, replica: true }, gpu: [{ id: 'cuda:0', memMiB: 8192 }], ramMiB: 12288, cpuCores: 10, diskMiB: 100000, modelsDir: '/models' },
     models: [{ name: 'Qwen3.5-2B-Q8_0.gguf', path: '/models/Qwen3.5-2B-Q8_0.gguf', kind: 'gguf', sizeBytes: 2200000000 }], metrics: null, ...overrides };
 }
