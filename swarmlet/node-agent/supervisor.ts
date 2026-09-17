@@ -66,15 +66,24 @@ export async function supervise(baseCommand: string[], timing: Partial<Record<"i
       void current.exited.then(() => { clearTimeout(timer); resolve(true); });
     });
   };
-  const healthy = async (current: ReturnType<typeof Bun.spawn>, release: InstalledRelease | null, deadline: number): Promise<boolean> => {
+  /** What the running child says about itself right now, or null when its local API does not answer. */
+  const probe = async (current: ReturnType<typeof Bun.spawn>): Promise<{ pid?: number; nodeId?: string; connected?: boolean; releaseSequence?: number } | null> => {
+    try {
+      const cfg = loadNodeConfig(paths);
+      const response = await fetch(`http://127.0.0.1:${cfg.uiPort}/api/status`, { signal: AbortSignal.timeout(2000) });
+      if (!response.ok) return null;
+      return await response.json() as { pid?: number; nodeId?: string; connected?: boolean; releaseSequence?: number };
+    } catch { /* startup may still be probing hardware or connecting */ return null; }
+  };
+  /** `requireConnected` separates the two questions this gate answers. "Is the child the process we think it is,
+   *  serving the release we think it is, answering locally?" is asked before staging a swap. "And can it talk to
+   *  control?" is only asked of a *trial* release, and only when the release it would replace could. */
+  const healthy = async (current: ReturnType<typeof Bun.spawn>, release: InstalledRelease | null, deadline: number, requireConnected: boolean): Promise<boolean> => {
     while (!stopping && Date.now() < deadline && current.exitCode === null) {
-      try {
-        const cfg = loadNodeConfig(paths);
-        const response = await fetch(`http://127.0.0.1:${cfg.uiPort}/api/status`, { signal: AbortSignal.timeout(2000) });
-        const value = await response.json() as { pid?: number; nodeId?: string; connected?: boolean; releaseSequence?: number };
-        if (response.ok && value.pid === current.pid && value.nodeId === identity.nodeId &&
-            value.releaseSequence === (release?.sequence ?? 0) && (!cfg.controlUrl || value.connected)) return true;
-      } catch { /* startup may still be probing hardware or connecting */ }
+      const cfg = loadNodeConfig(paths);
+      const value = await probe(current);
+      if (value && value.pid === current.pid && value.nodeId === identity.nodeId &&
+          value.releaseSequence === (release?.sequence ?? 0) && (!requireConnected || !cfg.controlUrl || value.connected)) return true;
       await Bun.sleep(500);
     }
     return false;
@@ -134,8 +143,15 @@ export async function supervise(baseCommand: string[], timing: Partial<Record<"i
               if (candidate.manifest.expiresAt <= Date.now()) { candidate = null; continue; }
               try { await verifyRelease(JSON.stringify(candidate.manifest), cfg.controlPubJwk, { platform: process.platform, arch: process.arch, acceptedSequence: state.acceptedSequence }); }
               catch (error) { candidate = null; throw error; } // a manual controller rebind invalidates staged trust
-              if (!await healthy(child, state.active, Date.now() + 2000)) { nextCheck = Date.now() + (timing.retryMs ?? 30_000); continue; }
+              // Asked without `connected` on purpose. The update is fetched and staged over plain outbound
+              // HTTPS, so it is the repair path for a node whose control link is broken - and requiring
+              // control connectivity to install it is a bootstrap deadlock: the node that most needs the new
+              // release is the node that cannot pass this check. A live node did exactly that (reconnecting
+              // ~100x/day for five days, never reaching the lease, with nothing in its log to say why).
+              if (!await healthy(child, state.active, Date.now() + 2000, false)) { nextCheck = Date.now() + (timing.retryMs ?? 30_000); continue; }
               assertBinding(authority);
+              // Remember what the outgoing release could do, so the trial is held to the same standard it met.
+              const wasConnected = Boolean((await probe(child))?.connected);
               const leaseOpts = { controlUrl: cfg.controlUrl, pinnedKey: cfg.controlPubJwk, identity };
               const lease = await requestUpdateLease(leaseOpts);
               if (lease) {
@@ -157,7 +173,7 @@ export async function supervise(baseCommand: string[], timing: Partial<Record<"i
                     try {
                       assertBinding(authority);
                       trial = spawn(next); child = trial;
-                      accepted = await healthy(trial, next, Math.min(lease.expiresAt - 5000, Date.now() + (timing.healthMs ?? 90_000)));
+                      accepted = await healthy(trial, next, Math.min(lease.expiresAt - 5000, Date.now() + (timing.healthMs ?? 90_000)), wasConnected);
                       assertBinding(authority);
                     } catch (error) { log(`trial rejected: ${String(error)}`); }
                     if (accepted && binding(loadNodeConfig(paths)) === authority) {

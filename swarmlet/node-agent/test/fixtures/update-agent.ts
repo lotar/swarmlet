@@ -6,7 +6,7 @@ import { loadIdentity } from "../../identity.ts";
 const paths = agentPaths();
 const cfg = loadNodeConfig(paths);
 const identity = await loadIdentity(paths);
-const mode = process.env.SWARMLET_ENGINE ? await Bun.file(join(process.env.SWARMLET_ENGINE, "behavior")).text() : "good";
+const mode = process.env.SWARMLET_ENGINE ? await Bun.file(join(process.env.SWARMLET_ENGINE, "behavior")).text() : (process.env.SWARMLET_FIXTURE_DEFAULT ?? "good");
 Bun.serve({ hostname: "127.0.0.1", port: cfg.uiPort, fetch: (req) => {
   if (new URL(req.url).pathname === "/api/shutdown" && req.method === "POST") {
     setTimeout(() => process.exit(0), 50);
