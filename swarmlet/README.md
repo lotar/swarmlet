@@ -71,6 +71,25 @@ worker ports are private implementation endpoints, not OpenAI servers.
 Physical acceptance and outstanding gates are recorded in the
 [placement/execution report](../docs/reports/PLACEMENT_EXECUTION_PLAN_20260909.md).
 
+### Direct paths and the relay fallback
+
+A placement names every address a peer published, plus a relay flag. The node agent opens a local port
+per RPC endpoint and tries, in order: a reverse stream the peer offered, each direct address (private
+IPs first so a LAN pair stays on the LAN, then a public IP, then a NAT mapping), and finally the control
+relay. The path chosen is remembered per endpoint, and the assignment's ready detail names it
+(`rpc0=direct`, `rpc0=relay`).
+
+Direct is a preference, not a requirement: the planner orders direct peers first by RTT and lists
+relayed ones after them with a reason, and a split plans with no direct endpoint anywhere. See
+`docs/HOST_CONTROL_PLANE.md` for the measurement and for why a relayed RPC is safe now when it was not
+before.
+
+### Model weights live on the nodes
+
+Control never carries weights. A profile declares `download.files[]` (URL, bytes, sha256) and the
+catalog surfaces it for a node that lacks them; the node fetches on its owner's confirmation and
+re-hashes what lands. The planner refuses to place a model a node does not hold.
+
 ## Allocate hardware across deployments
 
 Open **Allocation** in the control web UI. Select deployments and a hardware pool,

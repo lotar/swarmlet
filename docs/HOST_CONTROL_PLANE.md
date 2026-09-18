@@ -20,6 +20,60 @@ python3 swarmlet/e2e/idle-window.py --allow-stopped --check --control-url https:
 
 The gate still reads the admin token from `--control-config` (default `~/.swarmlet/control/control.json`), requires known zero activity, and preserves the existing production-owner and listener checks. Omit `--check` and supply the operator after `--` to run inside a verified quiet window. The default controller URL remains localhost for local installations.
 
+## Transport: a direct path first, the relay as fallback
+
+Every RPC endpoint in a plan carries the addresses the peer published plus `relay: true`. The node agent
+(`node-agent/transport/dial.ts`) opens a local `127.0.0.1` port for each one and, on the first connection,
+tries in this order:
+
+1. a reverse stream, if that peer offered one (`servedial.ts`),
+2. each direct address in turn - private IPs first, so two boxes on one LAN never leave it, then the
+   public IP, then a NAT mapping the peer asked its own router for (`nat.ts`),
+3. the control relay.
+
+The winning path is remembered per endpoint and re-probed after a failure, so the cost is paid once per
+placement. The assignment's ready detail names the path actually used: `rpc0=direct`, `rpc0=relay`.
+
+A direct endpoint is a **preference, not a requirement**. The planner orders peers with a direct endpoint
+first, by RTT, and lists relayed peers after them with a plan reason naming each one
+(`Relayed over the control because no direct endpoint is advertised...`). A split plans and runs with no
+direct endpoint anywhere, which is the state of production.
+
+Measured on 2026-09-18, two Linux/CUDA nodes, neither advertising a public endpoint, split over RPC:
+
+```
+as-9a5915f749a8 ready: ... rpc0=direct        <- they reach each other over the LAN (192.168.1.0/24)
+ready (split 3/21 on lotar-legion-2 > lotar-legion)
+```
+
+with a generation through the mesh endpoint answered by that split. The relay path is covered by the
+agent's own test - no direct address answers, the dialer opens a relay stream, bytes flow, and
+`currentPath` reports `relay` (`node-agent/test/transport.test.ts`). It is not exercised by a live pair
+here because every online node sits on one LAN.
+
+History worth keeping: relayed RPC was banned in the planner after it aborted coordinator engines
+(`ggml_backend_rpc_add_server`) rather than failing softly, and the ban outlived its cause. Two things
+made the ban wrong. The agent now establishes the path *before* the engine starts - it opens each local
+port, waits for a connection path, and only then execs `llama-server` - so the engine never dials a
+socket with nothing behind it. And the ban had been paired with `direct: []` in every assignment, which
+meant even LAN-local pairs were relayed: the transport field names the authenticated substrate, not a
+ban on direct paths.
+
+## Model weights live on the nodes
+
+The control never carries weights. A profile declares how to obtain them - `download.files[]` with a URL,
+a byte count and a sha256 - and the catalog shows that source next to a model the node does not have.
+The node fetches only on its owner's confirmation, in its own local UI, re-hashing what lands so control
+only ever sees verified files. The planner will not place a model a node does not already hold, so a new
+model needs one owner-confirmed fetch per node before it can serve.
+
+`bonsai-2-27b-q2` (PrismML Ternary Bonsai 2 27B, ternary Q2_0 GGUF on the qwen35 arch) is a catalog
+entry built this way: 64 layers, 98 MiB each measured from the file's tensor table, rank 28 - below the
+27B it compresses, above the 35B-A3B. Context is capped at 32768 per row on purpose: this arch costs
+262144 bytes of f16 KV per token, so the 262144 it was trained with would need 64 GiB of KV. The shipped
+engine already carries the Q2_0 and Q1_0 tensor types, so Prism's own build is not required. Vision is
+not wired: the profile format has no mmproj field.
+
 ## Releasing an agent build to the fleet
 
 The node agent ships as a **signed release** in the controller's data dir, not as a git checkout: nodes
