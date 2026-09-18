@@ -376,6 +376,16 @@ export class DeploymentManager {
    */
   onNodeOnline(nodeId: string): void {
     if (this.closed) return;
+    // A node that is back is not the node that was dropped. The exclusion remembers "this one just failed"
+    // so a recovery does not walk straight back into it, and nothing used to clear it: 2026-09-18 12:39Z a
+    // control restart caught the deployment's node mid-reconnect, the recovery excluded it, and every plan
+    // after that filtered it out - so the node holding the weights became permanently invisible and the
+    // deployment could not be started again even with the whole fleet healthy. The memory outlives its fact.
+    for (const [id, entry] of this.moveExcluded) {
+      if (!entry.nodes.delete(nodeId)) continue;
+      const back = this.deps.reg.getNode(nodeId)?.hostname ?? nodeId;
+      this.deps.reg.event("deployment", `${back} is back; its exclusion from a failed re-placement is cleared`, { deploymentId: id });
+    }
     // A plan that failed is not a dead end, because what failed was the plan for the nodes that were here.
     // 2026-09-18 12:39Z: a control restart raced the fleet's reconnect, the deployment behind the shared
     // alias ran its five automatic attempts while every node was still away, and it then sat failed for ten
@@ -583,6 +593,15 @@ export class DeploymentManager {
    * False when the spec pins its nodes, when no placement exists (the deployment is then failed with
    * the reason attached rather than left limping), or when another operation owns the deployment.
    */
+  /** An operator's Start is a fresh instruction about nodes that may have been repaired since. */
+  private clearExclusions(id: string): void {
+    const entry = this.moveExcluded.get(id);
+    if (entry && entry.nodes.size) {
+      this.deps.reg.event("deployment", `${entry.nodes.size} node(s) excluded by an earlier failed re-placement are eligible again: an explicit start was requested`, { deploymentId: id });
+      this.moveExcluded.delete(id);
+    }
+  }
+
   private async redistribute(id: string, reason: string): Promise<boolean> {
     let dep = this.deps.reg.getDeployment(id);
     if (!dep || this.closed || this.operations.has(id)) return false;
@@ -902,6 +921,8 @@ export class DeploymentManager {
   }
 
   async start(id: string, recovering = false, fleetToken?: symbol, opts: { abandonOfflineCleanup?: boolean; fromReady?: boolean } = {}): Promise<void> {
+    // Only a human's start clears the exclusions: the automatic ladder must keep remembering what just failed.
+    if (!recovering) this.clearExclusions(id);
     this.assertFleetAccess(fleetToken);
     const dep = this.must(id);
     if (this.closed) throw new Error("control is shutting down");

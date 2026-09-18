@@ -313,6 +313,37 @@ test("a plan that failed while the fleet was away is retried when a node arrives
   expect(events(f.reg).some((m) => m.includes("whose plan failed while the fleet was away"))).toBe(true);
 });
 
+test("a node excluded by a failed re-placement is usable again when it comes back", async () => {
+  // 2026-09-18 12:39Z, production: a control restart caught the only node able to host the deployment
+  // mid-reconnect, so the recovery excluded it and re-planned without it. That memory is right - the node had
+  // just failed - but nothing released it when the node returned: the ready-state sweep and a non-fresh plan
+  // were the only things that cleared it, and a failed deployment reaches neither. The node holding the
+  // weights stayed invisible to every later plan, and starting it by hand failed with "no online node holds
+  // a model matching" while the node was online, offering the role, and holding the file.
+  const f = rig();
+  const { id } = await f.manager.create(auto);
+  await f.manager.start(id);
+  expect(f.reg.getDeployment(id)?.state).toBe("ready");
+
+  // Every worker away at once: the recovery cannot re-place anywhere, so the stored plan keeps naming them
+  // and the rescue records them as excluded. A precondition assert, so this test cannot pass vacuously.
+  for (const n of ["l1", "l2"]) { f.online.delete(n); f.manager.onOffline(n); }
+  await settle();
+  await sweep(f.manager, 8);
+  expect(events(f.reg).some((m) => m.includes("recovery re-plans without"))).toBe(true);
+
+  f.online.add("l2");
+  f.manager.onNodeOnline("l2");
+  await settle();
+  await sweep(f.manager, 8);
+
+  expect(events(f.reg).some((m) => m.includes("its exclusion from a failed re-placement is cleared"))).toBe(true);
+  // And an explicit start is a fresh instruction about a node that may have been repaired since.
+  await f.manager.start(id).catch(() => {});
+  await sweep(f.manager, 12);
+  expect(f.reg.getDeployment(id)?.state).toBe("ready");
+});
+
 /* ---------- automatic model choice ---------- */
 
 /** The spec a user sends when they want the mesh to decide: no profile, just "serve the best you can". */
