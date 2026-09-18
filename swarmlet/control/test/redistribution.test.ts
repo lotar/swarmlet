@@ -334,6 +334,36 @@ test("the model choice follows the hardware: the big node leaving keeps the best
   expect(events(f.reg).some((m) => m.includes("automatic model choice is now qwen35-2b-q8"))).toBe(false);
 });
 
+test("a node joining cannot drag a serving deployment down to a smaller model", async () => {
+  // The field case, 2026-09-18 11:59:25Z: a peer joined, the chooser re-decided, and a serving deployment went
+  // from a rank-30 model to a rank-10 2B on a small node. The trigger was a co-tenant borrowing the big node's
+  // memory: the model that was already resident stopped passing the free-RAM gate and the chooser walked down
+  // the ranks until something fit. A resident engine does not need free RAM to keep running, only to start, so
+  // a join may upgrade a serving deployment but may not downgrade one.
+  const f = rig();
+  const { id } = await f.manager.create(autoModel);
+  await f.manager.start(id);
+  const served = f.reg.getDeployment(id)!;
+  expect(served.spec.profile).toBe("flash-next-ud-q4kxl");
+  expect(served.state).toBe("ready");
+
+  // A co-tenant takes the big node's memory. The gate is live only once the node has been measured, which
+  // is exactly what happened in the field: a real node reports real numbers, so a real dip is visible.
+  f.reg.setMetrics("mac", { ts: new Date().toISOString(), freeRamMiB: 3000 });
+  f.online.add("l2");                       // a small node arrives that can hold the 2B
+  f.manager.onNodeOnline("l2");
+  await sweep(f.manager, 25);
+
+  const dep = f.reg.getDeployment(id)!;
+  // Whatever happens, it is not a smaller model: no downgrade while it is serving on nodes that are still here.
+  expect(dep.spec.profile).not.toBe("qwen35-2b-q8");
+  expect(dep.spec.profile).toBe("flash-next-ud-q4kxl");
+  expect(dep.state).toBe("ready");                      // still serving, on the node that is still here
+  // The chooser did reach for the 2B, and the guard is what stopped it - both halves in one line of evidence.
+  expect(events(f.reg).some((m) => m.includes("qwen35-2b-q8") && m.includes("keeping the model (rank"))).toBe(true);
+  expect(events(f.reg).some((m) => m.includes("automatic model choice is now qwen35-2b-q8"))).toBe(false);
+});
+
 test("a node joining that changes nothing does not restart the deployment", async () => {
   const f = rig();
   const { id } = await f.manager.create(autoModel);

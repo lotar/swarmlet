@@ -587,7 +587,24 @@ export class DeploymentManager {
       }
       const kindChanged = choice.spec.kind !== dep.spec.kind;
       const profileChanged = choice.spec.profile !== dep.spec.profile;
-      if (kindChanged && dep.state === "ready") {
+      // A model change while serving has to be an upgrade.
+      //
+      // 2026-09-18 11:59:25Z: MBP-od-Veimir joined, the chooser re-decided, and dep-4bcfade6e039 - which was
+      // serving a rank-30 model behind a human-set alias - was re-placed onto a small node as a rank-10 2B.
+      // The trigger was not the join: a co-tenant had borrowed the big node's memory, so the model that was
+      // already resident and serving stopped passing the free-RAM gate and the chooser walked down the ranks
+      // until something fit. The cost was the model, the served names and the capability, for a deployment
+      // that was working. A resident engine does not need free RAM to keep running; it needs it to start.
+      // So while a deployment is serving on nodes that are all still here, a lower-ranked choice is refused,
+      // and the deployment keeps serving what it has. Upgrades (and same-rank moves) are unaffected, and a
+      // downgrade is still available the moment nothing is serving, which is when it costs nothing extra.
+      const rankOf = (profile?: string) => (profile ? this.deps.profiles.get(profile)?.rank : undefined);
+      const currentRank = rankOf(dep.spec.profile);
+      const chosenRank = rankOf(choice.spec.profile);
+      const placementIntact = dep.state === "ready" && !!dep.plan && planNodes(dep.plan).every((n) => this.deps.reg.getNode(n)?.online);
+      if (profileChanged && placementIntact && currentRank !== undefined && chosenRank !== undefined && chosenRank < currentRank) {
+        this.deps.reg.event("deployment", `${dep.spec.name}: automatic model choice wanted ${choice.why}, but that ranks below ${dep.spec.profile}, which is serving and placeable - keeping the model (rank ${chosenRank} < ${currentRank})`, { deploymentId: id });
+      } else if (kindChanged && dep.state === "ready") {
         // A kind change is a different topology, not a better model: replica -> split rebuilds the plan
         // around RPC workers, and a split that names a worker behind a relay aborts the coordinator's whole
         // engine (2026-09-17 12:25Z: replica reloads, coordinator spawns, SIGABRT in ggml_backend_rpc_add_server,
