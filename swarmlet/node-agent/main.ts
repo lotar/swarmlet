@@ -160,12 +160,44 @@ export class AgentRuntime {
    * this node's log and its next model report.
    */
   private requestFetch(profile: string): void {
-    const model = this.catalog.find((m) => m.id === profile);
-    if (!model) { this.agentLog.push(`models: control asked for ${profile}, which is not in the catalog it sent`); return; }
-    if (!this.fetcher) { this.agentLog.push(`models: control asked for ${profile} before the fetcher was ready`); return; }
+    const known = this.catalog.find((m) => m.id === profile);
+    if (known) { this.startCatalogFetch(known); return; }
+    // A headless node never opens its own UI, and the catalog used to arrive only as a side effect of that
+    // call - so the legions had an empty catalog and every request from control was dropped here with a log
+    // line nobody could see. Refresh once before giving up: a request to fetch is exactly the moment the
+    // catalog matters.
+    void this.refreshCatalog().then(() => {
+      const found = this.catalog.find((m) => m.id === profile);
+      if (!found) { this.agentLog.push(`models: control asked for ${profile}, which the catalog does not offer`); return; }
+      this.startCatalogFetch(found);
+    });
+  }
+
+  /** The catalog the control serves this node - the same call its UI makes, on the node's own initiative. */
+  private async refreshCatalog(): Promise<void> {
+    const key = this.client?.inferenceKey;
+    if (!this.cfg.agentUrl || !key) { this.agentLog.push("models: cannot refresh the catalog before the control session is up"); return; }
+    const url = new URL(this.cfg.agentUrl);
+    url.protocol = url.protocol === "wss:" ? "https:" : "http:";
+    // The node parameter matters: without it the catalog answers with what is merely ready, which is the
+    // shape my first probe saw and why it wrongly looked as if the profile were absent everywhere.
+    url.pathname = "/v1/models"; url.search = `?catalog=1&node=${encodeURIComponent(this.id.nodeId)}`; url.hash = "";
+    try {
+      const res = await fetch(url, { headers: { authorization: `Bearer ${key}` }, redirect: "error", signal: AbortSignal.timeout(15000) });
+      if (!res.ok) { this.agentLog.push(`models: catalog refresh failed with HTTP ${res.status}`); return; }
+      const body = (await res.json()) as { data?: Array<{ id?: unknown; download?: import("../protocol/types.ts").ModelDownload }> };
+      const list = (body.data ?? []).filter((m) => typeof m?.id === "string") as Array<{ id: string; download?: import("../protocol/types.ts").ModelDownload }>;
+      if (list.length) { this.catalog = list; this.agentLog.push(`models: catalog refreshed (${list.length} entries)`); }
+    } catch (e) {
+      this.agentLog.push(`models: catalog refresh failed: ${(e as Error).message}`);
+    }
+  }
+
+  private startCatalogFetch(model: { id: string; download?: import("../protocol/types.ts").ModelDownload }): void {
+    if (!this.fetcher) { this.agentLog.push(`models: control asked for ${model.id} before the fetcher was ready`); return; }
     const missing = this.fetcher.missingFiles(model);
-    if (missing.length === 0) { this.agentLog.push(`models: ${profile} is already here`); return; }
-    this.agentLog.push(`models: control requested ${profile} (${missing.length} file(s) missing)`);
+    if (missing.length === 0) { this.agentLog.push(`models: ${model.id} is already here`); return; }
+    this.agentLog.push(`models: control requested ${model.id} (${missing.length} file(s) missing)`);
     void this.fetcher.fetch(model);
   }
 
