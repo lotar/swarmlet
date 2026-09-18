@@ -290,6 +290,29 @@ test("a node that cannot take the work is dropped, and the deployment falls back
   expect(events(f.reg).some((m) => m.includes("re-placement did not start"))).toBe(true);
 });
 
+test("a plan that failed while the fleet was away is retried when a node arrives", async () => {
+  // The production sequence: a control restart brings every agent back at once, a start runs before they
+  // reconnect, and the recovery ladder (five attempts) exhausts while the nodes are still away. The
+  // deployment is then failed, and the shared alias it serves answers with an error. Only ready
+  // deployments used to be reconsidered on a join, so the arrival that could fix it was ignored.
+  const f = rig();
+  const { id } = await f.manager.create(auto);
+  for (const n of ["l1", "l2"]) { f.online.delete(n); f.manager.onOffline(n); }
+  await settle();
+  // start() records the failure and rethrows it, so the caller sees why nothing is running.
+  await f.manager.start(id).catch(() => {});
+  expect(f.reg.getDeployment(id)?.state).toBe("failed");
+  expect(f.reg.getDeployment(id)?.error ?? "").toContain("no plan");
+
+  f.online.add("l2");
+  f.manager.onNodeOnline("l2");
+  await sweep(f.manager, 20);
+
+  const dep = f.reg.getDeployment(id)!;
+  expect(dep.state).toBe("ready");
+  expect(events(f.reg).some((m) => m.includes("whose plan failed while the fleet was away"))).toBe(true);
+});
+
 /* ---------- automatic model choice ---------- */
 
 /** The spec a user sends when they want the mesh to decide: no profile, just "serve the best you can". */

@@ -376,6 +376,22 @@ export class DeploymentManager {
    */
   onNodeOnline(nodeId: string): void {
     if (this.closed) return;
+    // A plan that failed is not a dead end, because what failed was the plan for the nodes that were here.
+    // 2026-09-18 12:39Z: a control restart raced the fleet's reconnect, the deployment behind the shared
+    // alias ran its five automatic attempts while every node was still away, and it then sat failed for ten
+    // minutes with nothing serving - the alias answered with an error until it was started by hand. Only
+    // ready deployments were reconsidered here, so the join that should have rescued it was ignored.
+    // Paced by the same interval the placement moves obey, so a flapping node cannot spin this.
+    for (const dep of this.deps.reg.listDeployments()) {
+      if (dep.state !== "failed" || !(dep.error ?? "").startsWith("no plan")) continue;
+      if (!this.deps.reg.deploymentIntent(dep.id).running) continue;
+      if (this.pinsNodes(dep.spec) || this.operations.has(dep.id)) continue;
+      if (Date.now() < (this.lastMove.get(dep.id) ?? 0) + this.moveIntervalMs) continue;
+      this.lastMove.set(dep.id, Date.now());
+      const arrived = this.deps.reg.getNode(nodeId)?.hostname ?? nodeId;
+      this.deps.reg.event("deployment", `${arrived} joined; retrying ${dep.spec.name}, whose plan failed while the fleet was away`, { deploymentId: dep.id });
+      void this.start(dep.id, true).catch((e) => this.deps.log.warn("retry after a failed plan did not start", { id: dep.id, error: String(e) }));
+    }
     for (const dep of this.deps.reg.listDeployments()) {
       if (dep.state !== "ready" || !this.deps.reg.deploymentIntent(dep.id).running) continue;
       if (this.pinsNodes(dep.spec) || this.reconnecting.has(dep.id) || this.operations.has(dep.id)) continue;
