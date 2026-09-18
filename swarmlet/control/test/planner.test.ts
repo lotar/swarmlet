@@ -64,7 +64,7 @@ const text = (e: PlanError): string => e.reasons.join("\n");
 
 describe("profiles", () => {
   test("the shipped profiles load with the measured envelope", () => {
-    expect([...profiles.keys()].sort()).toEqual(["flash-next-ud-q4kxl", "qwen35-2b-q8", "qwen36-35b-a3b-q4km", "qwen38-27b-q8"]);
+    expect([...profiles.keys()].sort()).toEqual(["bonsai-2-27b-q2", "flash-next-ud-q4kxl", "qwen35-2b-q8", "qwen36-35b-a3b-q4km", "qwen38-27b-q8"]);
     expect(flash).toMatchObject({ modelName: "qwen3.8-flash-next", layers: 48, layerMiB: 1608, coordinatorHostMiB: 32768, boundaryBytes: 81920, workerMarginMiB: 1536 });
     // The envelope is what the rig can place, not a wish list: one layer per worker, the context the model
       // was measured at, and NO chain - no MTP head is qualified for Flash-Next yet, so a speculative request

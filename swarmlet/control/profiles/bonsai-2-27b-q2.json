@@ -1,0 +1,37 @@
+{
+  "id": "bonsai-2-27b-q2",
+  "name": "Ternary Bonsai 2 27B (PQ2_0 ternary, qwen35 arch)",
+  "rank": 28,
+  "modelName": "bonsai-2-27b",
+  "ggufPattern": "^Ternary-Bonsai-2-27B-PQ2_0\\.gguf$",
+  "layers": 64,
+  "layerMiB": 98,
+  "coordinatorHostMiB": 6144,
+  "boundaryBytes": 20480,
+  "workerMarginMiB": 1536,
+  "envelope": [
+    { "workerLayers": 3, "maxCtx": 32768, "maxParallel": 4, "maxChain": 0 },
+    { "workerLayers": 4, "maxCtx": 32768, "maxParallel": 4, "maxChain": 0 },
+    { "workerLayers": 5, "maxCtx": 32768, "maxParallel": 4, "maxChain": 0 },
+    { "workerLayers": 6, "maxCtx": 32768, "maxParallel": 4, "maxChain": 0 },
+    { "workerLayers": 8, "maxCtx": 32768, "maxParallel": 4, "maxChain": 0 },
+    { "workerLayers": 10, "maxCtx": 32768, "maxParallel": 4, "maxChain": 0 },
+    { "workerLayers": 12, "maxCtx": 32768, "maxParallel": 4, "maxChain": 0 },
+    { "workerLayers": 15, "maxCtx": 32768, "maxParallel": 4, "maxChain": 0 },
+    { "workerLayers": 20, "maxCtx": 32768, "maxParallel": 4, "maxChain": 0 },
+    { "workerLayers": 25, "maxCtx": 32768, "maxParallel": 4, "maxChain": 0 },
+    { "workerLayers": 30, "maxCtx": 32768, "maxParallel": 4, "maxChain": 0 }
+  ],
+  "extraArgs": ["-fa", "on"],
+  "download": {
+    "files": [
+      {
+        "name": "Ternary-Bonsai-2-27B-PQ2_0.gguf",
+        "kind": "gguf",
+        "url": "https://huggingface.co/prism-ml/Ternary-Bonsai-2-27B-gguf/resolve/main/Ternary-Bonsai-2-27B-PQ2_0.gguf",
+        "sha256": "3907dc1658db1f78a9826bf8d5bcb8dc65db0d466388937af57f2294fae62ec1",
+        "bytes": 7206168928
+      }
+    ]
+  }
+}
