@@ -499,12 +499,15 @@ export interface AssignmentStateMsg {
 }
 export interface LogMsg { t: "log"; assignmentId: string; line: string }
 export interface AssignMsg { t: "assign"; assignment: Assignment }
+/** Ask a node to fetch a catalog model's declared weights. The node decides whether it fits (disk reserve,
+ *  validity) and reports progress through its log and by re-reporting its model list when files land. */
+export interface FetchMsg { t: "fetch"; profile: string }
 export interface ErrorMsg { t: "error"; message: string }
 export interface PingMsg { t: "ping"; ts: string; link?: { rttMs: number; measuredAt: string } }
 export interface PongMsg { t: "pong"; ts: string }
 
 export type AgentToControl = AuthMsg | HelloMsg | HeartbeatMsg | OfferMsg | ModelsMsg | AssignmentStateMsg | LogMsg | PongMsg;
-export type ControlToAgent = ChallengeMsg | WelcomeMsg | AssignMsg | ErrorMsg | PingMsg;
+export type ControlToAgent = ChallengeMsg | WelcomeMsg | AssignMsg | ErrorMsg | PingMsg | FetchMsg;
 
 // ---------- enrollment (HTTP) ----------
 

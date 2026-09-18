@@ -55,6 +55,8 @@ export class AgentRuntime {
    *  Typed as the fetcher's minimal view rather than the wire type, because inference.ts parses the
    *  catalog into a partial shape of its own. */
   private catalog: Array<{ id: string; download?: import("../protocol/types.ts").ModelDownload }> = [];
+  /** Held as a field so a request from control can reach it, not only this node's own UI. */
+  private fetcher?: ModelFetcher;
 
   constructor(home?: string) {
     this.paths = agentPaths(home);
@@ -151,6 +153,22 @@ export class AgentRuntime {
     return { nodeId: res.nodeId };
   }
 
+  /**
+   * Control asked this node to fetch a catalog model. The node decides: it knows its own disk (the fetcher
+   * refuses rather than filling the volume) and the catalog entry is validated before a byte is spent.
+   * Fire-and-forget on purpose - the caller is a websocket message handler, and the outcome arrives through
+   * this node's log and its next model report.
+   */
+  private requestFetch(profile: string): void {
+    const model = this.catalog.find((m) => m.id === profile);
+    if (!model) { this.agentLog.push(`models: control asked for ${profile}, which is not in the catalog it sent`); return; }
+    if (!this.fetcher) { this.agentLog.push(`models: control asked for ${profile} before the fetcher was ready`); return; }
+    const missing = this.fetcher.missingFiles(model);
+    if (missing.length === 0) { this.agentLog.push(`models: ${profile} is already here`); return; }
+    this.agentLog.push(`models: control requested ${profile} (${missing.length} file(s) missing)`);
+    void this.fetcher.fetch(model);
+  }
+
   connect(): void {
     if (!this.cfg.agentUrl) return;
     this.client?.stop();
@@ -161,6 +179,7 @@ export class AgentRuntime {
       metrics: () => this.metrics ?? { ts: new Date().toISOString() },
       assignments: () => this.runner.states(),
       onAssign: (a) => this.runner.handle(a),
+      onFetch: (profile) => this.requestFetch(profile),
       allowedPorts: () => this.runner.allowedPorts(),
     }, log);
     this.client.start();
@@ -186,7 +205,7 @@ export class AgentRuntime {
     void this.nat.start();
     // Model weights this node is missing can be fetched on the owner's confirmation. The fetcher
     // re-hashes on completion, so control only ever sees files that verified.
-    const fetcher = new ModelFetcher({
+    const fetcher = this.fetcher = new ModelFetcher({
       modelsDir: () => this.cfg.offer.modelsDir,
       log: (line) => { log.info(`models: ${line}`); this.agentLog.push(`models: ${line}`); },
       onModelsChanged: async () => {

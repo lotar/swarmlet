@@ -27,6 +27,12 @@ export interface FetchableModel {
   download?: ModelDownload;
 }
 
+/** Disk kept free after a fetch so filling a node's models directory cannot wedge the machine. */
+export function modelsReserveMiB(): number {
+  const raw = Number(process.env.SWARMLET_MODELS_RESERVE_MIB);
+  return Number.isFinite(raw) && raw >= 0 ? Math.floor(raw) : 2048;
+}
+
 export type FetchStateName = "idle" | "running" | "verifying" | "done" | "failed" | "cancelled";
 
 export interface FetchStatus {
@@ -103,12 +109,20 @@ export class ModelFetcher {
       return this.fail(model.id, `models directory is not usable: ${(e as Error).message}`);
     }
 
-    // Refuse before spending bandwidth: the payload plus 5% headroom must fit.
-    const need = Math.ceil(totalBytes * 1.05);
+    // Refuse before spending bandwidth: the payload plus 5% headroom must fit, and the node must still have
+    // room to work afterwards. Filling a node's disk to the last byte breaks everything else on it - the
+    // engine's own scratch, logs, the OS - so a reserve is kept by default. Configurable because a padded
+    // machine may want a bigger one and a tight one may accept a smaller.
+    const reserve = modelsReserveMiB() * 1024 * 1024;
+    const need = Math.ceil(totalBytes * 1.05) + reserve;
     try {
       const st = statfsSync(dir);
       const free = Number(st.bavail) * Number(st.bsize);
-      if (free < need) return this.fail(model.id, `needs ${(need / 1e9).toFixed(1)} GB free, ${(free / 1e9).toFixed(1)} GB available in ${dir}`);
+      if (free < need) {
+        return this.fail(model.id, `needs ${(need / 1e9).toFixed(1)} GB free (`
+          + `${(totalBytes / 1e9).toFixed(1)} GB payload + ${(reserve / 1e9).toFixed(1)} GB kept free), `
+          + `${(free / 1e9).toFixed(1)} GB available in ${dir}`);
+      }
     } catch { /* a filesystem that cannot report free space is not a reason to refuse */ }
 
     this.running = true;

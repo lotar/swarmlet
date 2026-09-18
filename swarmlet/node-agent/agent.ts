@@ -23,6 +23,8 @@ export interface AgentHooks {
   metrics: () => NodeMetrics;
   assignments: () => Array<{ id: string; state: AssignmentState }>;
   onAssign: (a: Assignment) => void;
+  /** Control asked for a catalog model's weights. Optional: a node without a fetcher simply ignores it. */
+  onFetch?: (profile: string) => void;
   /** Local ports a `data` stream may be connected to right now. */
   allowedPorts: () => Set<number>;
 }
@@ -200,6 +202,7 @@ export class AgentClient {
         break;
       }
       case "assign": this.hooks.onAssign(m.assignment); break;
+      case "fetch": this.hooks.onFetch?.(m.profile); break;
       case "ping":
         if (m.link && Number.isFinite(m.link.rttMs) && m.link.rttMs >= 0 && Number.isFinite(Date.parse(m.link.measuredAt))) this.link = m.link;
         this.send({ t: "pong", ts: m.ts }); break;

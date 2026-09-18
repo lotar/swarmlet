@@ -112,6 +112,19 @@ export function createControlServer(deps: ControlDeps): Server<ConnData> {
       }
     }
     if (seg[1] === "nodes" && m === "GET" && seg.length === 2) return json({ nodes: nodesSnapshot() });
+    // Ask a node to fetch a catalog model. The node owns the decision - it knows its own disk, and its
+    // fetcher refuses rather than filling the volume - so this only carries the request and reports whether it
+    // was delivered. Progress arrives through that node's log and its next model report.
+    if (seg[1] === 'nodes' && seg[3] === 'fetch' && m === 'POST' && seg.length === 4) {
+      const body = (await req.json().catch(() => null)) as { profile?: unknown } | null;
+      const profile = typeof body?.profile === 'string' ? body.profile : '';
+      if (!profile) return json({ error: 'profile is required' }, 400);
+      const node = reg.getNode(seg[2]!);
+      if (!node) return json({ error: 'unknown node' }, 404);
+      if (!channel.send(seg[2]!, { t: 'fetch', profile })) return json({ error: 'node is offline' }, 409);
+      deps.log.info('model fetch requested', { node: node.hostname, profile });
+      return json({ ok: true, node: node.hostname, profile }, 202);
+    }
     if (seg[1] === "stream" && m === "GET") {
       if ((streamsByClient.get(client) ?? 0) >= 4) {
         return new Response(JSON.stringify({ error: "live stream limit; polling remains available" }), {
