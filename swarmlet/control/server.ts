@@ -115,7 +115,7 @@ export function createControlServer(deps: ControlDeps): Server<ConnData> {
     // Ask a node to fetch a catalog model. The node owns the decision - it knows its own disk, and its
     // fetcher refuses rather than filling the volume - so this only carries the request and reports whether it
     // was delivered. Progress arrives through that node's log and its next model report.
-    if (seg[1] === 'nodes' && seg[3] === 'fetch' && m === 'POST' && seg.length === 4) {
+    if (seg[1] === 'nodes' && seg[3] === 'models' && seg[4] === 'fetch' && m === 'POST' && seg.length === 5) {
       const body = (await req.json().catch(() => null)) as { profile?: unknown } | null;
       const profile = typeof body?.profile === 'string' ? body.profile : '';
       if (!profile) return json({ error: 'profile is required' }, 400);
