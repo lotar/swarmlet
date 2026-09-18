@@ -432,17 +432,24 @@ function planSplit(c: Ctx): Plan {
       if (!n) continue;
       const gpu = offeredGpu(n);
       if (!gpu) { c.errors.push(`Requested worker ${n.hostname} offers no GPU memory.`); continue; }
-      if (!dialableDirectly(n)) { c.errors.push(`Requested worker ${n.hostname} advertises no direct endpoint: its RPC port would have to be relayed, and a relayed RPC aborts the coordinator's engine.`); continue; }
+      // No direct endpoint means no LAN path to this worker, not a refusal: the coordinator reaches it over the
+      // control relay instead (transport/dial.ts falls back last). Slower, so it is said out loud.
+      if (!dialableDirectly(n)) c.reasons.push(`Requested worker ${n.hostname} advertises no direct endpoint: its RPC travels over the control relay, which is slower than a LAN path.`);
       slots.push({ node: n, gpu });
     }
     if (slots.length) c.reasons.push(`Workers in the order the spec lists them: ${slots.map((s, i) => `RPC${i} ${s.node.hostname}`).join(", ")}.`);
   } else {
     const eligibleWorkers = c.eligible.filter((n) => n !== coord && n.offer!.roles.worker && offeredGpu(n) !== null);
-    const picked = eligibleWorkers.filter(dialableDirectly).sort(byRtt);
-    const relayOnly = eligibleWorkers.filter((n) => !dialableDirectly(n)).map((n) => n.hostname);
-    for (const n of picked) slots.push({ node: n, gpu: offeredGpu(n)! });
-    if (relayOnly.length) c.reasons.push(`Not usable as RPC workers, because no direct endpoint is advertised and a relayed RPC aborts the coordinator's engine: ${relayOnly.join(", ")}.`);
-    if (slots.length) c.reasons.push(`Workers: every other online node with the worker role, a GPU offer and a direct endpoint, ordered by RTT to control then hostname: ${slots.map((s, i) => `RPC${i} ${s.node.hostname} (${rttLabel(s.node)})`).join(", ")}.`);
+    // Fastest path first: a peer that advertises a direct endpoint is reachable over a LAN or a mapped port,
+    // so it is offered ahead of one that can only be reached through the control. Both work - the transport
+    // prefers direct and falls back to the relay (node-agent/transport/dial.ts) - so reachability decides
+    // order, never eligibility. An unreachable peer used to be dropped here, which left production with no
+    // plannable split at all, since no node there advertises an endpoint.
+    const direct = eligibleWorkers.filter(dialableDirectly).sort(byRtt);
+    const relayed = eligibleWorkers.filter((n) => !dialableDirectly(n)).sort(byRtt);
+    for (const n of [...direct, ...relayed]) slots.push({ node: n, gpu: offeredGpu(n)! });
+    if (relayed.length) c.reasons.push(`Relayed over the control because no direct endpoint is advertised, so no LAN path exists to them: ${relayed.map((n) => n.hostname).join(", ")}.`);
+    if (slots.length) c.reasons.push(`Workers: every other online node with the worker role and a GPU offer, direct paths first (ordered by RTT to control then hostname) and relayed nodes after them: ${slots.map((s, i) => `RPC${i} ${s.node.hostname} (${rttLabel(s.node)})`).join(", ")}.`);
   }
   if (slots.length === 0) c.errors.push("A split needs at least one worker; use kind replica to run the whole model on one node.");
   if (!coord || c.errors.length) throw new PlanError(c.headline, c.errors);

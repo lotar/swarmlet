@@ -1081,7 +1081,6 @@ export class DeploymentManager {
     this.deps.reg.updateDeployment(dep.id, { plan });
     const coord = this.node(plan.coordinatorNodeId);
     const workers = plan.workers.map((w) => ({ w, node: this.node(w.nodeId) }));
-    const relayOnly = dep.spec.transport === "relay";
     // Reverse dial is behind a switch while its pairing is unproven end to end: with it on, a worker
     // offers inbound streams and the coordinator prefers them, and the engine currently fails to
     // complete a load on them (see docs/reports). Default off keeps every split on the relay it had
@@ -1089,7 +1088,12 @@ export class DeploymentManager {
     const reverseDial = process.env.SWARMLET_REVERSE_DIAL === "1";
     const endpointFor = (node: NodeRow, port: number): Endpoint => ({
       nodeId: node.id, certFp: node.certFp, port,
-      direct: relayOnly ? [] : [
+      // Every reachable address the peer published, fastest first, with `relay: true` below as the fallback.
+      // This used to be emptied whenever transport was "relay" - which is always, since native execution
+      // requires that value - so the agent was handed no direct candidates at all and every RPC went through
+      // the control even when both boxes sat on the same LAN. The transport field names the authenticated
+      // substrate, not a ban on direct paths: dial.ts prefers these candidates and relays only when none answer.
+      direct: [
         ...(node.caps?.privateIps ?? []).map((host) => ({ host, port: node.caps?.dataPort ?? AGENT_DATA_PORT })),
         ...(node.caps?.publicIp ? [{ host: node.caps.publicIp, port: node.caps.dataPort ?? AGENT_DATA_PORT }] : []),
         // A node behind a router nobody here administers can still be dialled directly: it asked its

@@ -767,10 +767,9 @@ test("recovery re-plans instead of waiting for a node its stored plan names", as
   expect(f.reg.getDeployment(id)?.error).not.toBe("control restarted; awaiting node reconciliation");
 });
 
-test("a node that advertises no direct endpoint cannot be an RPC worker", async () => {
-  // The coordinator dials workers over RPC. Through the relay that does not fail softly - it aborts the whole
-  // engine (ggml_backend_rpc_add_server). Production advertises no direct endpoints anywhere, so a split is not
-  // plannable there at all, which is the honest state until the relay RPC path is proven.
+test("a worker with no direct endpoint is still used, and ordered after the ones that have one", async () => {
+  // Reachability decides ORDER, never eligibility. A peer that publishes a direct endpoint is reachable over a
+  // LAN or a mapped port, so it is offered first; one reachable only through the control is relayed. Both run.
   const f = rig();
   const l1 = f.reg.getNode("l1")!;
   f.reg.upsertNode({ ...l1, caps: { ...l1.caps!, publicEndpoints: [] } });
@@ -780,6 +779,30 @@ test("a node that advertises no direct endpoint cannot be an RPC worker", async 
   await settle();
 
   const dep = f.reg.getDeployment(id)!;
-  expect(dep.state).toBe("ready");                       // the other two nodes can still serve a split
-  expect(liveNodes(f.reg, id)).not.toContain("l1");       // and the undialable node is not asked to host layers
+  expect(dep.state).toBe("ready");
+  expect(dep.plan!.workers.map((w) => w.nodeId)).toEqual(["l2", "l1"]);   // direct peer first, relayed second
+  expect(dep.plan!.reasons.some((r) => r.includes("Relayed over the control"))).toBe(true);
+});
+
+test("with no direct endpoint anywhere, a split still plans and runs over the relay", async () => {
+  // The field state: production advertises no direct endpoints at all. Requiring one made every split
+  // unplannable there. The transport prefers a direct path and falls back to the control relay
+  // (node-agent/transport/dial.ts), so a split must plan, and must say which nodes are relayed.
+  const f = rig();
+  for (const node of ["l1", "l2"]) {
+    const n = f.reg.getNode(node)!;
+    f.reg.upsertNode({ ...n, caps: { ...n.caps!, publicEndpoints: [] } });
+  }
+
+  const { id } = await f.manager.create(auto);
+  await f.manager.start(id);
+  await settle();
+
+  const dep = f.reg.getDeployment(id)!;
+  expect(dep.state).toBe("ready");
+  expect(new Set(dep.plan!.workers.map((w) => w.nodeId))).toEqual(new Set(["l1", "l2"]));
+  const relayed = dep.plan!.reasons.find((r) => r.includes("Relayed over the control"));
+  expect(relayed).toBeDefined();
+  expect(relayed!).toContain("l1");
+  expect(relayed!).toContain("l2");
 });
