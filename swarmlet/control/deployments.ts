@@ -589,12 +589,14 @@ export class DeploymentManager {
       const profileChanged = choice.spec.profile !== dep.spec.profile;
       // A model change while serving has to be an upgrade.
       //
-      // 2026-09-18 11:59:25Z: MBP-od-Veimir joined, the chooser re-decided, and dep-4bcfade6e039 - which was
-      // serving a rank-30 model behind a human-set alias - was re-placed onto a small node as a rank-10 2B.
+      // 2026-09-18 11:59:25Z: MBP-od-Veimir joined, the chooser re-decided, and dep-4bcfade6e039 was
+      // re-placed onto a small node as a rank-10 2B, down from the rank-30 model it was serving.
       // The trigger was not the join: a co-tenant had borrowed the big node's memory, so the model that was
       // already resident and serving stopped passing the free-RAM gate and the chooser walked down the ranks
       // until something fit. The cost was the model, the served names and the capability, for a deployment
-      // that was working. A resident engine does not need free RAM to keep running; it needs it to start.
+      // that was working, plus a reload that the unchanged model would not have needed: with the model kept,
+      // the plan is unchanged, samePlacement() holds, and nothing restarts.
+      // A resident engine does not need free RAM to keep running; it needs it to start.
       // So while a deployment is serving on nodes that are all still here, a lower-ranked choice is refused,
       // and the deployment keeps serving what it has. Upgrades (and same-rank moves) are unaffected, and a
       // downgrade is still available the moment nothing is serving, which is when it costs nothing extra.
