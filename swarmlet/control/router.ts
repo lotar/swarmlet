@@ -134,7 +134,14 @@ export function createRouter(deps: { deployments: DeploymentManager; tunnels: Tu
         });
       }
       const local = await deps.tunnels.localPort(pick.nodeId, pick.port);
-      const upstream = await fetch(`http://127.0.0.1:${local}${path}`, { method: "POST", headers, body: bodyText, signal });
+      // An external server may only know its own model id (e.g. "incoai/Qwen3.8-27B-Splash") while the
+      // mesh routes the retired alias ("qwen3.8-27b"). Rewrite only the model field; nothing else changes.
+      let forwardBody = bodyText;
+      const upstreamModel = upstreamModelOf(pick);
+      if (upstreamModel && upstreamModel !== model) {
+        forwardBody = JSON.stringify({ ...(parsedBody as Record<string, unknown>), model: upstreamModel });
+      }
+      const upstream = await fetch(`http://127.0.0.1:${local}${path}`, { method: "POST", headers, body: forwardBody, signal });
       const out = new Headers(upstream.headers);
       // fetch decodes upstream compression, and stream validation may append an error event.
       // Neither the upstream encoding nor its byte count describes the forwarded body.
