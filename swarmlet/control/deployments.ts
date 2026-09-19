@@ -999,8 +999,8 @@ export class DeploymentManager {
   }
 
   /** Ready deployments grouped by served model name, for the router and the Routing page. */
-  routing(): Array<{ modelName: string; created: number; deployments: Array<{ id: string; name: string; kind: string; nodeId: string; port: number; nodes: string[]; inflight: number; tokPerSec?: number; rttMs?: number }> }> {
-    const byModel = new Map<string, Array<{ id: string; name: string; kind: string; nodeId: string; port: number; nodes: string[]; inflight: number; tokPerSec?: number; rttMs?: number }>>();
+  routing(): Array<{ modelName: string; created: number; deployments: Array<{ id: string; name: string; kind: string; nodeId: string; port: number; nodes: string[]; inflight: number; tokPerSec?: number; rttMs?: number; upstreamModel?: string }> }> {
+    const byModel = new Map<string, Array<{ id: string; name: string; kind: string; nodeId: string; port: number; nodes: string[]; inflight: number; tokPerSec?: number; rttMs?: number; upstreamModel?: string }>>();
     const created = new Map<string, number>();
     for (const dep of this.deps.reg.listDeployments()) {
       if (dep.state !== "ready" || !dep.endpoint) continue;
@@ -1008,7 +1008,7 @@ export class DeploymentManager {
       const list = byModel.get(dep.endpoint.modelName) ?? [];
       const nodes = dep.plan ? planNodes(dep.plan) : [dep.endpoint.nodeId];
       if (nodes.includes(this.updatingNode() ?? "")) continue;
-      list.push({ id: dep.id, name: dep.spec.name, kind: dep.spec.kind, nodeId: dep.endpoint.nodeId, port: dep.endpoint.port, nodes, inflight: this.inflight.get(dep.id) ?? 0, tokPerSec: this.liveTokPerSec(dep.id), rttMs: node?.caps?.net?.rttMs });
+      list.push({ id: dep.id, name: dep.spec.name, kind: dep.spec.kind, nodeId: dep.endpoint.nodeId, port: dep.endpoint.port, nodes, inflight: this.inflight.get(dep.id) ?? 0, tokPerSec: this.liveTokPerSec(dep.id), rttMs: node?.caps?.net?.rttMs, ...(dep.spec.external?.upstreamModel ? { upstreamModel: dep.spec.external.upstreamModel } : {}) });
       byModel.set(dep.endpoint.modelName, list);
       const registered = Math.floor(Date.parse(dep.createdAt) / 1000);
       created.set(dep.endpoint.modelName, Math.min(created.get(dep.endpoint.modelName) ?? registered, registered));

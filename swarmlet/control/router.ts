@@ -4,7 +4,6 @@
 // on this host that carries the connection over the node's agent channel to its llama-server.
 
 import { inferenceStream } from "../protocol/inference-stream.ts";
-import type { DeploymentSpec } from "../protocol/types.ts";
 import type { DeploymentManager } from "./deployments.ts";
 import type { Logger } from "./log.ts";
 import type { TunnelPool } from "./tunnel.ts";
@@ -48,11 +47,11 @@ class TokenCounter {
   }
 }
 
-/** An external deployment may front a server that only knows its own model id. When the spec declares
- *  `upstreamModel`, the router rewrites the client's routed alias to it; everything else passes
- *  through untouched. Returns undefined for managed deployments. */
-export function upstreamModelOf(spec: DeploymentSpec): string | undefined {
-  return spec.kind === "external" ? spec.external?.upstreamModel : undefined;
+/** An external deployment may front a server that only knows its own model id. When the routing row
+ *  carries `upstreamModel`, the router rewrites the client's routed alias to it; everything else
+ *  passes through untouched. Returns undefined for managed deployments. */
+export function upstreamModelOf(row: { kind: string; upstreamModel?: string }): string | undefined {
+  return row.kind === "external" ? row.upstreamModel : undefined;
 }
 
 export function createRouter(deps: { deployments: DeploymentManager; tunnels: TunnelPool; log: Logger }) {
