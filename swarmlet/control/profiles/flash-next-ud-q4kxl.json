@@ -15,13 +15,15 @@
       "workerLayers": 1,
       "maxCtx": 262144,
       "maxParallel": 3,
-      "maxChain": 0
+      "maxChain": 0,
+      "maxFit": true
     },
     {
       "workerLayers": 1,
       "maxCtx": 262144,
       "maxParallel": 1,
-      "maxChain": 0
+      "maxChain": 0,
+      "maxFit": true
     }
   ],
   "extraArgs": [

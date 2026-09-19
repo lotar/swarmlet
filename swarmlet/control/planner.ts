@@ -47,7 +47,7 @@ const WIRE_MODES: ReadonlySet<string> = new Set(["off", "f16", "q8"]);
 // ---------- profiles ----------
 
 const PROFILE_KEYS: readonly string[] = ["id", "name", "modelName", "ggufPattern", "mtpPattern", "layers", "layerMiB", "coordinatorHostMiB", "boundaryBytes", "envelope", "extraArgs", "workerMarginMiB", "download", "rank"];
-const ROW_KEYS: readonly string[] = ["workerLayers", "maxCtx", "maxParallel", "maxChain"];
+const ROW_KEYS: readonly string[] = ["workerLayers", "maxCtx", "maxParallel", "maxChain", "maxFit"];
 const DOWNLOAD_FILE_KEYS: readonly string[] = ["name", "kind", "url", "sha256", "bytes"];
 
 type Raw = Record<string, unknown>;
@@ -120,7 +120,8 @@ export function validateProfile(raw: unknown, where = "profile"): ModelProfile {
     const rw = `${where}: envelope[${i}]`;
     if (!isRecord(r)) throw new Error(`${rw} must be an object`);
     checkKeys(r, ROW_KEYS, rw);
-    return { workerLayers: int(r, "workerLayers", rw, 1), maxCtx: int(r, "maxCtx", rw, 1), maxParallel: int(r, "maxParallel", rw, 1), maxChain: int(r, "maxChain", rw, 0) };
+    if (r.maxFit !== undefined && typeof r.maxFit !== "boolean") throw new Error(`${rw}: "maxFit" must be a boolean`);
+    return { workerLayers: int(r, "workerLayers", rw, 1), maxCtx: int(r, "maxCtx", rw, 1), maxParallel: int(r, "maxParallel", rw, 1), maxChain: int(r, "maxChain", rw, 0), ...(r.maxFit ? { maxFit: true } : {}) };
   });
   // Optional preference order for automatic model choice; higher is better. Editorial on purpose -
   // file size is not quality - and read only by the auto policy.
@@ -317,6 +318,11 @@ function placeResident(c: Ctx, n: NodeRow, layers: number, role: string): string
  * Windows are deliberately not checked: there the layers are device memory, and `placeResident` charges
  * only the host part to ramMiB.
  */
+/** The most layers a worker's GPU offer can hold: weights plus the same margin the envelope rows reserve. */
+function maxFitLayers(slot: WorkerSlot, profile: ModelProfile): number {
+  return Math.max(0, Math.floor((slot.gpu.memMiB - profile.workerMarginMiB) / profile.layerMiB));
+}
+
 function ramShortfall(node: NodeRow, needMiB: number): string | null {
   const offer = node.offer;
   if (node.os !== "darwin" || !offer || needMiB <= offer.ramMiB) return null;
@@ -338,16 +344,28 @@ function chooseRow(c: Ctx, slots: WorkerSlot[]): EnvelopeRow | null {
     if (c.ctx > row.maxCtx) blocked.push(`ctx ${c.ctx} > maxCtx ${row.maxCtx}`);
     if (c.parallel > row.maxParallel) blocked.push(`parallel ${c.parallel} > maxParallel ${row.maxParallel}`);
     if (c.chain > row.maxChain) blocked.push(`chain ${c.chain} > maxChain ${row.maxChain}`);
-    if (row.workerLayers * slots.length > p.layers - 1) blocked.push(`${slots.length} workers × ${row.workerLayers} layers leave the coordinator none of the ${p.layers} layers`);
-    const need = row.workerLayers * p.layerMiB + p.workerMarginMiB;
-    for (const s of slots) {
-      if (need > s.gpu.memMiB) blocked.push(`${s.node.hostname} needs ${need} MiB for ${row.workerLayers} layers but offers ${s.gpu.memMiB} MiB on ${s.gpu.engineName}`);
-      const ram = ramShortfall(s.node, need);
-      if (ram) blocked.push(ram);
+    if (row.maxFit) {
+      for (const s of slots) {
+        const fit = maxFitLayers(s, p);
+        if (fit < 1) blocked.push(`${s.node.hostname} cannot hold one layer: ${p.layerMiB} + ${p.workerMarginMiB} MiB margin exceeds its ${s.gpu.memMiB} MiB GPU offer on ${s.gpu.engineName}`);
+        const ram = ramShortfall(s.node, fit * p.layerMiB + p.workerMarginMiB);
+        if (ram) blocked.push(ram);
+      }
+    } else {
+      if (row.workerLayers * slots.length > p.layers - 1) blocked.push(`${slots.length} workers × ${row.workerLayers} layers leave the coordinator none of the ${p.layers} layers`);
+      const need = row.workerLayers * p.layerMiB + p.workerMarginMiB;
+      for (const s of slots) {
+        if (need > s.gpu.memMiB) blocked.push(`${s.node.hostname} needs ${need} MiB for ${row.workerLayers} layers but offers ${s.gpu.memMiB} MiB on ${s.gpu.engineName}`);
+        const ram = ramShortfall(s.node, need);
+        if (ram) blocked.push(ram);
+      }
     }
-    const label = `row workerLayers ${row.workerLayers} (maxCtx ${row.maxCtx}, maxParallel ${row.maxParallel}, maxChain ${row.maxChain})`;
+    const label = `row workerLayers ${row.workerLayers}${row.maxFit ? " (max-fit)" : ""} (maxCtx ${row.maxCtx}, maxParallel ${row.maxParallel}, maxChain ${row.maxChain})`;
     if (blocked.length === 0) {
-      c.reasons.push(`Envelope ${label} fits ctx ${c.ctx}, parallel ${c.parallel}, chain ${c.chain} and every worker's GPU offer (${row.workerLayers} × ${p.layerMiB} + ${p.workerMarginMiB} MiB margin = ${need} MiB per worker)${skipped.length ? `; skipped ${skipped.join("; ")}` : ""}.`);
+      const how = row.maxFit
+        ? `each worker takes the most its GPU offer holds (weights + ${p.workerMarginMiB} MiB margin)`
+        : `${row.workerLayers} × ${p.layerMiB} + ${p.workerMarginMiB} MiB margin = ${row.workerLayers * p.layerMiB + p.workerMarginMiB} MiB per worker`;
+      c.reasons.push(`Envelope ${label} fits ctx ${c.ctx}, parallel ${c.parallel}, chain ${c.chain} and every worker's GPU offer (${how})${skipped.length ? `; skipped ${skipped.join("; ")}` : ""}.`);
       return row;
     }
     skipped.push(`${label}: ${blocked.join(", ")}`);
@@ -461,7 +479,18 @@ function planSplit(c: Ctx): Plan {
   else {
     const row = chooseRow(c, slots);
     if (!row) throw new PlanError(c.headline, c.errors);
-    layers = slots.map(() => row.workerLayers);
+    if (row.maxFit) {
+      layers = slots.map((s) => maxFitLayers(s, profile));
+      // Deterministically shave the largest worker until the coordinator keeps at least one layer.
+      while (layers.reduce((sum, count) => sum + count, 0) > profile.layers - 1) {
+        let i = 0;
+        for (let j = 1; j < layers.length; j++) if (layers[j]! > layers[i]!) i = j;
+        layers[i]!--;
+      }
+      slots.forEach((s, i) => c.reasons.push(`RPC${i} ${s.node.hostname}: max fit ${layers[i]} layer(s) = ${layers[i]! * profile.layerMiB} + ${profile.workerMarginMiB} MiB margin ≤ ${s.gpu.memMiB} MiB offered on ${s.gpu.engineName}.`));
+    } else {
+      layers = slots.map(() => row.workerLayers);
+    }
   }
   const remaining = profile.layers - layers.reduce((sum, count) => sum + count, 0);
   const device = placeResident(c, coord, remaining, "Coordinator");

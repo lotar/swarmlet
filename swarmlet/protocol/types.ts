@@ -404,11 +404,13 @@ export interface Deployment {
 }
 
 export interface EnvelopeRow {
-  /** Layers per worker this row was validated for. */
+  /** Layers per worker this row was validated for; with maxFit it is the floor each worker gets. */
   workerLayers: number;
   maxCtx: number;
   maxParallel: number;
   maxChain: number;
+  /** Give every worker the most layers its memory fits (>= workerLayers) instead of a fixed count. */
+  maxFit?: boolean;
 }
 
 export interface ModelProfile {

@@ -70,7 +70,7 @@ describe("profiles", () => {
       // was measured at, and NO chain - no MTP head is qualified for Flash-Next yet, so a speculative request
       // has to be refused rather than half-served. (The draft-head path is exercised through a chain-capable
       // clone of this profile below, and through the shipped 27B rows, which do allow a chain.)
-      expect(flash.envelope).toEqual([{ workerLayers: 1, maxCtx: 262144, maxParallel: 3, maxChain: 0 }, { workerLayers: 1, maxCtx: 262144, maxParallel: 1, maxChain: 0 }]);
+      expect(flash.envelope).toEqual([{ workerLayers: 1, maxCtx: 262144, maxParallel: 3, maxChain: 0, maxFit: true }, { workerLayers: 1, maxCtx: 262144, maxParallel: 1, maxChain: 0, maxFit: true }]);
     expect(flash.extraArgs).toEqual(["-ot", "ple_ngram_embd=CPU", "-fa", "on", "--cache-ram", "0", "--ctx-checkpoints", "0"]);
     expect(new RegExp(flash.ggufPattern).test(shard(1).name)).toBe(true);
     expect(new RegExp(flash.ggufPattern).test(shard(2).name)).toBe(false);
@@ -163,7 +163,8 @@ describe("split placement on the real rig", () => {
     const why = p.reasons.join("\n");
     expect(why).toMatch(/Coordinator m5: largest RAM offer \(110000 MiB\)/);
     expect(why).toMatch(/RPC0 legion1 \(12 ms\), RPC1 legion2 \(15 ms\)/);
-    expect(why).toMatch(/row workerLayers 1 \(maxCtx 262144, maxParallel 3, maxChain 0\) fits/);
+    expect(why).toMatch(/row workerLayers 1 \(max-fit\) \(maxCtx 262144, maxParallel 3, maxChain 0\) fits/);
+    expect(why).toMatch(/max fit 1 layer\(s\) = 1608 \+ 1536 MiB margin ≤ 3700 MiB offered/);
     expect(why).toMatch(/keeps 46 of 48 layers on MTL0: 46 × 1608 \+ 32768 MiB host = 106736 MiB of 110000 MiB/);
     expect(why).not.toMatch(/draft head/);          // nothing to draft with: the rows say chain 0
     expect(why).toMatch(/81920 bytes per token/);
@@ -198,7 +199,7 @@ describe("split placement on the real rig", () => {
   test("a 1000 MiB worker offer is refused with the per-worker reason", () => {
     const e = refused({ nodes: [m5(), legion1({ offer: legionOffer(1000) }), legion2()] });
     expect(text(e)).toMatch(/legion1: 1000 MiB offered on CUDA0 allows at most 0 layer\(s\) of 1608 MiB after the 1536 MiB margin/);
-    expect(text(e)).toMatch(/legion1 needs 3144 MiB for 1 layers but offers 1000 MiB on CUDA0/);
+    expect(text(e)).toMatch(/legion1 cannot hold one layer: 1608 \+ 1536 MiB margin exceeds its 1000 MiB GPU offer on CUDA0/);
     expect(text(e)).toMatch(/legion2: 3700 MiB offered on CUDA0 allows at most 1 layer/);
   });
 
@@ -340,7 +341,7 @@ describe("windows node placement (all shipped profiles)", () => {
     expect(p.workers.map((w) => w.nodeId).sort()).toEqual([L1, W].sort());
     expect(p.tensorSplit).toEqual([1, 1, 46]);
     expect(p.workers.find((w) => w.nodeId === W)).toMatchObject({ layers: 1, memCapMiB: 3700 });
-    expect(p.reasons.join("\n")).toMatch(/1 × 1608 \+ 1536 MiB margin = 3144 MiB per worker/);
+    expect(p.reasons.join("\n")).toMatch(/max fit 1 layer\(s\) = 1608 \+ 1536 MiB margin ≤ 3700 MiB offered/);
   });
 
   test("Qwen3.5-2B split: the Windows GPU takes 3 layers like a Legion", () => {
@@ -460,6 +461,38 @@ describe("a darwin worker must fit the RAM offer its agent enforces, not only th
     const p = plan({ spec: split(30, { workerNodeIds: [LW] }), profile: q, nodes: [holder(), workerNode(LW, "linux-box", "linux", cuda, 8192, 18186)] });
     expect(p.workers[0]).toEqual({ nodeId: LW, device: "CUDA0", layers: 30, port: 50200, threads: 10, memCapMiB: 18186 });
     expect(p.tensorSplit).toEqual([30, 34]);
+  });
+});
+
+describe("max-fit worker layers", () => {
+  // The M1-class worker: 12_288 MiB of Metal offered, worker-only, darwin. Flash layers are 1608 MiB with a
+  // 1536 MiB margin, so the most it can hold is six: 6 × 1608 + 1536 = 11184 <= 12288, seven would need 12792.
+  const m1 = (memMiB = 12288): NodeRow => node({ id: "a1b2c3d4e5f60030", hostname: "m1", os: "darwin", ramMiB: 16384, cpuCores: 10,
+    gpus: [{ id: "metal:0", name: "Apple M1 Pro", backend: "metal", engineName: "MTL0", totalMiB: 10922 }], rttMs: 8,
+    offer: { enabled: true, roles: { worker: true, coordinator: false, replica: false }, gpu: [{ id: "metal:0", memMiB }], ramMiB: 16384, cpuCores: 10, diskMiB: 400_000, modelsDir: MODELS } });
+
+  test("a 12_288 MiB worker takes six layers; the coordinator keeps 42 and states its residency", () => {
+    const p = plan({ nodes: [m5(), m1()] });
+    expect(p.coordinatorNodeId).toBe(M5);
+    expect(p.workers).toHaveLength(1);
+    expect(p.workers[0]).toMatchObject({ layers: 6, nodeId: "a1b2c3d4e5f60030" });
+    expect(p.tensorSplit).toEqual([6, 42]);
+    const why = p.reasons.join("\n");
+    expect(why).toMatch(/max fit 6 layer\(s\) = 9648 \+ 1536 MiB margin ≤ 12288 MiB offered/);
+    expect(why).toMatch(/Coordinator m5 keeps 42 of 48 layers on MTL0: 42 × 1608 \+ 32768 MiB host = 100304 MiB of 110000 MiB RAM offered/);
+  });
+
+  test("a worker that can hold only one layer still gets one, never a fractional count", () => {
+    const p = plan({ nodes: [m5(), m1(3144)] });
+    expect(p.workers[0]!.layers).toBe(1);
+    expect(p.tensorSplit).toEqual([1, 47]);
+  });
+
+  test("max-fit never starves the coordinator: two big workers shave deterministically", () => {
+    const p = plan({ nodes: [m5(), m1(), m1()] });
+    const counts = p.workers.map((w) => w.layers).sort((a, b) => b - a);
+    expect(counts.reduce((sum, n) => sum + n, 0)).toBeLessThanOrEqual(47);
+    expect(counts[0]!).toBeGreaterThanOrEqual(counts[1]!);
   });
 });
 
