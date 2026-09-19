@@ -16,6 +16,7 @@ import { DOWNLOAD_URL_RE } from "../protocol/types.ts";
 import { usableGpus } from "../protocol/validate.ts";
 import type { NodeRow } from "./registry.ts";
 import { QWEN35_NATIVE_QUALIFICATIONS, type Qwen35NativeQualification } from "./profiles/qwen35-native.ts";
+import { choosePhasePlan } from "./phase-plan.ts";
 
 export interface PlanInput {
   spec: DeploymentSpec;
@@ -528,8 +529,12 @@ function nativeRequestErrors(spec: DeploymentSpec, ctx: number, parallel: number
       if (end !== 24) errors.push("Stage ranges must cover all 24 transformer blocks.");
     }
   } else {
-    if (typeof spec.prefillNodeId !== "string" || !spec.prefillNodeId || typeof spec.decodeNodeId !== "string" || !spec.decodeNodeId || spec.prefillNodeId === spec.decodeNodeId) errors.push("prefill-decode requires distinct explicit prefillNodeId and decodeNodeId.");
-    if (typeof spec.modelSha256 !== "string" || !SHA256.test(spec.modelSha256)) errors.push("prefill-decode requires the qualified full-model SHA256.");
+    const prefill = spec.prefillNodeId, decode = spec.decodeNodeId;
+    const hasPrefill = typeof prefill === "string" && prefill.length > 0;
+    const hasDecode = typeof decode === "string" && decode.length > 0;
+    if (hasPrefill !== hasDecode) errors.push("prefill-decode takes both prefillNodeId and decodeNodeId, or neither for automatic per-phase placement.");
+    else if (hasPrefill && prefill === decode) errors.push("prefill-decode requires distinct explicit prefillNodeId and decodeNodeId.");
+    if (spec.modelSha256 !== undefined && (typeof spec.modelSha256 !== "string" || !SHA256.test(spec.modelSha256))) errors.push("modelSha256 must be a lowercase SHA256 when present.");
   }
   return errors;
 }
@@ -548,9 +553,72 @@ function validNativeQualification(q: Qwen35NativeQualification): boolean {
   return q.mode !== "stages" || end === 24;
 }
 
+/** Measured 2026-09-19 on the home Wi-Fi: a capsule transfer from a Legion back to the Mac ran at
+ *  0.36–0.92 MiB/s in the direction the capsule must travel (docs/reports/PREFILL_CUDA_DECODE_MAC_20260919.md);
+ *  a single-node phase pair transfers nothing at all. */
+const NATIVE_STATE_TRANSFER_BYTES_PER_SEC = 0.9 * 2 ** 20;
+/** The decision optimises this documented reference request; a deployment is planned once, not per request. */
+const PHASE_REFERENCE = { promptTokens: 512, outputTokens: 64 };
+
+/** A node can run one qualified native role: installed ABI and binary hash, the artifact it hashes, and fit. */
+function nativeEndpointFits(n: NodeRow, q: Qwen35NativeQualification, entry: Qwen35NativeQualification["endpoints"][number]): boolean {
+  const artifact = entry.artifact;
+  if (!(n.online && n.offer?.enabled && n.offer.roles.replica)) return false;
+  if (n.caps?.engine?.stages?.engine !== q.engine) return false;
+  if (n.caps.engine.sha256["mesh-stage-worker"] !== entry.binarySha256) return false;
+  if (!n.models.some((m) => m.kind === "gguf" && m.name === artifact.name && m.sha256 === artifact.sha256)) return false;
+  if ((n.offer.cpuCores ?? 0) < 2) return false;
+  if (n.caps?.gpus.length !== 1) return false;
+  const offered = offeredGpu(n);
+  if (!offered || offered.id !== n.caps.gpus[0]?.id) return false;
+  const gpuNeed = Math.ceil(q.sourceSizeBytes / 1048576) + q.workspaceMiB;
+  const fit = gpuNeed + q.hostMiB;
+  return n.os === "darwin" ? fit <= n.offer.ramMiB && gpuNeed <= offered.memMiB : gpuNeed <= offered.memMiB && q.hostMiB <= n.offer.ramMiB;
+}
+
+/** Automatic prefill/decode placement: each phase goes to the node that measures fastest for that phase,
+ *  and the transfer cost decides whether splitting is worth it at all. Explicit node ids keep the old
+ *  owner-pinned behaviour; this path runs only when the spec names neither node. */
+function chooseNativePhaseNodes(c: Ctx, qualifications: readonly Qwen35NativeQualification[]): { prefillNodeId: string; decodeNodeId: string; reasons: string[] } | { error: string } {
+  const usable = qualifications.filter((q) => validNativeQualification(q) && q.mode === "prefill-decode" && q.ctx === c.ctx && q.endpoints.length === 2);
+  if (!usable.length) return { error: "No controller-owned prefill-decode qualification exists for this profile; record a passing proof before automatic phase placement." };
+  const rejections: string[] = [];
+  let best: { prefillNodeId: string; decodeNodeId: string; estimatedMs: number; reasons: string[]; local: boolean; stateMiB: number } | undefined;
+  for (const q of usable) {
+    const prefill = c.eligible.filter((n) => nativeEndpointFits(n, q, q.endpoints[0]!));
+    const decode = c.eligible.filter((n) => nativeEndpointFits(n, q, q.endpoints[1]!));
+    if (!prefill.length || !decode.length) { rejections.push(`qualification ${q.evidenceSha256.slice(0, 12)} has no ${prefill.length ? "" : "prefill "}${decode.length ? "" : "decode "}candidate online`); continue; }
+    const candidates = [...new Map([...prefill, ...decode].map((n) => [n.id, n])).values()];
+    const choice = choosePhasePlan({
+      candidates: candidates.map((n) => ({ nodeId: n.id, prefillTokPerSec: n.metrics?.prefillTokPerSec, decodeTokPerSec: n.metrics?.tokPerSec })),
+      promptTokens: PHASE_REFERENCE.promptTokens, outputTokens: PHASE_REFERENCE.outputTokens,
+      stateBytesPerToken: c.profile.boundaryBytes, transferBytesPerSec: () => NATIVE_STATE_TRANSFER_BYTES_PER_SEC,
+      prefillNodeIds: prefill.map((n) => n.id), decodeNodeIds: decode.map((n) => n.id),
+    });
+    if ("error" in choice) { rejections.push(`qualification ${q.evidenceSha256.slice(0, 12)}: ${choice.error}`); continue; }
+    if (!best || choice.estimatedMs < best.estimatedMs) best = { ...choice, stateMiB: (PHASE_REFERENCE.promptTokens * c.profile.boundaryBytes) / 1048576 };
+  }
+  if (!best) return { error: `No qualified phase placement: ${rejections.join("; ")}.` };
+  if (best.local) {
+    const node = c.eligible.find((n) => n.id === best!.prefillNodeId);
+    const speeds = best.reasons.filter((r) => r.startsWith(`${best!.prefillNodeId}:`)).join(" ");
+    return { error: `Measured phase speeds make a single-node deployment optimal: ${node?.hostname ?? best.prefillNodeId} (${speeds}) is fastest for both phases, and a split would add ${best.stateMiB.toFixed(1)} MiB of capsule transfer for the reference request. Create a replica deployment instead of prefill-decode.` };
+  }
+  return { prefillNodeId: best.prefillNodeId, decodeNodeId: best.decodeNodeId, reasons: best.reasons };
+}
+
 function planNative(c: Ctx, qualifications: readonly Qwen35NativeQualification[]): Plan {
   if (c.profile.id !== "qwen35-2b-q8" || c.profile.layers !== 24) throw new PlanError(c.headline, ["Native execution requires the unchanged 24-block Qwen35-2B profile."]);
-  const ids = c.spec.kind === "stages" ? c.spec.stages!.map((s) => s.nodeId) : [c.spec.prefillNodeId!, c.spec.decodeNodeId!];
+  const auto = c.spec.kind === "prefill-decode" && !c.spec.prefillNodeId && !c.spec.decodeNodeId;
+  let plannedPrefill: string | undefined = c.spec.prefillNodeId;
+  let plannedDecode: string | undefined = c.spec.decodeNodeId;
+  if (auto) {
+    const picked = chooseNativePhaseNodes(c, qualifications);
+    if ("error" in picked) throw new PlanError(c.headline, [picked.error]);
+    plannedPrefill = picked.prefillNodeId; plannedDecode = picked.decodeNodeId;
+    c.reasons.push(...picked.reasons);
+  }
+  const ids = c.spec.kind === "stages" ? c.spec.stages!.map((s) => s.nodeId) : [plannedPrefill!, plannedDecode!];
   const role = c.spec.kind === "stages" ? "worker" : "replica";
   const nodes = ids.map((id) => requireNode(c, id, role, false));
   if (c.errors.length) throw new PlanError(c.headline, c.errors);
@@ -560,7 +628,7 @@ function planNative(c: Ctx, qualifications: readonly Qwen35NativeQualification[]
     const requested = c.spec.stages?.[i];
     const artifact = entry.artifact;
     return n.caps?.engine?.stages?.engine === candidate.engine && n.caps.engine.sha256["mesh-stage-worker"] === entry.binarySha256
-      && (requested ? requested.modelSha256 === artifact.sha256 && requested.start === artifact.start && requested.end === artifact.end && basename(requested.modelPath) === artifact.name : c.spec.modelSha256 === candidate.sourceSha256)
+      && (requested ? requested.modelSha256 === artifact.sha256 && requested.start === artifact.start && requested.end === artifact.end && basename(requested.modelPath) === artifact.name : c.spec.modelSha256 ? c.spec.modelSha256 === candidate.sourceSha256 : true)
       && n.models.some((m) => m.kind === "gguf" && m.name === artifact.name && m.sha256 === artifact.sha256 && (!requested || m.path === requested.modelPath));
   }));
   if (!q) throw new PlanError(c.headline, ["No controller-owned native qualification matches the requested ordered artifacts, source ABI, installed binary hashes and hashed model inventories. Native execution remains unqualified; rescan models with hashes and record a passing proof before admission."]);

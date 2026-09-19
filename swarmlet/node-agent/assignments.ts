@@ -213,6 +213,7 @@ export class AssignmentRunner {
   recentLog(id: string, n = 200): string[] { return this.logs.recent(id, n); }
 
   private tokenSamples = new Map<string, { total: number; at: number }>();
+  private prefillSamples = new Map<string, { total: number; at: number }>();
   private pendingMetrics: Promise<Partial<NodeMetrics> | null> | null = null;
 
   /** Completion-counter deltas are interval rates, not instantaneous decode speed. In particular,
@@ -236,9 +237,12 @@ export class AssignmentRunner {
       if (a.modelName) servers.get(base)!.add(a.modelName);
     }
     for (const base of this.tokenSamples.keys()) if (!servers.has(base)) this.tokenSamples.delete(base);
+    for (const base of this.prefillSamples.keys()) if (!servers.has(base)) this.prefillSamples.delete(base);
     if (!servers.size) return null;
     let total = 0, inflight = 0, avg = 0, rate = 0, seen = 0;
+    let prefillTotal = 0, prefillAvg = 0, prefillRate = 0;
     let totalsKnown = true, inflightKnown = true, averagesKnown = true, ratesKnown = true;
+    let prefillTotalsKnown = true, prefillAveragesKnown = true, prefillRatesKnown = true;
     for (const base of servers.keys()) {
       try {
         const response = await fetch(`${base}/metrics`, { signal: AbortSignal.timeout(2000), headers: { connection: "close" } });
@@ -252,7 +256,9 @@ export class AssignmentRunner {
         const tokens = num("llamacpp:tokens_predicted_total");
         const processing = num("llamacpp:requests_processing");
         const average = num("llamacpp:predicted_tokens_seconds");
-        if (tokens === undefined && processing === undefined && average === undefined) throw new Error("no engine metrics");
+        const prompt = num("llamacpp:prompt_tokens_total");
+        const promptAverage = num("llamacpp:prompt_tokens_seconds");
+        if (tokens === undefined && processing === undefined && average === undefined && prompt === undefined) throw new Error("no engine metrics");
         const now = Date.now(), previous = this.tokenSamples.get(base);
         if (tokens !== undefined) {
           total += tokens;
@@ -260,19 +266,32 @@ export class AssignmentRunner {
           else ratesKnown = false; // New/restarted endpoint: establish a baseline, never count its history as new tokens.
           this.tokenSamples.set(base, { total: tokens, at: now });
         } else { totalsKnown = false; ratesKnown = false; this.tokenSamples.delete(base); }
+        const previousPrompt = this.prefillSamples.get(base);
+        if (prompt !== undefined) {
+          prefillTotal += prompt;
+          if (previousPrompt && now > previousPrompt.at && prompt >= previousPrompt.total) prefillRate += (prompt - previousPrompt.total) / ((now - previousPrompt.at) / 1000);
+          else prefillRatesKnown = false;
+          this.prefillSamples.set(base, { total: prompt, at: now });
+        } else { prefillTotalsKnown = false; prefillRatesKnown = false; this.prefillSamples.delete(base); }
         if (processing !== undefined) inflight += processing; else inflightKnown = false;
         if (average !== undefined) avg += average; else averagesKnown = false;
+        if (promptAverage !== undefined) prefillAvg += promptAverage; else prefillAveragesKnown = false;
         seen++;
       } catch {
         this.tokenSamples.delete(base); // A failed sample must not become a delayed rate spike on recovery.
+        this.prefillSamples.delete(base);
         totalsKnown = inflightKnown = averagesKnown = ratesKnown = false;
+        prefillTotalsKnown = prefillAveragesKnown = prefillRatesKnown = false;
       }
     }
     const round = (n: number) => Math.round(n * 10) / 10;
     return {
       tokPerSec: ratesKnown ? round(rate) : undefined,
       tokPerSecAvg: averagesKnown ? round(avg) : undefined,
+      prefillTokPerSec: prefillRatesKnown ? round(prefillRate) : undefined,
+      prefillTokPerSecAvg: prefillAveragesKnown ? round(prefillAvg) : undefined,
       tokensTotal: totalsKnown ? total : undefined,
+      promptTokensTotal: prefillTotalsKnown ? prefillTotal : undefined,
       inflight: inflightKnown ? inflight : undefined,
       serving: [...new Set([...servers.values()].flatMap((names) => [...names]))].join(", "),
       serverMetricsTs: new Date().toISOString(),

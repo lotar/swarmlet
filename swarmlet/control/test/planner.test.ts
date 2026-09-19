@@ -603,6 +603,25 @@ describe("qualified resident native admission", () => {
     expect(p.nativeExecution!.endpoints.map((e) => e.identity)).toEqual([0, 1].map(() => ({ schema: 1, engine, model_sha256: sourceSha, source_sha256: sourceSha, ctx: 1024, cache_k: "f32", cache_v: "f32", ubatch: 1, flash_attn: "disabled", stage_start: "", stage_end: "", stage_total: "" })));
   });
 
+  test("automatic P/D placement picks each phase by measured speed, or refuses a pointless split", () => {
+    const f = fixture("prefill-decode");
+    const q = f.nativeQualifications[0]!;
+    // A same-binary pair makes one node eligible for both phases, so the local optimum is reachable.
+    const sameNode: Qwen35NativeQualification = { ...q, endpoints: [q.endpoints[0]!, q.endpoints[0]!], evidenceSha256: "f".repeat(64) };
+    const withRates = (row: NodeRow, prefillTokPerSec: number, tokPerSec: number): NodeRow => ({ ...row, metrics: { ts: T0, prefillTokPerSec, tokPerSec } as NodeRow["metrics"] });
+    const nodes = f.nodes.map((n) => (n.id === M5 ? withRates(n, 200, 1) : n.id === L1 ? withRates(n, 20, 80) : n));
+    const auto: DeploymentSpec = { name: "native", profile: tiny.id, kind: "prefill-decode" };
+    // The Mac prefills fastest and the Legion decodes fastest; the transfer is repaid, so the phases split.
+    const split = plan({ spec: auto, profile: f.profile, nodes, nativeQualifications: [q, sameNode] });
+    expect(split.nativeExecution!.endpoints.map((e) => e.nodeId)).toEqual([M5, L1]);
+    expect(split.reasons.join("\n")).toMatch(/Chosen split: prefill on m5|Chosen split: prefill on a1b2/);
+    // Once the same node is also the fastest decoder, splitting only adds the capsule transfer.
+    const localNodes = nodes.map((n) => (n.id === M5 ? withRates(n, 200, 40) : n));
+    expect(text(refused({ spec: auto, profile: f.profile, nodes: localNodes, nativeQualifications: [q, sameNode] }))).toMatch(/single-node deployment optimal/);
+    // No measurements: the decision refuses instead of guessing.
+    expect(text(refused({ spec: auto, profile: f.profile, nodes: f.nodes, nativeQualifications: [q, sameNode] }))).toMatch(/no measured phase speeds/);
+  });
+
   test("native admission rejects unsupported concurrency, sampler/RPC options and forged proof flags", () => {
     const f = fixture();
     for (const extra of [{ ctx: 2048 }, { parallel: 2 }, { chain: 1 }, { transport: "auto" }, { speculation: { type: "ngram-simple" } }, { workerLayers: [3] }, { forwarding: false }, { qualified: true }]) {

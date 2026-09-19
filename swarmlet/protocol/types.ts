@@ -98,10 +98,16 @@ export interface NodeMetrics {
   tokPerSec?: number;
   /** llama-server's own lifetime average (llamacpp:predicted_tokens_seconds). */
   tokPerSecAvg?: number;
+  /** Prompt-token counter delta per sample interval (prefill throughput). */
+  prefillTokPerSec?: number;
+  /** llama-server's own lifetime average prompt throughput (llamacpp:prompt_tokens_seconds). */
+  prefillTokPerSecAvg?: number;
   /** Time/status of the latest engine metrics scrape (separate from host metrics). */
   serverMetricsTs?: string;
   serverMetricsState?: "ok" | "partial" | "unavailable";
   tokensTotal?: number;
+  /** Prompt tokens processed since the engine started (llamacpp:prompt_tokens_total). */
+  promptTokensTotal?: number;
   inflight?: number;
   /** Served model name of the local llama-server the metrics came from. */
   serving?: string;
