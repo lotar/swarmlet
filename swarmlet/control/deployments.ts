@@ -1068,7 +1068,7 @@ export class DeploymentManager {
     const ext = dep.spec.external!;
     const node = this.node(ext.nodeId);
     const url = new URL(ext.url);
-    const a: ReplicaAssignment = { kind: "replica", id: newId("as"), deploymentId: dep.id, port: Number(url.port), external: { url: ext.url, healthPath: ext.healthPath || "/health", maintenance: ext.maintenance }, modelName: ext.modelName, allow: [] };
+    const a: ReplicaAssignment = { kind: "replica", id: newId("as"), deploymentId: dep.id, port: Number(url.port), external: { url: ext.url, healthPath: ext.healthPath || "/health", maintenance: ext.maintenance, ...(ext.upstreamModel ? { upstreamModel: ext.upstreamModel } : {}) }, modelName: ext.modelName, allow: [] };
     this.deps.reg.updateDeployment(dep.id, { state: "loading", plan: null });
     await this.dispatch(node.id, a, ["ready"], WORKER_TIMEOUT_MS);
     this.assertRunning(dep.id, generation);

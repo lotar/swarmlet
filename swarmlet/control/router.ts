@@ -4,6 +4,7 @@
 // on this host that carries the connection over the node's agent channel to its llama-server.
 
 import { inferenceStream } from "../protocol/inference-stream.ts";
+import { chatSseToCompletions, chatToCompletions, completionsToChat } from "../protocol/completions-compat.ts";
 import type { DeploymentManager } from "./deployments.ts";
 import type { Logger } from "./log.ts";
 import type { TunnelPool } from "./tunnel.ts";
@@ -137,11 +138,18 @@ export function createRouter(deps: { deployments: DeploymentManager; tunnels: Tu
       // An external server may only know its own model id (e.g. "incoai/Qwen3.8-27B-Splash") while the
       // mesh routes the retired alias ("qwen3.8-27b"). Rewrite only the model field; nothing else changes.
       let forwardBody = bodyText;
+      let forwardPath = path;
+      let legacyCompat = false;
       const upstreamModel = upstreamModelOf(pick);
       if (upstreamModel && upstreamModel !== model) {
         forwardBody = JSON.stringify({ ...(parsedBody as Record<string, unknown>), model: upstreamModel });
       }
-      const upstream = await fetch(`http://127.0.0.1:${local}${path}`, { method: "POST", headers, body: forwardBody, signal });
+      // A foreign endpoint that only speaks chat still serves the legacy completions path through the mesh.
+      if (upstreamModel && path === "/v1/completions") {
+        const mapped = completionsToChat(path, JSON.parse(forwardBody) as Record<string, unknown>);
+        forwardPath = mapped.path; forwardBody = JSON.stringify(mapped.body); legacyCompat = true;
+      }
+      const upstream = await fetch(`http://127.0.0.1:${local}${forwardPath}`, { method: "POST", headers, body: forwardBody, signal });
       const out = new Headers(upstream.headers);
       // fetch decodes upstream compression, and stream validation may append an error event.
       // Neither the upstream encoding nor its byte count describes the forwarded body.
@@ -151,6 +159,18 @@ export function createRouter(deps: { deployments: DeploymentManager; tunnels: Tu
       out.set("x-swarmlet-deployment", pick.id);
       out.set("x-swarmlet-node", pick.nodeId);
       if (!upstream.body) { release(); return new Response(null, { status: upstream.status, headers: out }); }
+      if (legacyCompat && upstream.ok) {
+        const type = upstream.headers.get("content-type") ?? "";
+        if (/text\/event-stream/i.test(type)) {
+          const translated = new Response(chatSseToCompletions(upstream.body), { status: upstream.status, headers: upstream.headers });
+          const stream = inferenceStream(translated, abort, { finish: () => release(), failure: (m) => { if (observation) observation.failed = true; deps.log.warn("upstream stream failed", { requestId, path, deployment: pick.id, err: m }); } });
+          return new Response(stream, { status: upstream.status, headers: out });
+        }
+        const payload = await upstream.json() as Record<string, unknown>;
+        release();
+        out.set("content-type", "application/json");
+        return new Response(JSON.stringify(chatToCompletions(payload)), { status: upstream.status, headers: out });
+      }
       // Explicit SSE detection survives a first network chunk as small as "d". These are stream
       // delta estimates; non-streamed responses contribute their reported completion-token usage.
       const counter = new TokenCounter((n) => deps.deployments.recordTokens(pick.id, n), /text\/event-stream/i.test(upstream.headers.get("content-type") ?? ""));

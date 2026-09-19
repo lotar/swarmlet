@@ -223,7 +223,7 @@ export interface ReplicaAssignment {
   port: number;
   model?: { path: string; sha256?: string };
   /** Already-running server owned by something else (production llama-server): health only. */
-  external?: { url: string; healthPath: string; maintenance?: string };
+  external?: { url: string; healthPath: string; maintenance?: string; /** Model id the external server knows; clients may keep using the routed alias. */ upstreamModel?: string };
   modelName?: string;
   ctx?: number;
   parallel?: number;

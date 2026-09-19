@@ -158,10 +158,11 @@ export class AssignmentRunner {
   }
 
   /** Only ready HTTP model servers can answer inference; RPC workers cannot decode alone. */
-  inferenceTargets(): Array<{ model: string; deploymentId: string; url: string; created: number }> {
+  inferenceTargets(): Array<{ model: string; deploymentId: string; url: string; created: number; upstreamModel?: string }> {
     return [...this.active.values()].flatMap(({ a, state, registeredAt }) => {
       if (state !== "ready" || (a.kind !== "coordinator" && a.kind !== "replica") || !a.modelName) return [];
-      return [{ model: a.modelName, deploymentId: a.deploymentId, created: registeredAt, url: a.kind === "replica" && a.external ? a.external.url : `http://127.0.0.1:${a.port}` }];
+      const external = a.kind === "replica" ? a.external : undefined;
+      return [{ model: a.modelName, deploymentId: a.deploymentId, created: registeredAt, url: external ? external.url : `http://127.0.0.1:${a.port}`, ...(external?.upstreamModel ? { upstreamModel: external.upstreamModel } : {}) }];
     });
   }
 
