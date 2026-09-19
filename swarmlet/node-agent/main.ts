@@ -2,6 +2,7 @@
 // Swarmlet node agent: daemon + CLI in one binary.
 //   swarmlet-node run                          run the daemon (what the service does)
 //   swarmlet-node join <control-url> <code>    enroll with a join code from the control web UI
+//   swarmlet-node bench [--model SUBSTR] [--ctx 1024]   measure prefill/decode and cache it
 //   swarmlet-node status                       print the daemon's /api/status
 //   swarmlet-node offer set key=value ...      e.g. enabled=true ramMiB=8192 cpuCores=6 gpu.cuda:0=3072 roles.worker=true
 //   swarmlet-node install | uninstall          run at login as a user service (launchd / systemd --user)
@@ -29,6 +30,7 @@ import { supervise } from "./supervisor.ts";
 import { DesktopAppUpdater } from "./desktop-update.ts";
 import { agentPaths, type AgentPaths } from "./paths.ts";
 import { listModels, measureNet, probeCapabilities, probeMetrics, publicIp } from "./probe/index.ts";
+import { BENCH_CACHE, benchAll, cachedBench } from "./bench.ts";
 import { startDataListener } from "./transport/dataListener.ts";
 import { NatMapper } from "./nat.ts";
 
@@ -123,6 +125,12 @@ export class AgentRuntime {
     const caps = await probeCapabilities({ enginePath: this.cfg.enginePath, controlUrl: this.cfg.controlUrl ?? undefined, log });
     caps.dataPort = this.cfg.dataPort;
     if (this.net) caps.net = this.net;
+    // Registration-time measurements ride with capabilities; a node with none simply has no priced
+    // topologies, which the planner reports instead of guessing.
+    try {
+      const bench = await cachedBench(this.cfg.enginePath, joinPath(this.paths.home, BENCH_CACHE), log);
+      if (bench.length) caps.bench = bench;
+    } catch { /* bench is an input, never a startup dependency */ }
     this.caps = caps;
     this.applyNatEndpoints(this.caps);
     return caps;
@@ -380,6 +388,14 @@ async function cli(argv: string[]): Promise<void> {
     case "join": {
       const [url, code] = [argv[1], argv[2]];
       if (!url || !code) throw new Error("usage: join <control-url> <code>");
+      // Measure this node before it registers, so the controller can price it from day one.
+      try {
+        const cfg = loadNodeConfig(paths);
+        const models = await listModels(cfg.offer.modelsDir, { hash: true, cacheFile: joinPath(paths.stateDir, "model-hashes.json") });
+        const measured = await benchAll({ enginePath: cfg.enginePath, models, dataDir: paths.home, budgetMs: 120_000, log });
+        if (measured.length) console.log(`bench: ${measured.length} model(s) measured before joining`);
+        else console.log("bench: no model could be measured before joining");
+      } catch (e) { log.warn("pre-join bench skipped", { err: (e as Error).message }); }
       try { // prefer the running daemon so it reconnects live
         const r = await fetch(`http://127.0.0.1:${loadNodeConfig(paths).uiPort}/api/join`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ controlUrl: url, code }), signal: AbortSignal.timeout(20_000) });
         const out = (await r.json()) as { nodeId?: string; error?: string };
@@ -391,6 +407,15 @@ async function cli(argv: string[]): Promise<void> {
       const rt = new AgentRuntime(); await rt.init(); const res = await rt.join(url, code); console.log(`joined as ${res.nodeId}; start the daemon with: swarmlet-node run`); rt.client?.stop(); return;
     }
     case "status": { console.log(JSON.stringify(await status(), null, 2)); return; }
+    case "bench": {
+      const cfg = loadNodeConfig(paths);
+      const ctxArg = argv.indexOf("--ctx");
+      const filter = argv.includes("--model") ? argv[argv.indexOf("--model") + 1] : undefined;
+      const models = await listModels(cfg.offer.modelsDir, { hash: true, cacheFile: joinPath(paths.stateDir, "model-hashes.json") });
+      const results = await benchAll({ enginePath: cfg.enginePath, models, dataDir: paths.home, filter, log });
+      console.log(JSON.stringify(results, null, 2));
+      return;
+    }
     case "offer": {
       if (argv[1] !== "set") throw new Error("usage: offer set key=value ...");
       const cfg = loadNodeConfig(paths); const o = cfg.offer as unknown as Record<string, unknown>;

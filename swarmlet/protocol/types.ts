@@ -53,6 +53,25 @@ export interface Capabilities {
   cgroup?: { memory: boolean; cpu: boolean };
   engine?: { proto: string; sha256: Record<string, string>; stages?: { engine: string } };
   net?: NetMeasurement;
+  /** Measured before registration: phase throughput per (model, engine, ctx). The planner prices
+   *  each deployment topology with these numbers instead of guessing from hardware. */
+  bench?: BenchResult[];
+  measuredAt: string;
+}
+
+/** One benchmarked (model, engine, context) triple on one node. `prefillTokPerSec` and
+ *  `decodeTokPerSec` are the engine's own reported averages for a fixed reference request. */
+export interface BenchResult {
+  modelSha256: string;
+  engine: string;
+  engineSha256: string;
+  kind: "llama-server";
+  ctx: number;
+  parallel: number;
+  promptTokens: number;
+  genTokens: number;
+  prefillTokPerSec: number;
+  decodeTokPerSec: number;
   measuredAt: string;
 }
 
@@ -288,6 +307,9 @@ export interface DeploymentSpec {
   name: string;
   /** Model profile id (control/profiles/*.json), "external", or "auto" to let control choose. */
   profile: string;
+  /** Let control pick the deployment kind (replica / prefill-decode / split) and placement from
+   *  measured bench + link data. Materialized into a concrete kind by create(); never served. */
+  autoTopology?: boolean;
   /**
    * Serve the best model the nodes online can actually place, and keep re-deciding as they come and go.
    * The chosen profile and kind are written back onto this spec, so the record always says what is
