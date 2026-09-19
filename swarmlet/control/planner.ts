@@ -318,9 +318,13 @@ function placeResident(c: Ctx, n: NodeRow, layers: number, role: string): string
  * Windows are deliberately not checked: there the layers are device memory, and `placeResident` charges
  * only the host part to ramMiB.
  */
-/** The most layers a worker's GPU offer can hold: weights plus the same margin the envelope rows reserve. */
+/** The most layers a worker can hold: weights plus the envelope margin, bounded by BOTH the GPU offer and
+ *  the RAM the agent enforces (darwin unified memory makes them the same physical budget; a node may offer
+ *  less RAM than GPU, as the M1 does with its 12 GiB reserve). */
 function maxFitLayers(slot: WorkerSlot, profile: ModelProfile): number {
-  return Math.max(0, Math.floor((slot.gpu.memMiB - profile.workerMarginMiB) / profile.layerMiB));
+  const byGpu = Math.floor((slot.gpu.memMiB - profile.workerMarginMiB) / profile.layerMiB);
+  const byRam = Math.floor((slot.node.offer!.ramMiB - profile.workerMarginMiB) / profile.layerMiB);
+  return Math.max(0, Math.min(byGpu, byRam));
 }
 
 function ramShortfall(node: NodeRow, needMiB: number): string | null {

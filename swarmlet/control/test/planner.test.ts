@@ -488,6 +488,15 @@ describe("max-fit worker layers", () => {
     expect(p.tensorSplit).toEqual([1, 47]);
   });
 
+  test("the RAM offer caps max fit even when the GPU offers more", () => {
+    // Same 12_288 MiB Metal offer, but only 4096 MiB offered RAM (the M1's 12 GiB reserve): one layer.
+    const tightRam = node({ id: "a1b2c3d4e5f60031", hostname: "m1-tight", os: "darwin", ramMiB: 16384, cpuCores: 10,
+      gpus: [{ id: "metal:0", name: "Apple M1 Pro", backend: "metal", engineName: "MTL0", totalMiB: 10922 }], rttMs: 8,
+      offer: { enabled: true, roles: { worker: true, coordinator: false, replica: false }, gpu: [{ id: "metal:0", memMiB: 12288 }], ramMiB: 4096, cpuCores: 10, diskMiB: 400_000, modelsDir: MODELS } });
+    const p = plan({ nodes: [m5(), tightRam] });
+    expect(p.workers[0]!.layers).toBe(1);
+  });
+
   test("max-fit never starves the coordinator: two big workers shave deterministically", () => {
     const p = plan({ nodes: [m5(), m1(), m1()] });
     const counts = p.workers.map((w) => w.layers).sort((a, b) => b - a);
