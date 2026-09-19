@@ -109,8 +109,11 @@ export function createNodeInference(deps: InferenceDeps) {
     const aliased = ALIASES.includes(body.model) && local.length === 1 ? local[0] : undefined;
     const target = aliased ?? local.find((t) => t.model === body.model && (!pinned || t.deploymentId === pinned));
     if (!target && !remote) return error("No local server for this model and the mesh is disconnected.", 503);
-    // The engine checks the name it was given. An alias or a foreign upstream id replaces the routed name.
-    const forwardModel = aliased ? aliased.model : target?.upstreamModel && target.upstreamModel !== body.model ? target.upstreamModel : body.model;
+    // The engine checks the name it was given. An alias resolves to the target's upstream id when it has
+    // one (a foreign server that only knows its own model), otherwise to the target's routed name.
+    const forwardModel = aliased
+      ? (aliased.upstreamModel ?? aliased.model)
+      : target?.upstreamModel && target.upstreamModel !== body.model ? target.upstreamModel : body.model;
     let forwarded = forwardModel !== body.model ? JSON.stringify({ ...body, model: forwardModel }) : text;
     // A foreign endpoint that only speaks chat still serves the legacy completions path through this gateway.
     let forwardPath = path;
