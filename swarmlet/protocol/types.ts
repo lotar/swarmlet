@@ -341,7 +341,7 @@ export interface DeploymentSpec {
   stopExternal?: boolean;
   /** "auto" (default): try direct TLS to peers, relay when unreachable; "relay": never dial directly (for A/B measurements). */
   transport?: "auto" | "relay";
-  external?: { nodeId: string; url: string; healthPath: string; modelName: string; maintenance?: string };
+  external?: { nodeId: string; url: string; healthPath: string; modelName: string; /** Upstream model id the external server knows; the router rewrites the client's alias to it. */ upstreamModel?: string; maintenance?: string };
 }
 
 export interface PlanWorker {
