@@ -130,13 +130,21 @@ anything interactive that stays on the current hosted control.
 - Optionally, protocol work already justified by these numbers: binary/streamed capsule transfer instead of
   256 KiB JSON integer arrays, and a local control or agent-side execution of the P/D loop.
 
-## 6. Reusable artifacts
+## 6. Reusable artifacts (post disk-cleanup, 2026-09-20)
 
-- `~/.swarmlet/backups/pd-lab-20260919/pd_bench.py` — phased P/D benchmark (local/remote prefill, capsule
-  export/download/upload/import, direct-transfer mode, RTT probe, phase JSON + `SUMMARY.json`).
-- Same dir: `stages-v2/` (variant sources), `stages-build-mac/` (Mac variant binary, engine
-  `24172ff2…`), `parity-ubatch.json`, `before-production-3x.json`, `after-production-mtp3.json`.
-- Legion 1: `~/stage-lab-v2/` — variant CUDA build (engine `24172ff2…`, binary `f04bbc2b…`) and the run dirs.
+The host disk cleanup of 2026-09-20 removed the heavy per-run directories and the summary JSONs below
+`~/.swarmlet/backups/pd-lab-20260919/` (`SUMMARY.json`, `parity-ubatch.json`, `2b-metal-vs-cuda.json`,
+`2b-hybrid-rpc.json`, `before-production-3x.json`, `after-production-mtp3.json`, and every per-run
+`result.json` with its 373 MiB capsule copies). The numbers quoted in this report are the record now;
+the raw runs are gone. What survives:
+
+- `~/.swarmlet/backups/pd-lab-20260919/pd_bench.py` and `pd_lan.py` — the harnesses (phased local/remote
+  P/D, direct transfer, RTT probe; and the Legion-prefill → M1-decode LAN run).
+- Same dir: `lanes/` (the five exploration reports), `stages-v2/` (variant sources, engine `24172ff2…`),
+  and the worker/bench `*.log` files.
+- Legion 1: `~/stage-lab-v2/` — variant CUDA build (engine `24172ff2…`, binary `f04bbc2b…`) and its run dirs.
+- Stale node releases (`macos-*`, `node-chat-*`, `node-processing-*`, `2026091902-ee66355a`) were pruned;
+  only the active `2026091903-a54af5a6` remains.
 - Legion 2 unchanged apart from an abandoned run dir under `~/.swarmlet/stage-lab/f4a228e8/runs/`.
 
 ## 7. Ternary Bonsai 2 27B — CUDA-only vs hybrid vs Mac-only (ctx 1024)
