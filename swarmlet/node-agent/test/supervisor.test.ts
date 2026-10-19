@@ -54,7 +54,7 @@ test("real supervisor activates signed compiled agents, rolls back bad health an
     expect(await compile.exited).toBe(0);
     const publish = async (sequence: number, behavior: string) => {
       await writeFile(join(source, "engine/behavior"), behavior);
-      await publishRelease({ dataDir: dir, source, platform: process.platform as ReleaseManifest["platform"], arch: process.arch as ReleaseManifest["arch"], sequence, version: `test-${sequence}`, priv: pair.privateKey, pub });
+      await publishRelease({ dataDir: dir, source, platform: process.platform as ReleaseManifest["platform"], arch: process.arch as ReleaseManifest["arch"], sequence, version: `test-${sequence}`, priv: pair.privateKey, pub, verifyMac: async () => {} });
     };
     child = start();
     await until(async () => (await status())?.releaseSequence === 0);

@@ -83,8 +83,11 @@ pull it with their own updater (`~/.swarmlet/logs/agent.out.log` shows `verified
 ```sh
 # on the build host (the engine payload must be native for the target platform)
 cd swarmlet
-SWARMLET_ENGINE_DIST=<a previous release's engine dir> bun run node-agent/build.ts darwin
-tar czf /tmp/agent-<platform>-<arch>-<seq>.tar.gz -C dist/agent/darwin swarmlet-node engine
+# darwin: build-release.sh signs the agent, seals the Mac app around it and writes the desktop carrier;
+# node-agent/build.ts alone ships an unsigned agent (2026091903: every Mac refused the app update)
+SWARMLET_ENGINE_DIST=engine/dist/darwin node-shell/scripts/build-release.sh
+bun run control/macos-release-check.ts dist/agent/darwin   # writes macos-codesign.json; the publisher requires it
+tar czf /tmp/agent-<platform>-<arch>-<seq>.tar.gz -C dist/agent/darwin swarmlet-node engine macos-codesign.json
 
 # on the host running the controller (the signing key lives in the data dir; publishing never generates one)
 scp /tmp/agent-<platform>-<arch>-<seq>.tar.gz root@the-shop:/root/

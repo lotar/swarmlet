@@ -4,6 +4,7 @@
 // Every target cross-compiles from any host (Bun single-file executables); the engine beside it
 // must come from a native build (engine/build.sh <target>) or SWARMLET_ENGINE_DIST.
 import { cpSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { removeDesktopCarrier } from "../protocol/desktop.ts";
 import { join } from "node:path";
 import { createHash } from "node:crypto";
 import { fileURLToPath } from "node:url";
@@ -33,7 +34,13 @@ for (const t of targets) {
   const engine = process.env.SWARMLET_ENGINE_DIST || join(ROOT, "engine", "dist", t);
   // Clear old engine files even when this build has no engine: never silently ship stale ones.
   rmSync(join(out, "engine"), { recursive: true, force: true });
-  if (existsSync(engine)) { cpSync(engine, join(out, "engine"), { recursive: true }); console.log(`engine copied from ${engine}`); }
+  if (existsSync(engine)) {
+    cpSync(engine, join(out, "engine"), { recursive: true }); console.log(`engine copied from ${engine}`);
+    // An engine taken from a published release carries that release's Mac app. Only package-macos.ts may
+    // write a carrier, after signing the app around this build's agent.
+    const stale = removeDesktopCarrier(join(out, "engine"));
+    if (stale.length) console.log(`removed stale desktop carrier from the copied engine: ${stale.join(", ")}`);
+  }
   else console.log(`note: no engine dist for ${t} (build it with engine/build.sh ${t})`);
   if (t === "linux" || t === "darwin" && process.platform === "darwin") {
     const helper = Bun.spawn(["sh", join(ROOT, "node-agent/native-fans/build.sh"), t, join(out, "engine")], { stdout: "inherit", stderr: "inherit" });
