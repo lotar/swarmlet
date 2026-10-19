@@ -120,7 +120,7 @@ export function createControlServer(deps: ControlDeps): Server<ConnData> {
       const wanted = typeof body?.profile === 'string' ? body.profile : '';
       if (!wanted) return json({ error: 'profile is required' }, 400);
       // The catalog identifies a model by the name it serves under (profile.modelName), not by the profile
-      // id, and the node matches on that. Sending "bonsai-2-27b-q2" handed a node a name it could not find -
+      // id, and the node matches on that. Sending a profile id handed a node a name it could not find -
       // it logged "the catalog does not offer it" and dropped every request while the weights sat unheld.
       const known = loadProfiles().get(wanted);
       const profile = known ? known.modelName : wanted;

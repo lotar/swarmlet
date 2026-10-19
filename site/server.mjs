@@ -70,7 +70,7 @@ createServer(async (req, res) => {
     'content-encoding': enc || 'identity',
     etag,
     // dev server: always revalidate (ETag makes it a free 304). Production CDNs get
-    // immutable caching via _headers / the deploy notes in README.md.
+    // immutable caching, configured in nginx.conf and the deploy notes in README.md.
     'cache-control': process.env.SITE_CACHE || 'no-store',
     'x-content-type-options': 'nosniff',
     vary: 'Accept-Encoding',
