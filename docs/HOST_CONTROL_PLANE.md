@@ -67,12 +67,12 @@ The node fetches only on its owner's confirmation, in its own local UI, re-hashi
 only ever sees verified files. The planner will not place a model a node does not already hold, so a new
 model needs one owner-confirmed fetch per node before it can serve.
 
-`bonsai-2-27b-q2` (PrismML Ternary Bonsai 2 27B, ternary Q2_0 GGUF on the qwen35 arch) is a catalog
-entry built this way: 64 layers, 98 MiB each measured from the file's tensor table, rank 28 - below the
-27B it compresses, above the 35B-A3B. Context is capped at 32768 per row on purpose: this arch costs
-262144 bytes of f16 KV per token, so the 262144 it was trained with would need 64 GiB of KV. The shipped
-engine already carries the Q2_0 and Q1_0 tensor types, so Prism's own build is not required. Vision is
-not wired: the profile format has no mmproj field.
+`bonsai-2-27b-q2` (PrismML Ternary Bonsai 2 27B, ternary Q2_0 GGUF on the qwen35 arch) was a catalog
+entry built this way; it was retired 2026-09-29, its serving lane having been disabled since 2026-09-19.
+Its measured shape for the record: 64 layers, 98 MiB each, rank 28, context capped at 32768 per row on
+purpose (this arch costs 262144 bytes of f16 KV per token). The shipped engine already carried the Q2_0
+and Q1_0 tensor types, so Prism's own build was never required. Vision was not wired: the profile format
+has no mmproj field.
 
 ## Releasing an agent build to the fleet
 
