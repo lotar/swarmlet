@@ -7,13 +7,18 @@ import { join } from "node:path";
 import { signObject } from "../protocol/sign.ts";
 import { verifyRelease, type ReleaseFile, type ReleaseManifest } from "../protocol/release.ts";
 import { syncDirectory } from "../protocol/durable-files.ts";
+import { verifyMacReleaseSource } from "./macos-release-check.ts";
 
 export async function publishRelease(opts: {
   dataDir: string; source: string; platform: ReleaseManifest["platform"]; arch: ReleaseManifest["arch"];
   sequence: number; version: string; priv: CryptoKey; pub: JsonWebKey;
+  /** darwin gate; defaults to codesign on a Mac, or a matching Mac attestation elsewhere. */
+  verifyMac?: (source: string) => Promise<void>;
 }): Promise<ReleaseManifest> {
   if (!["darwin", "linux", "win32"].includes(opts.platform) || !["arm64", "x64"].includes(opts.arch) ||
       !Number.isSafeInteger(opts.sequence) || opts.sequence < 1) throw new Error("invalid release target or sequence");
+  // 2026091903 shipped a Mac app sealed around the previous agent: every node refused it as an invalid signature.
+  if (opts.platform === "darwin") await (opts.verifyMac ?? verifyMacReleaseSource)(opts.source);
   const root = join(opts.dataDir, "releases", `${opts.platform}-${opts.arch}`);
   await mkdir(root, { recursive: true, mode: 0o700 });
   // Exclusive publisher lock prevents concurrent releases from moving the feed backwards.

@@ -1,8 +1,28 @@
+import { lstatSync, readdirSync, unlinkSync } from 'node:fs';
+import { join } from 'node:path';
 import { validReleasePath, type ReleaseManifest } from './release.ts';
 
 export const MAC_APP_ID = 'ai.swarmlet.node';
 // The flat runtime namespace is understood by already-installed v1 bootstrappers.
 export const MAC_APP_DESCRIPTOR = 'engine/desktop-app.json';
+/** The flat Mac app carrier package-macos.ts writes into engine/. It describes one signed bundle only. */
+export function isDesktopCarrier(name: string): boolean {
+  return name === 'desktop-app.json' || /^desktop-app-\d{3}\.bin$/.test(name);
+}
+
+/** Drop a carrier that came in with a copied engine. Reused from an earlier release it seals that release's
+ *  agent, so publishing it next to a new agent ships a Mac app that fails codesign on every node. */
+export function removeDesktopCarrier(engineDir: string): string[] {
+  const removed: string[] = [];
+  for (const name of readdirSync(engineDir)) {
+    if (!isDesktopCarrier(name)) continue;
+    if (!lstatSync(join(engineDir, name)).isFile()) throw new Error('invalid desktop carrier: ' + name);
+    unlinkSync(join(engineDir, name));
+    removed.push(name);
+  }
+  return removed.sort();
+}
+
 export interface DesktopFile { path: string; source: string; mode: 420 | 493 }
 export interface MacDesktop { kind: 'swarmlet-macos-app'; schema: 1; bundleId: typeof MAC_APP_ID; files: DesktopFile[] }
 

@@ -1,9 +1,9 @@
 // Run after codesigning: the descriptor reconstructs exactly the signed bundle from the release.
 import { createHash } from 'node:crypto';
 import { createReadStream } from 'node:fs';
-import { copyFile, lstat, readdir, readFile, unlink, writeFile } from 'node:fs/promises';
+import { copyFile, lstat, readdir, readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import { MAC_APP_ID, parseMacDesktop, type MacDesktop } from '../../protocol/desktop.ts';
+import { MAC_APP_ID, parseMacDesktop, removeDesktopCarrier, type MacDesktop } from '../../protocol/desktop.ts';
 import type { ReleaseFile } from '../../protocol/release.ts';
 
 async function hash(path: string): Promise<string> {
@@ -14,10 +14,7 @@ async function hash(path: string): Promise<string> {
 
 export async function packageMacApp(agent: string, app: string): Promise<void> {
   const engine = join(agent, 'engine');
-  for (const name of await readdir(engine)) if (name === 'desktop-app.json' || /^desktop-app-\d{3}\.bin$/.test(name)) {
-    if (!(await lstat(join(engine, name))).isFile()) throw new Error('invalid old desktop payload');
-    await unlink(join(engine, name));
-  }
+  removeDesktopCarrier(engine);
   const descriptor: MacDesktop = { kind: 'swarmlet-macos-app', schema: 1, bundleId: MAC_APP_ID, files: [] };
   const inventory = new Map<string, ReleaseFile>();
   let payload = 0;
