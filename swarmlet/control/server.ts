@@ -115,10 +115,15 @@ export function createControlServer(deps: ControlDeps): Server<ConnData> {
     // Ask a node to fetch a catalog model. The node owns the decision - it knows its own disk, and its
     // fetcher refuses rather than filling the volume - so this only carries the request and reports whether it
     // was delivered. Progress arrives through that node's log and its next model report.
-    if (seg[1] === 'nodes' && seg[3] === 'fetch' && m === 'POST' && seg.length === 4) {
+    if (seg[1] === 'nodes' && seg[3] === 'models' && seg[4] === 'fetch' && m === 'POST' && seg.length === 5) {
       const body = (await req.json().catch(() => null)) as { profile?: unknown } | null;
-      const profile = typeof body?.profile === 'string' ? body.profile : '';
-      if (!profile) return json({ error: 'profile is required' }, 400);
+      const wanted = typeof body?.profile === 'string' ? body.profile : '';
+      if (!wanted) return json({ error: 'profile is required' }, 400);
+      // The catalog identifies a model by the name it serves under (profile.modelName), not by the profile
+      // id, and the node matches on that. Sending "bonsai-2-27b-q2" handed a node a name it could not find -
+      // it logged "the catalog does not offer it" and dropped every request while the weights sat unheld.
+      const known = loadProfiles().get(wanted);
+      const profile = known ? known.modelName : wanted;
       const node = reg.getNode(seg[2]!);
       if (!node) return json({ error: 'unknown node' }, 404);
       if (!channel.send(seg[2]!, { t: 'fetch', profile })) return json({ error: 'node is offline' }, 409);

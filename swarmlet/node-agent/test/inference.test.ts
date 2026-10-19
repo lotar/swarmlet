@@ -164,6 +164,21 @@ test("a caller may name the alias, and the engine still sees the real model", as
   expect(res.headers.get("x-swarmlet-route")).toBe("local");
 });
 
+test("the alias resolves to the upstream id when the external server only knows its own model", async () => {
+  let seen: string | undefined;
+  const splash = serve(async (req) => { seen = (await req.json() as { model: string }).model; return Response.json({ ok: true }); });
+  const handler = createNodeInference({
+    local: () => [{ model: "qwen3.8-27b", deploymentId: "d1", created: 1, url: splash, upstreamModel: "incoai/Qwen3.8-27B-Splash" }],
+    remote: () => ({ url: "http://127.0.0.1:1", key: "k" }), nodeId: () => "n",
+  });
+  const res = await handler(request("local"), "/v1/chat/completions");
+  expect(res.status).toBe(200);
+  expect(seen).toBe("incoai/Qwen3.8-27B-Splash");     // never the routed alias, never the mesh name
+  const direct = await handler(request("qwen3.8-27b"), "/v1/chat/completions");
+  expect(direct.status).toBe(200);
+  expect(seen).toBe("incoai/Qwen3.8-27B-Splash");     // the mesh-name path rewrites too
+});
+
 test("an alias with two local models is refused rather than guessed", async () => {
   const handler = createNodeInference({
     local: () => [{ model: "a", deploymentId: "d1", created: 1, url: "http://127.0.0.1:8100" }, { model: "b", deploymentId: "d2", created: 2, url: "http://127.0.0.1:8101" }],

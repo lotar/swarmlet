@@ -14,7 +14,7 @@ function fixture() {
   const add = (id: string, url = "http://127.0.0.1:8099", modelName = "flash") => active.set(id, { a: { id, kind: "replica", modelName, external: { url } }, state: "ready" });
   return { runner, active, add };
 }
-const metrics = (tokens: number, processing = 1) => new Response(`llamacpp:tokens_predicted_total ${tokens}\nllamacpp:requests_processing ${processing}\nllamacpp:predicted_tokens_seconds 10\n`);
+const metrics = (tokens: number, processing = 1, prompt = 0) => new Response(`llamacpp:tokens_predicted_total ${tokens}\nllamacpp:requests_processing ${processing}\nllamacpp:predicted_tokens_seconds 10\nllamacpp:prompt_tokens_total ${prompt}\nllamacpp:prompt_tokens_seconds 20\n`);
 
 test("duplicate endpoint watches and model names contribute only once", async () => {
   const { runner, add } = fixture(); let calls = 0;
@@ -68,6 +68,21 @@ test("a busy server can have zero completed-token rate without being idle", asyn
   globalThis.fetch = (async () => metrics(100, 1)) as unknown as typeof fetch;
   try { await runner.serverMetrics(); now += 2000; expect(await runner.serverMetrics()).toMatchObject({ tokPerSec: 0, inflight: 1 }); }
   finally { clock.mockRestore(); }
+});
+
+test("the prompt-token counter is reported as prefill throughput, never as decode", async () => {
+  const { runner, add } = fixture(); add("a");
+  let now = 1000; const clock = spyOn(Date, "now").mockImplementation(() => now);
+  let prompt = 0, tokens = 0;
+  globalThis.fetch = (async () => metrics(tokens, 0, prompt)) as unknown as typeof fetch;
+  try {
+    expect(await runner.serverMetrics()).toMatchObject({ prefillTokPerSec: undefined, promptTokensTotal: 0, prefillTokPerSecAvg: 20 });
+    now += 2000; prompt += 40; tokens += 10;
+    expect(await runner.serverMetrics()).toMatchObject({ prefillTokPerSec: 20, tokPerSec: 5, promptTokensTotal: 40 });
+    // A reset counter establishes a baseline instead of manufacturing throughput.
+    now += 2000; prompt = 5;
+    expect((await runner.serverMetrics())?.prefillTokPerSec).toBeUndefined();
+  } finally { clock.mockRestore(); }
 });
 
 test("partial engine coverage never looks like complete totals", async () => {

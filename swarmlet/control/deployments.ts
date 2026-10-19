@@ -6,6 +6,7 @@ import { AGENT_DATA_PORT, type Assignment, type AssignmentState, type Coordinato
 import type { AgentChannel } from "./channel.ts";
 import type { Logger } from "./log.ts";
 import { PlanError } from "./planner.ts";
+import { chooseTopology } from "./topology.ts";
 import { availableNodes, planWithResources, reservedResources, addAllocations, type ResourceLedger } from "./resources.ts";
 import { fleetRevision, hostMemoryErrors, parseFleetRequest, previewFleet, type FleetInput, type FleetRun } from "./fleet.ts";
 import type { NodeRow, Registry } from "./registry.ts";
@@ -749,7 +750,20 @@ export class DeploymentManager {
     } else if (!this.deps.profiles.has(spec.profile)) {
       throw new Error(`unknown profile ${spec.profile} (have ${[...this.deps.profiles.keys()].join(", ")})`);
     }
-    const note = spec.autoModel ? `, automatic: ${autoNote ?? spec.profile}` : "";
+    if (spec.autoTopology) {
+      // Topology autodiscovery: kind and nodes come from measured bench + measured locality, folded
+      // into one concrete spec here so every downstream path keeps seeing an owner-shaped intent.
+      const profile = this.deps.profiles.get(spec.profile);
+      if (!profile) throw new Error(`unknown profile ${spec.profile}`);
+      const choice = chooseTopology({ spec, profile, nodes: this.fleetInput().nodes, usedPorts: this.usedPorts() });
+      if ("error" in choice) throw new Error(choice.error);
+      const { autoTopology: _autoTopology, autoModel: _autoModel, ...clean } = spec;
+      spec = { ...clean, ...choice.spec, profile: profile.id };
+      this.deps.reg.event("deployment", `topology autodiscovery for ${spec.name}: ${choice.kind} [${choice.nodes.join(" → ")}] ${choice.local ? "stays on the LAN" : "relayed"}, est ${Math.round(choice.estimatedMs)} ms, plan ${choice.planHash.slice(0, 12)}`, {});
+      for (const reason of choice.reasons) this.deps.log.info("topology", { deployment: spec.name, reason });
+      autoNote = `${choice.kind} by measurement (${choice.local ? "LAN" : "relayed"})`;
+    }
+    const note = spec.autoModel ? `, automatic: ${autoNote ?? spec.profile}` : (autoNote ? `, ${autoNote}` : "");
     const dep = this.deps.reg.createDeployment(newId("dep"), spec);
     this.deps.reg.event("deployment", `created ${spec.name} (${spec.kind}${note})`, { deploymentId: dep.id });
     return { id: dep.id };
@@ -985,8 +999,8 @@ export class DeploymentManager {
   }
 
   /** Ready deployments grouped by served model name, for the router and the Routing page. */
-  routing(): Array<{ modelName: string; created: number; deployments: Array<{ id: string; name: string; kind: string; nodeId: string; port: number; nodes: string[]; inflight: number; tokPerSec?: number; rttMs?: number }> }> {
-    const byModel = new Map<string, Array<{ id: string; name: string; kind: string; nodeId: string; port: number; nodes: string[]; inflight: number; tokPerSec?: number; rttMs?: number }>>();
+  routing(): Array<{ modelName: string; created: number; deployments: Array<{ id: string; name: string; kind: string; nodeId: string; port: number; nodes: string[]; inflight: number; tokPerSec?: number; rttMs?: number; upstreamModel?: string }> }> {
+    const byModel = new Map<string, Array<{ id: string; name: string; kind: string; nodeId: string; port: number; nodes: string[]; inflight: number; tokPerSec?: number; rttMs?: number; upstreamModel?: string }>>();
     const created = new Map<string, number>();
     for (const dep of this.deps.reg.listDeployments()) {
       if (dep.state !== "ready" || !dep.endpoint) continue;
@@ -994,7 +1008,7 @@ export class DeploymentManager {
       const list = byModel.get(dep.endpoint.modelName) ?? [];
       const nodes = dep.plan ? planNodes(dep.plan) : [dep.endpoint.nodeId];
       if (nodes.includes(this.updatingNode() ?? "")) continue;
-      list.push({ id: dep.id, name: dep.spec.name, kind: dep.spec.kind, nodeId: dep.endpoint.nodeId, port: dep.endpoint.port, nodes, inflight: this.inflight.get(dep.id) ?? 0, tokPerSec: this.liveTokPerSec(dep.id), rttMs: node?.caps?.net?.rttMs });
+      list.push({ id: dep.id, name: dep.spec.name, kind: dep.spec.kind, nodeId: dep.endpoint.nodeId, port: dep.endpoint.port, nodes, inflight: this.inflight.get(dep.id) ?? 0, tokPerSec: this.liveTokPerSec(dep.id), rttMs: node?.caps?.net?.rttMs, ...(dep.spec.external?.upstreamModel ? { upstreamModel: dep.spec.external.upstreamModel } : {}) });
       byModel.set(dep.endpoint.modelName, list);
       const registered = Math.floor(Date.parse(dep.createdAt) / 1000);
       created.set(dep.endpoint.modelName, Math.min(created.get(dep.endpoint.modelName) ?? registered, registered));
@@ -1054,7 +1068,7 @@ export class DeploymentManager {
     const ext = dep.spec.external!;
     const node = this.node(ext.nodeId);
     const url = new URL(ext.url);
-    const a: ReplicaAssignment = { kind: "replica", id: newId("as"), deploymentId: dep.id, port: Number(url.port), external: { url: ext.url, healthPath: ext.healthPath || "/health", maintenance: ext.maintenance }, modelName: ext.modelName, allow: [] };
+    const a: ReplicaAssignment = { kind: "replica", id: newId("as"), deploymentId: dep.id, port: Number(url.port), external: { url: ext.url, healthPath: ext.healthPath || "/health", maintenance: ext.maintenance, ...(ext.upstreamModel ? { upstreamModel: ext.upstreamModel } : {}) }, modelName: ext.modelName, allow: [] };
     this.deps.reg.updateDeployment(dep.id, { state: "loading", plan: null });
     await this.dispatch(node.id, a, ["ready"], WORKER_TIMEOUT_MS);
     this.assertRunning(dep.id, generation);

@@ -53,6 +53,25 @@ export interface Capabilities {
   cgroup?: { memory: boolean; cpu: boolean };
   engine?: { proto: string; sha256: Record<string, string>; stages?: { engine: string } };
   net?: NetMeasurement;
+  /** Measured before registration: phase throughput per (model, engine, ctx). The planner prices
+   *  each deployment topology with these numbers instead of guessing from hardware. */
+  bench?: BenchResult[];
+  measuredAt: string;
+}
+
+/** One benchmarked (model, engine, context) triple on one node. `prefillTokPerSec` and
+ *  `decodeTokPerSec` are the engine's own reported averages for a fixed reference request. */
+export interface BenchResult {
+  modelSha256: string;
+  engine: string;
+  engineSha256: string;
+  kind: "llama-server";
+  ctx: number;
+  parallel: number;
+  promptTokens: number;
+  genTokens: number;
+  prefillTokPerSec: number;
+  decodeTokPerSec: number;
   measuredAt: string;
 }
 
@@ -98,10 +117,16 @@ export interface NodeMetrics {
   tokPerSec?: number;
   /** llama-server's own lifetime average (llamacpp:predicted_tokens_seconds). */
   tokPerSecAvg?: number;
+  /** Prompt-token counter delta per sample interval (prefill throughput). */
+  prefillTokPerSec?: number;
+  /** llama-server's own lifetime average prompt throughput (llamacpp:prompt_tokens_seconds). */
+  prefillTokPerSecAvg?: number;
   /** Time/status of the latest engine metrics scrape (separate from host metrics). */
   serverMetricsTs?: string;
   serverMetricsState?: "ok" | "partial" | "unavailable";
   tokensTotal?: number;
+  /** Prompt tokens processed since the engine started (llamacpp:prompt_tokens_total). */
+  promptTokensTotal?: number;
   inflight?: number;
   /** Served model name of the local llama-server the metrics came from. */
   serving?: string;
@@ -198,7 +223,7 @@ export interface ReplicaAssignment {
   port: number;
   model?: { path: string; sha256?: string };
   /** Already-running server owned by something else (production llama-server): health only. */
-  external?: { url: string; healthPath: string; maintenance?: string };
+  external?: { url: string; healthPath: string; maintenance?: string; /** Model id the external server knows; clients may keep using the routed alias. */ upstreamModel?: string };
   modelName?: string;
   ctx?: number;
   parallel?: number;
@@ -282,6 +307,9 @@ export interface DeploymentSpec {
   name: string;
   /** Model profile id (control/profiles/*.json), "external", or "auto" to let control choose. */
   profile: string;
+  /** Let control pick the deployment kind (replica / prefill-decode / split) and placement from
+   *  measured bench + link data. Materialized into a concrete kind by create(); never served. */
+  autoTopology?: boolean;
   /**
    * Serve the best model the nodes online can actually place, and keep re-deciding as they come and go.
    * The chosen profile and kind are written back onto this spec, so the record always says what is
@@ -313,7 +341,7 @@ export interface DeploymentSpec {
   stopExternal?: boolean;
   /** "auto" (default): try direct TLS to peers, relay when unreachable; "relay": never dial directly (for A/B measurements). */
   transport?: "auto" | "relay";
-  external?: { nodeId: string; url: string; healthPath: string; modelName: string; maintenance?: string };
+  external?: { nodeId: string; url: string; healthPath: string; modelName: string; /** Upstream model id the external server knows; the router rewrites the client's alias to it. */ upstreamModel?: string; maintenance?: string };
 }
 
 export interface PlanWorker {
@@ -376,11 +404,13 @@ export interface Deployment {
 }
 
 export interface EnvelopeRow {
-  /** Layers per worker this row was validated for. */
+  /** Layers per worker this row was validated for; with maxFit it is the floor each worker gets. */
   workerLayers: number;
   maxCtx: number;
   maxParallel: number;
   maxChain: number;
+  /** Give every worker the most layers its memory fits (>= workerLayers) instead of a fixed count. */
+  maxFit?: boolean;
 }
 
 export interface ModelProfile {

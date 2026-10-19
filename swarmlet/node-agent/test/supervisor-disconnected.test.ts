@@ -49,7 +49,7 @@ async function harness(initialMode: string) {
   expect(await compile.exited).toBe(0);
   const publish = async (sequence: number, behavior: string) => {
     await writeFile(join(source, "engine/behavior"), behavior);
-    await publishRelease({ dataDir: dir, source, platform: process.platform as ReleaseManifest["platform"], arch: process.arch as ReleaseManifest["arch"], sequence, version: `test-${sequence}`, priv: pair.privateKey, pub });
+    await publishRelease({ dataDir: dir, source, platform: process.platform as ReleaseManifest["platform"], arch: process.arch as ReleaseManifest["arch"], sequence, version: `test-${sequence}`, priv: pair.privateKey, pub, verifyMac: async () => {} });
   };
   const start = () => Bun.spawn([process.execPath, runner], { env: { ...process.env, SWARMLET_HOME: paths.home, SWARMLET_ENGINE: undefined }, stdin: "ignore", stdout: "pipe", stderr: "pipe" });
   const status = async () => { try { return await (await fetch(`http://127.0.0.1:${uiPort}/api/status`, { signal: AbortSignal.timeout(500) })).json(); } catch { return null; } };

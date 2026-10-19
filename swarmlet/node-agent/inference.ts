@@ -1,7 +1,8 @@
 import { inferenceStream } from "../protocol/inference-stream.ts";
+import { chatSseToCompletions, chatToCompletions, completionsToChat } from "../protocol/completions-compat.ts";
 import type { ModelDownload } from "../protocol/types.ts";
 // Participant inference gateway: ready local model servers first, otherwise the keyed internet API.
-export interface InferenceTarget { model: string; deploymentId: string; url: string; created: number }
+export interface InferenceTarget { model: string; deploymentId: string; url: string; created: number; /** Foreign endpoint model id; the gateway rewrites the routed alias to it. */ upstreamModel?: string }
 export interface InferenceDeps {
   local: () => InferenceTarget[];
   remote: () => { url: string; key: string } | null;
@@ -108,8 +109,19 @@ export function createNodeInference(deps: InferenceDeps) {
     const aliased = ALIASES.includes(body.model) && local.length === 1 ? local[0] : undefined;
     const target = aliased ?? local.find((t) => t.model === body.model && (!pinned || t.deploymentId === pinned));
     if (!target && !remote) return error("No local server for this model and the mesh is disconnected.", 503);
-    // The engine checks the name it was given. A caller that asked for the alias gets the real one.
-    const forwarded = aliased ? JSON.stringify({ ...body, model: aliased.model }) : text;
+    // The engine checks the name it was given. An alias resolves to the target's upstream id when it has
+    // one (a foreign server that only knows its own model), otherwise to the target's routed name.
+    const forwardModel = aliased
+      ? (aliased.upstreamModel ?? aliased.model)
+      : target?.upstreamModel && target.upstreamModel !== body.model ? target.upstreamModel : body.model;
+    let forwarded = forwardModel !== body.model ? JSON.stringify({ ...body, model: forwardModel }) : text;
+    // A foreign endpoint that only speaks chat still serves the legacy completions path through this gateway.
+    let forwardPath = path;
+    let legacyCompat = false;
+    if (target?.upstreamModel && path === "/v1/completions") {
+      const mapped = completionsToChat(path, JSON.parse(forwarded) as Record<string, unknown>);
+      forwardPath = mapped.path; forwarded = JSON.stringify(mapped.body); legacyCompat = true;
+    }
     const base = target?.url ?? remote!.url;
     const requestId = req.headers.get("x-request-id")?.match(/^[A-Za-z0-9._:-]{1,128}$/)?.[0] ?? crypto.randomUUID();
     const headers = new Headers({ "content-type": "application/json", "x-request-id": requestId });
@@ -121,7 +133,7 @@ export function createNodeInference(deps: InferenceDeps) {
     const release = deps.admit ? deps.admit() : () => {};
     if (!release) return error("Node update in progress; retry shortly.", 503);
     try {
-      const upstream = await fetch(`${base.replace(/\/$/, "")}${path}`, { method: "POST", body: forwarded, headers, signal, redirect: "error" });
+      const upstream = await fetch(`${base.replace(/\/$/, "")}${forwardPath}`, { method: "POST", body: forwarded, headers, signal, redirect: "error" });
       const out = new Headers({ "content-type": upstream.headers.get("content-type") ?? "application/json", "cache-control": "no-store", "x-swarmlet-route": target ? "local" : "mesh" });
       out.set("x-request-id", requestId);
       for (const h of ["x-request-id", "x-swarmlet-deployment", "x-swarmlet-node", "retry-after"]) {
@@ -129,6 +141,17 @@ export function createNodeInference(deps: InferenceDeps) {
       }
       if (target) { out.set("x-swarmlet-deployment", target.deploymentId); out.set("x-swarmlet-node", deps.nodeId()); }
       if (!upstream.body) { release(); return new Response(null, { status: upstream.status, headers: out }); }
+      if (legacyCompat && upstream.ok) {
+        const type = upstream.headers.get("content-type") ?? "";
+        if (/text\/event-stream/i.test(type)) {
+          const translated = new Response(chatSseToCompletions(upstream.body), { status: upstream.status, headers: upstream.headers });
+          return new Response(inferenceStream(translated, abort, { finish: release }), { status: upstream.status, headers: out });
+        }
+        const payload = await upstream.json() as Record<string, unknown>;
+        release();
+        out.set("content-type", "application/json");
+        return json(chatToCompletions(payload), upstream.status);
+      }
       const stream = inferenceStream(upstream, abort, { finish: release });
       return new Response(stream, { status: upstream.status, headers: out });
     } catch (e) {
