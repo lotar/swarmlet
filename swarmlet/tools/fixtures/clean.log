@@ -1,0 +1,5 @@
+07:00:00.001 info  [agent] shutting down {"why":"service supervisor"}
+07:00:01.001 info  [agent] replica-as-aaaaaaaaaaaa: spawn {"argv":"llama-server -m model.gguf --alias qwen3.8-27b"}
+07:00:02.001 info  [agent] previous engine process retired {"id":"as-bbbbbbbbbbbb","pid":1234}
+07:00:05.001 info  [agent] connecting {"url":"wss://example.invalid/agent"}
+07:01:00.001 warn  [agent] Mac app update failed {"detail":"signature verification failed"}

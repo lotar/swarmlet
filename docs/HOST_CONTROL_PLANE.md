@@ -4,7 +4,7 @@ The control plane can serve the authenticated web workspace at `https://app.swar
 
 Public web access is opt-in with `SWARMLET_PUBLIC_WEB=1`. Without it, the existing private-web policy remains in force. Admin API and browser chat require the admin token or login cookie; inference-only keys cannot administer the fleet. HTTPS login cookies are Secure, HttpOnly and SameSite=Strict. Forwarded requests cannot acquire loopback admin privileges. Disable LAN enrollment on a public host with `SWARMLET_LAN_AUTO_ENROLL=0`.
 
-Use `compose.control.prod.yml` with the existing `traefik-public` network and Cloudflare-only Traefik middleware. It is a separate Compose project from the landing page. Set `SWARMLET_REVISION` to the shipping source revision and `SWARMLET_CONTROL_DATA` to a dedicated persistent directory writable by the image's `bun` user. The image uses Bun 1.3.14 and runs no inference engines.
+Use `compose.control.prod.yml` with the existing `traefik-public` network and Cloudflare-only Traefik middleware. It is a separate Compose project from the landing page. Set `SWARMLET_REVISION` to the shipping source revision and `SWARMLET_CONTROL_DATA` to a dedicated persistent directory writable by the image's `bun` user. The image uses Bun 1.4.4 and runs no inference engines.
 
 Before migration, save node configurations and back up the complete controller data directory, including `control.json`, `control.sqlite`, `keys/` and `releases/`. Stop managed inference and shut down the old controller before the final state copy. Preserve the signing key: enrolled nodes pin it, and changing it would invalidate both their controller binding and release signatures. Never run two independent controllers against copies of the same live state.
 
@@ -96,13 +96,13 @@ ssh root@the-shop 'mkdir -p /src-<seq> && tar xzf /root/agent-<platform>-<arch>-
 ssh root@the-shop 'docker run --rm --user 1000:1000 \
   -v /root/projects/swarmlet-control/build:/app \
   -v /root/projects/swarmlet-control/data:/data \
-  -v /src-<seq>:/src:ro -w /app oven/bun:1.3.14-slim \
+  -v /src-<seq>:/src:ro -w /app oven/bun:1.4.4-slim \
   bun run swarmlet/control/publish-release.ts /data /src darwin arm64 <seq> <version>'
 ```
 
 Four traps, each learned the hard way on 2026-09-16:
 
-1. **`bun` is not installed on the controller host.** Run the publisher *inside* the Bun image (`oven/bun:1.3.14-slim`, the same runtime the controller container uses) with the host's build dir, data dir and payload mounted.
+1. **`bun` is not installed on the controller host.** Run the publisher *inside* the Bun image (`oven/bun:1.4.4-slim`, the same runtime the controller container uses) with the host's build dir, data dir and payload mounted.
 2. **Run it as uid 1000 (`--user 1000:1000`)** — that is the `bun` user inside the container and the `claude` user on the host that owns the release tree (`drwx------`). Root-owned release files are what you get otherwise.
 3. **`tar` from macOS preserves the builder's uid and mode.** A payload extracted as root stays `uid 501`, mode `700`, and uid 1000 then cannot read it (the publisher fails with `EACCES` in `publishRelease`). `chmod -R a+rX` after extraction.
 4. **Strip AppleDouble files** (`find … -name '._*' -delete`): macOS tar adds ~17 of them for this payload, and an `._*.json` reaching a node once crashed production in a boot loop.

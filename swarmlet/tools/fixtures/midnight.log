@@ -1,0 +1,7 @@
+23:59:30.000 info  [agent] replica-as-cccccccccccc: spawn {"argv":"llama-server"}
+23:59:45.000 info  [agent] replica-as-cccccccccccc: exited {"code":0,"signal":null,"stopping":true}
+00:00:10.000 info  [agent] replica-as-dddddddddddd: spawn {"argv":"llama-server"}
+00:30:00.000 info  [agent] replica-as-dddddddddddd: exited {"code":0,"signal":null,"stopping":true}
+00:31:00.000 info  [agent] replica-as-eeeeeeeeeeee: spawn {"argv":"llama-server"}
+01:15:00.000 info  [agent] replica-as-eeeeeeeeeeee: exited {"code":0,"signal":null,"stopping":true}
+01:16:00.000 info  [agent] replica-as-ffffffffffff: spawn {"argv":"llama-server"}
