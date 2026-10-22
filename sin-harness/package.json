@@ -6,7 +6,7 @@
   "description": "Swarmlet source-available sovereign AI mesh research harness",
   "license": "SEE LICENSE IN ../LICENSE",
   "engines": {
-    "bun": "1.3.14"
+    "bun": "1.4.4"
   },
   "scripts": {
     "model": "./scripts/start-model.sh",
@@ -39,7 +39,7 @@
     "report:results-grid": "python3 proofs/no-ram-goal/compare_results.py --out ../docs/RESULTS_GRID.md"
   },
   "devDependencies": {
-    "@types/bun": "1.3.14",
+    "@types/bun": "1.4.3",
     "typescript": "5.9.2"
   }
 }

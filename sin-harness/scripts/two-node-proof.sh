@@ -24,7 +24,7 @@ prepare(){
  host=$1;node=$2;port=$3
  remote_commit=$("${SSH[@]}" "$host" "git -C $REMOTE_REPO rev-parse HEAD");[ "$remote_commit" = "$LOCAL_COMMIT" ]||{ echo "$host commit $remote_commit != $LOCAL_COMMIT";exit 3; }
  remote_status=$("${SSH[@]}" "$host" "git -C $REMOTE_REPO status --porcelain=v1");[ -z "$remote_status" ]||{ echo "$host checkout is dirty";exit 3; }
- "${SSH[@]}" "$host" "test \$(bun --version) = 1.3.14;cd $REMOTE_REPO/sin-harness;! ss -ltn | grep -q ':$port ';mkdir -p data/two-node;mkdir $REMOTE_RUN"
+ "${SSH[@]}" "$host" "test \$(bun --version) = 1.4.4;cd $REMOTE_REPO/sin-harness;! ss -ltn | grep -q ':$port ';mkdir -p data/two-node;mkdir $REMOTE_RUN"
  printf '%s\n' "$TOKEN"|"${SSH[@]}" "$host" "umask 077;cat >$REMOTE_REPO/sin-harness/$REMOTE_RUN/admin.token"
  "${SSH[@]}" "$host" "cd $REMOTE_REPO/sin-harness && nohup bun proofs/tiny-moe/supervisor.ts --pid-file $REMOTE_RUN/$node.pid --launch-id $RUN_ID -- --id $node --launch-id $RUN_ID --port $port --fixture proofs/tiny-moe/fixtures/two-node/$node.json --placement-plan $PLAN --admin-token-file $REMOTE_RUN/admin.token >$REMOTE_RUN/$node.log 2>&1 </dev/null &"
 }
