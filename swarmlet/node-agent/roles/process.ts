@@ -50,9 +50,10 @@ export class SupervisedProcess {
     void this.pump(proc.stderr);
     void proc.exited.then((code) => {
       this.exited = true;
-      this.exitInfo = { code, signal: proc.signalCode ?? null };
-      this.log.info(`${this.name}: exited`, { code, signal: proc.signalCode, stopping: this.stopping });
-      this.events.onExit?.(code, proc.signalCode ?? null);
+      const signal = proc.signalCode == null ? null : String(proc.signalCode);
+      this.exitInfo = { code, signal };
+      this.log.info(`${this.name}: exited`, { code, signal, stopping: this.stopping });
+      this.events.onExit?.(code, signal);
     });
     try { this.spawnIdentity = processIdentity(proc.pid) ?? undefined; }
     catch (e) { proc.kill("SIGTERM"); throw e; }

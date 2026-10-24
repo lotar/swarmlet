@@ -7,14 +7,14 @@ This guide runs the same plan-pinned tiny-MoE owners on two Ubuntu machines, car
 On the coordinator:
 
 - this repository at the commit to test;
-- Bun 1.3.14, Python 3.12+, OpenSSL;
+- Bun 1.4.4, Python 3.12+, OpenSSL;
 - key-only SSH access to both Ubuntu hosts;
 - the SSH host keys already verified in `~/.ssh/known_hosts`.
 
 On each owner:
 
 - the same repository commit at `~/ai-mesh` or another identical path;
-- Bun 1.3.14 and Python 3;
+- Bun 1.4.4 and Python 3;
 - enough permission to run user processes; `sudo` is not required by the proof.
 
 The proof refuses password prompts, unknown host keys, mismatched commits, wrong Bun versions, occupied tunnels, changed fixtures, stale epochs, and unsafe public owner URLs.
@@ -27,7 +27,7 @@ ssh legion-a 'git -C ~/ai-mesh rev-parse HEAD; bun --version'
 ssh legion-b 'git -C ~/ai-mesh rev-parse HEAD; bun --version'
 ```
 
-All commits must match and each Bun version must print `1.3.14`.
+All commits must match and each Bun version must print `1.4.4`.
 
 ## 2. Pin the SSH host keys
 

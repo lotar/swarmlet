@@ -1,0 +1,7 @@
+08:44:00.000 info  [agent] replica-as-111111111111: spawn {"argv":"llama-server -m Qwen3.8-27B-Q8_0.gguf --alias qwen3.8-27b"}
+08:45:05.826 info  [agent] replica-as-111111111111: exited {"code":0,"signal":null,"stopping":true}
+08:45:07.658 info  [agent] coordinator-as-222222222222: spawn {"argv":"llama-server --rpc 127.0.0.1:59293,127.0.0.1:59294 --tensor-split 5,5,5,49"}
+08:46:43.550 error [agent] coordinator-as-222222222222: exited {"code":134,"signal":"SIGABRT","stopping":false}
+08:46:43.550 error [agent] assignment failed {"id":"as-222222222222","why":"engine exited (code 134, SIGABRT): ggml_backend_rpc_add_server + 552"}
+08:48:48.000 info  [agent] replica-as-333333333333: spawn {"argv":"llama-server -m Qwen3.8-27B-Q8_0.gguf --alias qwen3.8-27b"}
+08:50:09.000 warn  [agent] Mac app update failed {"detail":"signature verification failed"}

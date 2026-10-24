@@ -28,7 +28,7 @@ See [docs/RESULTS_GRID.md](docs/RESULTS_GRID.md) for the measured/simulated dist
 
 Requirements:
 
-- Bun `1.3.14`
+- Bun `1.4.4`
 - Python `3.12+`
 - OpenSSL with Ed25519 support
 - Node.js `22+` only for the static-site preview
