@@ -74,7 +74,7 @@ services:
     ports: ["51054:50052"]
 
   node-n1:
-    image: oven/bun:1
+    image: oven/bun:1.4.4
     container_name: sin-node-1
     working_dir: /app
     volumes: [".:/app"]
@@ -90,7 +90,7 @@ services:
     stop_grace_period: 3s
 
   node-n2:
-    image: oven/bun:1
+    image: oven/bun:1.4.4
     container_name: sin-node-2
     working_dir: /app
     volumes: [".:/app"]
@@ -106,7 +106,7 @@ services:
     stop_grace_period: 3s
 
   node-n3:
-    image: oven/bun:1
+    image: oven/bun:1.4.4
     container_name: sin-node-3
     working_dir: /app
     volumes: [".:/app"]
