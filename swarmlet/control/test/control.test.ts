@@ -139,7 +139,8 @@ describe("control core", () => {
       expect(await denied.json()).toEqual({ error: "live stream limit; polling remains available" });
       expect((await api("/api/nodes")).status).toBe(200);
       aborts.shift()!.abort();
-      await readers.shift()!.cancel();
+      // Bun >= 1.4 rejects cancel() on a reader whose fetch was already aborted; 1.3 resolved it.
+      await readers.shift()!.cancel().catch(() => undefined);
       let replacement: Response | undefined;
       for (let i = 0; i < 50; i++) {
         replacement = await api("/api/stream");
@@ -155,7 +156,7 @@ describe("control core", () => {
       await stillFull.text();
     } finally {
       aborts.forEach((abort) => abort.abort());
-      await Promise.all(readers.map((reader) => reader.cancel()));
+      await Promise.all(readers.map((reader) => reader.cancel().catch(() => undefined)));
     }
   });
 

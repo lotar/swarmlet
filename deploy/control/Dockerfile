@@ -1,4 +1,4 @@
-FROM oven/bun:1.3.14-slim
+FROM oven/bun:1.4.4-slim
 ARG SWARMLET_REVISION
 LABEL org.opencontainers.image.title="Swarmlet control plane" \
       org.opencontainers.image.revision="${SWARMLET_REVISION}"
