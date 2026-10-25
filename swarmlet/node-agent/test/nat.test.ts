@@ -55,18 +55,35 @@ describe("soap parsing", () => {
 });
 
 describe("NatMapper", () => {
-  const mapper = (over: Partial<Record<string, unknown>> = {}, events: string[] = []) => new NatMapper(
+  const mapper = (over: Partial<NonNullable<ConstructorParameters<typeof NatMapper>[1]>> = {}, events: string[] = []) => new NatMapper(
     { nodeId: "30f05a2670c368d0", dataPort: 47801, log: (e) => events.push(e) },
     {
-      defaultRoute: async () => ({ gateway: "192.168.1.1", iface: "en0" }),
+      defaultRoute: async () => ({ gateway: "192.168.1.1", iface: "fixture-lan" }),
+      interfaceIpv4: (iface) => { expect(iface).toBe("fixture-lan"); return "192.168.1.181"; },
       discoverIgd: async () => "http://192.168.1.1:5000/rootDesc.xml",
       resolveIgd: async () => igd,
       externalIp: async () => "93.139.213.145",
       addMapping: async () => true,
       deleteMapping: async () => {},
       ...over,
-    } as never,
+    },
   );
+
+  test("uses the injected default interface address instead of host interfaces", async () => {
+    for (const internal of ["10.20.30.40", "172.16.1.9"]) {
+      const seen: string[] = [];
+      const m = mapper({
+        defaultRoute: async () => ({ gateway: "192.168.1.1", iface: "fixture-only" }),
+        interfaceIpv4: (iface) => { expect(iface).toBe("fixture-only"); return internal; },
+        addMapping: async (_igd, _port, address) => { seen.push(address); return true; },
+      });
+      try {
+        await m.start();
+        expect(m.endpoints()).toHaveLength(1);
+        expect(seen).toEqual([internal]);
+      } finally { await m.stop(); }
+    }
+  });
 
   test("advertises the mapped endpoint, with the listener port as the internal target", async () => {
     const seen: Array<Record<string, unknown>> = [];
@@ -93,6 +110,7 @@ describe("NatMapper", () => {
   test("fail-soft: no route, no IGD, no external address, or a refused port all mean no endpoint", async () => {
     const cases = [
       { defaultRoute: async () => undefined },
+      { interfaceIpv4: () => undefined },
       { discoverIgd: async () => undefined },
       { resolveIgd: async () => undefined },
       { externalIp: async () => undefined },

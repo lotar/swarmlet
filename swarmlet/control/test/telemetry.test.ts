@@ -53,7 +53,9 @@ test('both age and allocated disk limits rotate oldest shards, including after r
     expect(f.store.query({ rangeMs: 1000 }).retention.records).toBe(0);
     expect(disk()).toBe(32);
   } finally { f.close(); }
-});
+// Real synchronous SQLite writes can exceed the default 5s on shared disks.
+// This checks retention and allocated bytes, not storage throughput.
+}, 30_000);
 test('range and anonymous node filters preserve missing data and reject SQL-like inputs', () => {
   const f = fixture();
   try {

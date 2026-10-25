@@ -1,5 +1,8 @@
 # Control image provenance and Bun pin, 2026-10-25
 
+This is the original audit. The [test-portability follow-up](control-test-portability-20261025.md)
+supersedes the validation status below; the original failures remain recorded as evidence.
+
 Main at inspection: `d3825ee0bb326ebb1f38b0656db9cc6f3aac8c9b`.
 The only product change in this PR is the digest pin in `deploy/control/Dockerfile`.
 There is no missing gateway patch to port: the shipped gateway implementation is already in main.

@@ -412,7 +412,12 @@ test("reconnected nodes cannot keep recovery loading forever without stop acknow
   const old = f.reg.listAssignments(id); f.setStops(false);
   f.online.delete("l1"); f.manager.onOffline("l1");
   f.online.add("l1"); f.manager.onHello("l1", [{ id: old.find(a => a.nodeId === "l1")!.id, state: "listening" }]);
-  await f.manager.reconcile(); await settle(); await f.manager.reconcile();
+  // Teardown has sequential asynchronous stop timeouts. A fixed sleep can wake
+  // before its operation releases; keep driving the real sweeper until it settles.
+  await distributionSettled(async () => {
+    await f.manager.reconcile();
+    return f.reg.getDeployment(id)?.state === "failed";
+  });
   expect(f.reg.getDeployment(id)?.state).toBe("failed");
   expect(f.reg.getDeployment(id)?.error).toContain("reconnect cleanup deadline");
   expect(f.reg.listAssignments(id).filter(a => a.state !== "stopped")).toHaveLength(3);
@@ -433,9 +438,9 @@ test("RPC crash reported during disconnect recovery does not bypass the reconnec
 });
 
 const savedLayout = { coordinatorNodeId: 'mac', workerNodeIds: ['l2','l1'], workerLayers: [2,3] };
-async function distributionSettled(check:()=>boolean) {
+async function distributionSettled(check:()=>boolean | Promise<boolean>) {
   const deadline=Date.now()+1500;
-  while(!check()){if(Date.now()>deadline)throw new Error('distribution did not settle');await Bun.sleep(2);}
+  while(!(await check())){if(Date.now()>deadline)throw new Error('distribution did not settle');await Bun.sleep(2);}
 }
 test('saved distribution survives registry reopen without changing active spec, route or recovery intent',async()=>{
   const path=join(mkdtempSync(join(tmpdir(),'swarmlet-distribution-')),'control.sqlite');

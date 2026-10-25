@@ -1,3 +1,4 @@
+import { managedProcessTest } from "./host-tools.ts";
 import { expect, test } from "bun:test";
 import { mkdtempSync, readdirSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -7,7 +8,7 @@ import { AssignmentRunner } from "../assignments.ts";
 
 const log = { info() {}, warn() {}, error() {}, debug() {} };
 
-test("engine failure evidence survives cleanup and agent recreation", async () => {
+managedProcessTest("engine failure evidence survives cleanup and agent recreation", async () => {
   const dir = mkdtempSync(join(tmpdir(), "swarmlet-log-retention-"));
   const deps = { stateDir: dir, cfg: () => ({ externals: [], offer: { enabled: true, roles: { worker: true }, ramMiB: 1024, cpuCores: 1 } }), log, report() {}, logLine() {}, openRelay: () => null,
     freeRamMiB: async () => 100, certPem: "", keyPem: "" };

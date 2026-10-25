@@ -1,14 +1,14 @@
-# Claude runbook: replace only swarmlet-control
+# Shop runbook: replace only swarmlet-control
 
 This is a future, separately authorized production procedure, **not executed by this PR**.
 Do not merge the PR as part of this runbook. Wait for its independently reviewed merge and explicit
-deploy authorization, including permission for the requested build on shop. The current task permits
+deploy authorization, for production image loading and replacement. Build only on a guarded test host; the current task permits
 heavy work only through `run-heavy.sh` on legion2/m1 and makes no production writes.
 
 Use the merged SHA, never the hand-patched build directory. Preserve the complete controller state and
 signing keys. Do not publish agent releases, change node offers, restart agents, recreate Traefik/site,
 or run production `down -v`. Read [the provenance report](reports/control-gwfix-bun144-20261025.md)
-and all outstanding validation failures before scheduling the window.
+and the follow-up test-portability evidence before scheduling the window.
 
 ## 1. Prepare an immutable release from the merged SHA
 
@@ -98,7 +98,7 @@ const nodes = await get('/api/nodes');
 const routes = await get('/api/routing');
 console.log(JSON.stringify({
   at: new Date().toISOString(),
-  nodes: nodes.nodes.map(n => ({id:n.id, hostname:n.hostname, online:n.online, lastSeen:n.lastSeen, agentVersion:n.agentVersion})),
+  nodes: nodes.nodes.map(n => ({id:n.id, online:n.online, lastSeen:n.lastSeen, agentVersion:n.agentVersion})),
   routes: routes.models.flatMap(m => m.deployments.map(d => ({model:m.modelName, deployment:d.id, node:d.nodeId})))
 }));
 JS
@@ -110,29 +110,59 @@ done
 docker exec swarmlet-control bun -e 'const r=await fetch("http://127.0.0.1:47900/health"); console.log(r.status,await r.text()); if(!r.ok)process.exit(1)'
 ```
 
-The audit baseline returned HTTP 200 for all URLs and `/health` reported five nodes; recapture this
-at deployment time and use actual identity/route comparisons, not an assumed count. Main intentionally
+Recapture this at deployment time and use actual identity/route comparisons, not an assumed count. Main intentionally
 retires the Bonsai profile. If the current workload requires that removed profile, resolve that
 compatibility requirement before deploying; do not silently reintroduce it or stop those workloads.
 
-## 3. Build on shop, before the outage
+## 3. Build on legion2, then transfer the verified image before the outage
 
-Only after the separate authorization described above:
+Use a fresh directory owned by this release on legion2. Transfer the tracked source archive from
+section 1 there as well. Run the build and runtime check through `/home/lotar/locks/run-heavy.sh`.
+Shop is x86_64; build natively on legion2, not an arm64-only M1 image. For example, from the workstation:
 
 ```bash
+LANE="/home/lotar/swctl-release-$DEPLOY_SHA"
+ssh legion2 "test ! -e '$LANE' && mkdir -m 700 '$LANE'"
+scp "control-$DEPLOY_SHA.tar.gz" "legion2:$LANE/source.tar.gz"
+ssh legion2 /home/lotar/locks/run-heavy.sh bash -s -- "$LANE" "$DEPLOY_SHA" <<'BUILD'
+set -euo pipefail
+cd "$1"
+tar -xzf source.tar.gz
+find . -name '._*' -delete
+image="swarmlet-control:$2"
+if docker image inspect "$image" >/dev/null 2>&1; then
+  echo 'release tag already exists on builder; choose an isolated builder or reconcile ownership'
+  exit 1
+fi
+docker build --pull -f deploy/control/Dockerfile --build-arg "SWARMLET_REVISION=$2" -t "$image" .
+test "$(docker run --rm --network none --read-only --entrypoint bun "$image" --version)" = 1.4.4
+docker image inspect "$image" --format 'id={{.Id}} revision={{index .Config.Labels "org.opencontainers.image.revision"}}'
+docker save "$image" | gzip > control-image.tar.gz
+sha256sum control-image.tar.gz
+docker image rm "$image"
+BUILD
+scp "legion2:$LANE/control-image.tar.gz" "control-image-$DEPLOY_SHA.tar.gz"
+shasum -a 256 "control-image-$DEPLOY_SHA.tar.gz"
+scp "control-image-$DEPLOY_SHA.tar.gz" shop:/root/swctl-bun144-deploy/
+```
+
+After separate production authorization, in the shop Bash session from section 1:
+
+```bash
+sha256sum "/root/swctl-bun144-deploy/control-image-$DEPLOY_SHA.tar.gz"
+# Require equality with both preceding hashes before loading.
+docker load -i "/root/swctl-bun144-deploy/control-image-$DEPLOY_SHA.tar.gz"
 export SWARMLET_CONTROL_DATA="$ROOT/data"
 export SWARMLET_REVISION="$DEPLOY_SHA"
 DC=(docker compose -p swarmlet-control --project-directory "$RELEASE" -f "$RELEASE/compose.control.prod.yml")
-"${DC[@]}" build --pull control
 EXPECTED_IMAGE=$(docker image inspect "swarmlet-control:$DEPLOY_SHA" --format '{{.Id}}')
 EXPECTED_BUN=1.4.4
 docker image inspect "swarmlet-control:$DEPLOY_SHA" --format 'id={{.Id}} revision={{index .Config.Labels "org.opencontainers.image.revision"}}'
-docker run --rm --network none --read-only --entrypoint bun "swarmlet-control:$DEPLOY_SHA" --version
-# Require revision == DEPLOY_SHA and Bun == 1.4.4.
+# Require ID and revision equality with the builder's output.
 ```
 
-The version-only container has no state mount and cannot start a second controller.
-Do not copy post-build patches into the image or build from `$ROOT/build`.
+The image has already been built and checked before stopping control. Do not rebuild on shop or
+substitute a mutable tag. Keep the archive and checksums with the release evidence.
 
 ## 4. Take an offline, restorable state backup; recreate only control
 
@@ -149,25 +179,22 @@ sha256sum "$BACKUP/data.tar.gz" > "$BACKUP/data.tar.gz.sha256"
 sha256sum -c "$BACKUP/data.tar.gz.sha256"
 mkdir -m 700 "$BACKUP/restore-check"
 tar -xzpf "$BACKUP/data.tar.gz" -C "$BACKUP/restore-check"
-python3 - "$BACKUP/restore-check/data" <<'PY'
-import pathlib, sqlite3, sys
-root = pathlib.Path(sys.argv[1])
-for name in ['control.json', 'control.sqlite', 'keys', 'releases']:
-    assert (root / name).exists(), 'missing backup component: ' + name
-for db in sorted(root.rglob('*.sqlite')):
-    with sqlite3.connect(db.resolve().as_uri() + '?mode=ro', uri=True) as c:
-        result = c.execute('PRAGMA integrity_check').fetchall()
-    assert result == [('ok',)], 'backup database integrity failed'
-print('BACKUP_RESTORE_CHECK=ok')
-PY
+# A stopped service and paused external publishers make a byte-for-byte backup consistent.
+# Verify every restored file without querying production databases or printing state.
+diff -qr "$ROOT/data" "$BACKUP/restore-check/data"
+for component in control.json control.sqlite keys releases; do
+  test -e "$BACKUP/restore-check/data/$component"
+done
+echo 'BACKUP_RESTORE_CHECK=ok'
+DEPLOY_STARTED=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 "${DC[@]}" up -d --no-deps --no-build --force-recreate control
 ```
 
 If backup creation or verification fails, keep the failed backup for diagnosis and restart only the old
 image using the saved Compose file and `SWARMLET_REVISION="$ROLLBACK_TAG"`; do not proceed to replacement.
 Preserve ownership/modes on all state. Do not regenerate `control.json`, `keys/` or node identities.
-`Registry` and `TelemetryStore` source match between old image and main, but retaining complete
-pre-upgrade state is still required for rollback. Never run two controllers against these data.
+The test-portability changes do not alter stored schemas; retaining complete pre-upgrade state
+is still required for rollback. Never run two controllers against these data.
 
 ## 5. Health and reconnection gate
 
@@ -182,6 +209,13 @@ test "$(docker inspect swarmlet-control --format '{{.Image}}')" = "$EXPECTED_IMA
 runtime=$(docker exec swarmlet-control bun --version)
 printf 'BUN_VERSION=%s\n' "$runtime"
 test "$runtime" = "$EXPECTED_BUN"
+restarts=$(docker inspect swarmlet-control --format '{{.RestartCount}}')
+docker logs --since "$DEPLOY_STARTED" swarmlet-control > "$BACKUP/control-startup.log" 2>&1
+if grep -Eiq '\b(error|fatal|panic|uncaught|exception|segmentation fault|out of memory)\b' "$BACKUP/control-startup.log"; then
+  echo 'CONTROL_LOG_SCAN=failed; inspect protected log before proceeding'
+  exit 1
+fi
+echo 'CONTROL_LOG_SCAN=0 matches'
 docker exec swarmlet-control bun -e 'const r=await fetch("http://127.0.0.1:47900/health"); console.log(r.status,await r.text()); if(!r.ok)process.exit(1)'
 for url in https://swarmlet.ai/ https://app.swarmlet.ai/ https://app.swarmlet.ai/health; do
   code=$(curl --max-time 20 -sS -o /dev/null -w '%{http_code}' "$url")
@@ -202,6 +236,7 @@ print('missing_routes', sorted(old_routes - new_routes))
 assert not missing and not (old_routes - new_routes), 'reconnection/routing not restored'
 print('RECONNECT_AND_ROUTES=ok')
 PY
+test "$(docker inspect swarmlet-control --format '{{.RestartCount}}')" = "$restarts"
 ```
 
 Allow up to five minutes for automatic reconnection/reconciliation, taking a fresh snapshot on each
@@ -221,6 +256,7 @@ Use the saved variables from this deployment, not a hard-coded old date. Do not 
 export SWARMLET_REVISION="$ROLLBACK_TAG"
 EXPECTED_IMAGE="$CURRENT_IMAGE"
 EXPECTED_BUN=1.3.14
+DEPLOY_STARTED=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 "${OLD[@]}" up -d --no-deps --no-build --force-recreate control
 ```
 
@@ -243,13 +279,14 @@ mv "$RESTORE/data" "$ROOT/data"
 export SWARMLET_REVISION="$ROLLBACK_TAG"
 EXPECTED_IMAGE="$CURRENT_IMAGE"
 EXPECTED_BUN=1.3.14
+DEPLOY_STARTED=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 "${OLD[@]}" up -d --no-deps --no-build --force-recreate control
 ```
 
 Rerun section 5 with the rollback values `EXPECTED_IMAGE="$CURRENT_IMAGE"` and `EXPECTED_BUN=1.3.14`
 set above; its identity, runtime, health and reconnect checks now target the retained old image. Keep rollback image, source archive, backup and failed
 state until the operator closes the rollback window. A rollback restores availability but restores the
-vulnerable Bun runtime too; record it as a failed upgrade, not security remediation.
+old Bun runtime too; record it as a failed runtime upgrade.
 
 ## Evidence handoff
 
