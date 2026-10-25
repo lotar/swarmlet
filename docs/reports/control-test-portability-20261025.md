@@ -277,3 +277,65 @@ The diff and the downstream `node-agent/main.ts` constructor call were reviewed 
 Search: `rg -n 'new NatMapper|interfaceIpv4|testWithTools|managedProcessTest|rssProbeTest'
 swarmlet/node-agent` found the canonical NAT implementation, its main.ts consumer and the
 expected tests; no parallel production implementation was introduced.
+
+## Research CI fixture follow-up
+
+At control-fix head `a439eb3db44a7d264c24ad10d5cdcc86dcc09412`,
+`gh run list --repo lotar/swarmlet --branch fix/swarmlet-control-gwfix-bun144` returned push
+run `40202006903` success and pull-request run `40202010000` failure. Both secret scans passed.
+The failing job reported:
+
+```text
+FAIL: test_cli_exit_code_tracks_failed_threshold
+AssertionError: 2 != 0
+Ran 16 tests in 12.960s
+FAILED (failures=1)
+```
+
+`git diff origin/main -- sin-harness` was empty before this diagnosis. The test's fake
+ThreadingHTTPServer had a default listen backlog of five while the CLI released eight
+clients concurrently. A guarded Python 3.12.15 diagnostic on the original main source
+instrumented socket connection duration and ran the unchanged test with each backlog:
+
+```text
+DEFAULT_BACKLOG=5
+BACKLOG=5 RUN=16 PASS=False STATUS=pass B_RATIO=51.067 MAX_CONNECT_SECONDS=1.047
+BACKLOG=5 FAILURES=1
+BACKLOG=128 FAILURES=0
+```
+
+The larger-backlog control ran ten repetitions of the exact same threshold and assertions;
+its largest recorded connection duration was `0.005` seconds. The small backlog allowed
+connection admission delays to distort the fixture's A/B timing enough to pass the deliberately
+failing threshold. Set only this fake server's `request_queue_size` to 128 through a fixture
+subclass. Production benchmarking, its threshold of 50, and all test assertions are unchanged.
+
+The full research-suite harness uses Bun 1.4.4 and Python 3.12 with the repository's pinned
+NumPy, Git and ps. Initial minimal-image attempts lacked Git/ps; archive-only attempts then
+failed the provenance test because there was no Git checkout. These harness limitations were
+corrected with disposable, task-owned fresh clones.
+
+Final commands on both hosts were `run-heavy.sh .../research-final.sh`, executing
+`bun install --frozen-lockfile` and the complete `bun run test` in `sin-harness` for main
+and the patched branch. Each of the four paired runs returned:
+
+```text
+65 pass
+0 fail
+Ran 65 tests across 8 files.
+Ran 16 tests
+OK
+RESEARCH_research-main_EXIT=0
+RESEARCH_research-fixed_EXIT=0
+```
+
+The composite command also completed `test:proofs-portable`; parsing its last RESULT_JSON
+on M1 returned `PORTABLE_COMPONENTS=13` and `PORTABLE_SAFETY=True` for both trees. Both hosts
+reported zero remaining research containers, volumes and networks. SHA-256 of the tested
+Python fixture and the local file matched:
+`5674c22ef259df617e42745aec6cc9190c6d75c10bccd16cf0bd09806ca75969`.
+
+No production research code changed. The fixture retains the same server lifecycle and all
+threshold assertions. This follow-up does not alter any of the control runtime/test files
+covered by the matching 334-file source manifests or the control Dockerfile's COPY inputs.
+GitHub status for the final pushed head is reported separately in the PR and handoff report.

@@ -43,6 +43,12 @@ class FakeState:
         self.lock = threading.Lock()
 
 
+class FixtureHTTPServer(ThreadingHTTPServer):
+    # The CLI fixture releases eight clients at once. The default backlog of five
+    # adds connection retries to some arms, fabricating a large A/B speedup.
+    request_queue_size = 128
+
+
 @contextmanager
 def fake_completion_server(state):
     class Handler(BaseHTTPRequestHandler):
@@ -87,7 +93,7 @@ def fake_completion_server(state):
         def log_message(self, _format, *_args):
             pass
 
-    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    server = FixtureHTTPServer(("127.0.0.1", 0), Handler)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     try:
