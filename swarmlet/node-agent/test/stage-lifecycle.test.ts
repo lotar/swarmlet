@@ -1,3 +1,4 @@
+import { managedProcessTest } from "./host-tools.ts";
 import { expect, test } from "bun:test";
 import { mkdtempSync, mkdirSync, writeFileSync, chmodSync, rmSync, existsSync, statSync, readFileSync } from "node:fs";
 import { createHash } from "node:crypto";
@@ -51,7 +52,7 @@ async function waitFor(check: () => boolean) {
   while (!check()) { if (Date.now() > deadline) throw new Error("fixture condition timed out"); await Bun.sleep(10); }
 }
 
-test("stage assignment supervises a real CPU subprocess, keeps raw workers out of inference and clears capsule directory", async () => {
+managedProcessTest("stage assignment supervises a real CPU subprocess, keeps raw workers out of inference and clears capsule directory", async () => {
   const f = fixture();
   try {
     f.runner.handle(f.assignment);
@@ -86,7 +87,7 @@ test("native binary and fit checks reject before spawning", async () => {
   }
 });
 
-test("loaded native identity mismatch never reports ready and stops the child", async () => {
+managedProcessTest("loaded native identity mismatch never reports ready and stops the child", async () => {
   const f = fixture({ wrongHealth: true });
   try {
     f.runner.handle(f.assignment);
@@ -146,7 +147,7 @@ test("an occupied native port cannot be mistaken for the newly assigned process"
   } finally { other.stop(true); await f.dispose(); }
 });
 
-test("matching native health from a wrong PID fails readiness", async () => {
+managedProcessTest("matching native health from a wrong PID fails readiness", async () => {
   const f = fixture({ wrongPid: true });
   try {
     f.runner.handle(f.assignment);

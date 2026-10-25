@@ -239,7 +239,7 @@ export class NatMapper {
 
   constructor(
     private readonly opts: { nodeId: string; dataPort: number; log: NatLog; leaseSeconds?: number },
-    private readonly deps = { defaultRoute, discoverIgd, resolveIgd, externalIp, addMapping, deleteMapping },
+    private readonly deps = { defaultRoute, interfaceIpv4, discoverIgd, resolveIgd, externalIp, addMapping, deleteMapping },
   ) {}
 
   get leaseSeconds(): number { return this.opts.leaseSeconds ?? LEASE_SECONDS; }
@@ -249,7 +249,7 @@ export class NatMapper {
     try {
       const route = await this.deps.defaultRoute();
       if (!route) return void this.opts.log("nat: no default route, mapping skipped");
-      const internalIp = interfaceIpv4(route.iface);
+      const internalIp = this.deps.interfaceIpv4(route.iface);
       if (!internalIp) return void this.opts.log("nat: no IPv4 on the default interface, mapping skipped");
       this.internalIp = internalIp;
       const location = await this.deps.discoverIgd(route.gateway);

@@ -1,3 +1,4 @@
+import { managedProcessTest } from "./host-tools.ts";
 import { describe, expect, test } from "bun:test";
 import { coordinatorArgv, replicaArgv, workerArgv } from "../roles/recipes.ts";
 import { enforce } from "../enforce/index.ts";
@@ -66,7 +67,7 @@ describe("recipes", () => {
 
 describe("enforcement", () => {
   const log = makeLogger("t", "error");
-  test("linux wraps in a systemd-run scope with MemoryMax/CPUQuota; darwin returns a watchdog", async () => {
+  managedProcessTest("linux wraps in a systemd-run scope with MemoryMax/CPUQuota; darwin returns a watchdog", async () => {
     const e = await enforce("swarmlet-test", ["/eng/x", "-p", "1"], { ramMiB: 8192, cpuCores: 6 }, log);
     if (process.platform === "linux") {
       expect(e.argv.slice(0, 2)).toEqual(["systemd-run", "--user"]);

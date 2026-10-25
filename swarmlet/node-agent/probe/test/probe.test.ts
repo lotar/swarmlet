@@ -1,3 +1,4 @@
+import { rssProbeTest } from "../../test/host-tools.ts";
 // Probe module: pure parsers against realistic tool output, listModels on a temp dir, measureNet
 // against an in-process control stand-in, exec semantics, and a never-throws smoke run of the
 // real probes on this machine.
@@ -322,7 +323,7 @@ describe("live probes on this machine", () => {
   // budget plus host-probe overhead instead of killing it at the former 30 s.
   }, ENGINE_DEVICE_TIMEOUT_MS + 15_000);
 
-  test("probeMetrics reports rss of this process, free RAM and cpu", async () => {
+  rssProbeTest("probeMetrics reports rss of this process, free RAM and cpu", async () => {
     const gone = Bun.spawn(["true"]);
     await gone.exited;
     // a pid that already exited and one that cannot exist must not poison the ps batch
