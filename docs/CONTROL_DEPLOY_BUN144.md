@@ -124,6 +124,8 @@ export SWARMLET_CONTROL_DATA="$ROOT/data"
 export SWARMLET_REVISION="$DEPLOY_SHA"
 DC=(docker compose -p swarmlet-control --project-directory "$RELEASE" -f "$RELEASE/compose.control.prod.yml")
 "${DC[@]}" build --pull control
+EXPECTED_IMAGE=$(docker image inspect "swarmlet-control:$DEPLOY_SHA" --format '{{.Id}}')
+EXPECTED_BUN=1.4.4
 docker image inspect "swarmlet-control:$DEPLOY_SHA" --format 'id={{.Id}} revision={{index .Config.Labels "org.opencontainers.image.revision"}}'
 docker run --rm --network none --read-only --entrypoint bun "swarmlet-control:$DEPLOY_SHA" --version
 # Require revision == DEPLOY_SHA and Bun == 1.4.4.
@@ -176,8 +178,10 @@ for i in $(seq 1 60); do
   sleep 2
 done
 test "$status" = healthy
-test "$(docker inspect swarmlet-control --format '{{.Image}}')" = "$(docker image inspect "swarmlet-control:$DEPLOY_SHA" --format '{{.Id}}')"
-docker exec swarmlet-control bun --version
+test "$(docker inspect swarmlet-control --format '{{.Image}}')" = "$EXPECTED_IMAGE"
+runtime=$(docker exec swarmlet-control bun --version)
+printf 'BUN_VERSION=%s\n' "$runtime"
+test "$runtime" = "$EXPECTED_BUN"
 docker exec swarmlet-control bun -e 'const r=await fetch("http://127.0.0.1:47900/health"); console.log(r.status,await r.text()); if(!r.ok)process.exit(1)'
 for url in https://swarmlet.ai/ https://app.swarmlet.ai/ https://app.swarmlet.ai/health; do
   code=$(curl --max-time 20 -sS -o /dev/null -w '%{http_code}' "$url")
@@ -215,6 +219,8 @@ Use the saved variables from this deployment, not a hard-coded old date. Do not 
 ```bash
 "${DC[@]}" stop control
 export SWARMLET_REVISION="$ROLLBACK_TAG"
+EXPECTED_IMAGE="$CURRENT_IMAGE"
+EXPECTED_BUN=1.3.14
 "${OLD[@]}" up -d --no-deps --no-build --force-recreate control
 ```
 
@@ -235,11 +241,13 @@ tar -xzpf "$BACKUP/data.tar.gz" -C "$RESTORE"
 mv "$ROOT/data" "$FAILED"
 mv "$RESTORE/data" "$ROOT/data"
 export SWARMLET_REVISION="$ROLLBACK_TAG"
+EXPECTED_IMAGE="$CURRENT_IMAGE"
+EXPECTED_BUN=1.3.14
 "${OLD[@]}" up -d --no-deps --no-build --force-recreate control
 ```
 
-Verify the old image ID equals the captured `CURRENT_IMAGE`, then rerun section 5's health/reconnect
-checks (expect Bun 1.3.14 on rollback, not 1.4.4). Keep rollback image, source archive, backup and failed
+Rerun section 5 with the rollback values `EXPECTED_IMAGE="$CURRENT_IMAGE"` and `EXPECTED_BUN=1.3.14`
+set above; its identity, runtime, health and reconnect checks now target the retained old image. Keep rollback image, source archive, backup and failed
 state until the operator closes the rollback window. A rollback restores availability but restores the
 vulnerable Bun runtime too; record it as a failed upgrade, not security remediation.
 
